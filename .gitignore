@@ -1,0 +1,8 @@
+*.db
+*.db-shm
+*.db-wal
+/oronbox-server
+/dist/
+/.env
+/tmp/
+/.kimi-code/

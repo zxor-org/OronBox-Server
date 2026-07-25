@@ -1,0 +1,14 @@
+services:
+  server:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      STORAGE_LOCAL_ROOT: /var/lib/oronbox/blobs
+    volumes:
+      - blob-data:/var/lib/oronbox/blobs
+
+volumes:
+  blob-data:
