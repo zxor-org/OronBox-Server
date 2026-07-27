@@ -153,15 +153,20 @@ type GrantSummary struct {
 	Providers      []string `json:"providers"`
 	GitHubLogin    string   `json:"github_login,omitempty"`
 	BandBBSPublish bool     `json:"bandbbs_publish"`
+	Role           string   `json:"role"`
 }
 
 func (s *Store) Grants(ctx context.Context, userID string) (GrantSummary, error) {
+	var role string
+	if err := s.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1`, userID).Scan(&role); err != nil {
+		return GrantSummary{}, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT provider FROM oauth_grants WHERE user_id=$1 ORDER BY provider`, userID)
 	if err != nil {
 		return GrantSummary{}, err
 	}
 	defer rows.Close()
-	summary := GrantSummary{}
+	summary := GrantSummary{Role: role}
 	for rows.Next() {
 		var provider string
 		if err := rows.Scan(&provider); err != nil {

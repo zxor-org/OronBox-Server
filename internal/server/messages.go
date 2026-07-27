@@ -25,6 +25,14 @@ func (a *App) handleReadMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (a *App) handleClearMessages(w http.ResponseWriter, r *http.Request) {
+	if err := a.store.ClearUserMessages(r.Context(), currentUser(r).ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("messages_clear_failed", err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *App) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.UnreadAnnouncements(r.Context(), currentUser(r).ID)
 	if err != nil {

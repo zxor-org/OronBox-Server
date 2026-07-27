@@ -30,6 +30,7 @@ func NewTemplates() *Templates {
 			"statusClass":    statusClass,
 			"statusLabel":    statusLabel,
 			"kindLabel":      kindLabel,
+			"reportKind":     reportKind,
 			"platformLabel":  platformLabel,
 			"targetLabel":    targetLabel,
 			"mediaRoleLabel": mediaRoleLabel,
@@ -111,6 +112,8 @@ func kindLabel(value any) string {
 		return "表盘"
 	case "report", "resource_report":
 		return "资源举报"
+	case "comment_report":
+		return "评论举报"
 	case "feedback":
 		return "意见反馈"
 	default:
@@ -119,6 +122,11 @@ func kindLabel(value any) string {
 		}
 		return fmt.Sprint(value)
 	}
+}
+
+func reportKind(value any) bool {
+	kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+	return kind == "report" || kind == "resource_report" || kind == "comment_report"
 }
 
 func platformLabel(value any) string {
@@ -391,9 +399,9 @@ const templates = `
     <div class="standalone-icon"><span class="material-symbols-outlined">{{if eqs .Tone "danger"}}error{{else if eqs .Tone "info"}}open_in_new{{else}}check_circle{{end}}</span></div>
     <h1>{{.Heading}}</h1>
     <p>{{.Description}}</p>
-    {{if .Target}}<div class="standalone-actions"><a class="filled-button full-button" id="continue-action" href="{{.Target}}">{{.ButtonLabel}}</a></div>{{end}}
-    {{if and .Auto .Target}}<div class="transition-progress" aria-hidden="true"><span></span></div>
-    <script>window.setTimeout(() => { location.replace({{.Target}}); }, 900);</script>{{end}}
+    {{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" id="continue-action" href="{{.Target}}">{{.ButtonLabel}}</a></div>{{end}}
+    {{if and .Target (not .ButtonLabel)}}<a class="transition-retry" id="continue-action" href="{{.Target}}">没有自动打开？<span>点此重试</span></a>{{end}}
+    {{if and .Auto .Target}}<script>window.setTimeout(() => { location.replace({{.Target}}); }, 900);</script>{{end}}
   </section>
 </main>
 {{template "tail" .}}
@@ -707,8 +715,8 @@ const templates = `
 
 {{define "admin_reports"}}
 {{template "admin_open" .}}
-<header class="page-header"><div><h1>资源举报</h1><p>受理资源举报并同步处理结果</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
-<nav class="subtabs"><a class="active" href="/admin/reports">资源举报</a><a href="/admin/feedback">全部反馈</a></nav>
+<header class="page-header"><div><h1>举报</h1><p>受理资源与评论举报并同步处理结果</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+<nav class="subtabs"><a class="active" href="/admin/reports">举报</a><a href="/admin/feedback">全部反馈</a></nav>
 {{if .Action}}<div class="notice success toast-notice" data-toast>举报处理状态已更新</div>{{end}}
 <form class="filter-bar" method="get" action="/admin/reports">
   <label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标资源"></label>
@@ -719,11 +727,11 @@ const templates = `
 <div class="ticket-list">
 {{range .Items}}
 <article class="ticket-card">
-  <header><div><div class="title-line"><span class="status danger">资源举报</span><h2><a class="resource-name" href="/admin/reports/{{.ID}}">{{.Subject}}</a></h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header>
+  <header><div><div class="title-line"><span class="status danger">{{kindLabel .Kind}}</span><h2><a class="resource-name" href="/admin/reports/{{.ID}}">{{.Subject}}</a></h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header>
   <p class="ticket-excerpt">{{.Message}}</p>
   <div class="ticket-target">{{if .TargetSource}}{{targetLabel .TargetSource}} · {{end}}{{if .TargetID}}<code>{{.TargetID}}</code>{{else}}未关联资源{{end}}<a class="row-action" href="/admin/reports/{{.ID}}">查看并处理</a></div>
 </article>
-{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有资源举报</h2><p>当前筛选条件下没有举报记录</p></section>{{end}}
+{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有举报</h2><p>当前筛选条件下没有举报记录</p></section>{{end}}
 </div>
 {{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="举报分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">下一页</a>{{end}}</div></nav>{{end}}
 {{template "admin_close" .}}
@@ -731,7 +739,7 @@ const templates = `
 
 {{define "admin_report_detail"}}
 {{template "admin_open" .}}
-<header class="page-header detail-header"><div><a class="back-link" href="/admin/reports">← 资源举报</a><div class="title-line"><span class="status danger">资源举报</span><h1>{{.Ticket.Subject}}</h1></div><p>{{.Ticket.Username}} · {{dateTime .Ticket.CreatedAt}} · <code>{{.Ticket.ID}}</code></p></div><span class="status {{statusClass .Ticket.Status}}">{{statusLabel .Ticket.Status}}</span></header>
+<header class="page-header detail-header"><div><a class="back-link" href="/admin/reports">← 举报</a><div class="title-line"><span class="status danger">{{kindLabel .Ticket.Kind}}</span><h1>{{.Ticket.Subject}}</h1></div><p>{{.Ticket.Username}} · {{dateTime .Ticket.CreatedAt}} · <code>{{.Ticket.ID}}</code></p></div><span class="status {{statusClass .Ticket.Status}}">{{statusLabel .Ticket.Status}}</span></header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>处理结果已保存</div>{{end}}
 <div class="content-grid detail-grid">
   <section class="panel span-2"><div class="section-header"><div><h2>举报内容</h2></div></div><div class="ticket-message">{{.Ticket.Message}}</div><dl class="target-box">{{if .Ticket.TargetSource}}<div><dt>来源</dt><dd>{{targetLabel .Ticket.TargetSource}}</dd></div>{{end}}{{if .Ticket.TargetID}}<div><dt>目标 ID</dt><dd><code>{{.Ticket.TargetID}}</code></dd></div>{{end}}{{if .Ticket.TargetURL}}<div><dt>目标链接</dt><dd><a href="{{.Ticket.TargetURL}}" target="_blank" rel="noopener noreferrer">{{.Ticket.TargetURL}} ↗</a></dd></div>{{end}}</dl></section>
@@ -744,11 +752,11 @@ const templates = `
 
 {{define "admin_feedback"}}
 {{template "admin_open" .}}
-<header class="page-header"><div><h1>举报与反馈</h1><p>查看全部资源举报和用户意见</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
-<nav class="subtabs"><a href="/admin/reports">资源举报</a><a class="active" href="/admin/feedback">全部反馈</a></nav>
+<header class="page-header"><div><h1>举报与反馈</h1><p>查看全部资源举报、评论举报和用户意见</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+<nav class="subtabs"><a href="/admin/reports">举报</a><a class="active" href="/admin/feedback">全部反馈</a></nav>
 {{if .Replied}}<div class="notice success toast-notice" data-toast>答复已发送</div>{{end}}
-<form class="filter-bar" method="get" action="/admin/feedback"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标资源"></label><label><span>类型</span><select name="kind"><option value="">全部</option><option value="report" {{if eqs .Query.Kind "report"}}selected{{end}}>资源举报</option><option value="feedback" {{if eqs .Query.Kind "feedback"}}selected{{end}}>意见反馈</option></select></label><label><span>来源</span><input name="source" value="{{.Query.TargetSource}}" placeholder="oronbox"></label><label><span>状态</span><select name="status"><option value="">全部</option><option value="open" {{if eqs .Query.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Query.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Query.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Query.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Query.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Query.Status "closed"}}selected{{end}}>已关闭</option></select></label><button class="filled-button" type="submit">筛选</button><a class="text-link filter-reset" href="/admin/feedback">清除</a></form>
-<div class="ticket-list">{{range .Items}}<article class="ticket-card"><header><div><div class="title-line"><span class="status {{if eqs .Kind "report"}}danger{{else}}info{{end}}">{{kindLabel .Kind}}</span><h2>{{if eqs .Kind "report"}}<a class="resource-name" href="/admin/reports/{{.ID}}">{{.Subject}}</a>{{else}}{{.Subject}}{{end}}</h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header><div class="ticket-message">{{.Message}}</div>{{if and (ne .Kind "report") (ne .Status "closed")}}<form method="post" action="/admin/feedback/{{.ID}}" class="reply-form"><label>答复<textarea name="message" rows="3" required placeholder="答复将显示在用户客户端"></textarea></label><div class="actions"><button class="filled-button" type="submit" name="close" value="no">发送答复</button><button class="outlined-button" type="submit" name="close" value="yes">答复并关闭</button></div></form>{{end}}</article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有反馈</h2><p>当前筛选条件下没有记录</p></section>{{end}}</div>
+<form class="filter-bar" method="get" action="/admin/feedback"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标"></label><label><span>类型</span><select name="kind"><option value="">全部</option><option value="report" {{if eqs .Query.Kind "report"}}selected{{end}}>全部举报</option><option value="resource_report" {{if eqs .Query.Kind "resource_report"}}selected{{end}}>资源举报</option><option value="comment_report" {{if eqs .Query.Kind "comment_report"}}selected{{end}}>评论举报</option><option value="feedback" {{if eqs .Query.Kind "feedback"}}selected{{end}}>意见反馈</option></select></label><label><span>来源</span><input name="source" value="{{.Query.TargetSource}}" placeholder="oronbox"></label><label><span>状态</span><select name="status"><option value="">全部</option><option value="open" {{if eqs .Query.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Query.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Query.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Query.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Query.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Query.Status "closed"}}selected{{end}}>已关闭</option></select></label><button class="filled-button" type="submit">筛选</button><a class="text-link filter-reset" href="/admin/feedback">清除</a></form>
+<div class="ticket-list">{{range .Items}}<article class="ticket-card"><header><div><div class="title-line"><span class="status {{if reportKind .Kind}}danger{{else}}info{{end}}">{{kindLabel .Kind}}</span><h2>{{if reportKind .Kind}}<a class="resource-name" href="/admin/reports/{{.ID}}">{{.Subject}}</a>{{else}}{{.Subject}}{{end}}</h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header><div class="ticket-message">{{.Message}}</div>{{if and (not (reportKind .Kind)) (ne .Status "closed")}}<form method="post" action="/admin/feedback/{{.ID}}" class="reply-form"><label>答复<textarea name="message" rows="3" required placeholder="答复将显示在用户客户端"></textarea></label><div class="actions"><button class="filled-button" type="submit" name="close" value="no">发送答复</button><button class="outlined-button" type="submit" name="close" value="yes">答复并关闭</button></div></form>{{end}}</article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有反馈</h2><p>当前筛选条件下没有记录</p></section>{{end}}</div>
 {{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="反馈分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&kind={{urlquery .Query.Kind}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&kind={{urlquery .Query.Kind}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">下一页</a>{{end}}</div></nav>{{end}}
 {{template "admin_close" .}}
 {{end}}

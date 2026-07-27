@@ -119,6 +119,7 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("POST /api/resources/{id}/comments", a.requireUser(http.HandlerFunc(a.handleCreateComment)))
 	mux.Handle("DELETE /api/comments/{id}", a.requireUser(http.HandlerFunc(a.handleDeleteComment)))
 	mux.Handle("GET /api/messages", a.requireUser(http.HandlerFunc(a.handleMessages)))
+	mux.Handle("DELETE /api/messages", a.requireUser(http.HandlerFunc(a.handleClearMessages)))
 	mux.Handle("POST /api/messages/{id}/read", a.requireUser(http.HandlerFunc(a.handleReadMessage)))
 	mux.Handle("GET /api/announcements/unread", a.requireUser(http.HandlerFunc(a.handleAnnouncements)))
 	mux.Handle("POST /api/announcements/read", a.requireUser(http.HandlerFunc(a.handleReadAnnouncements)))
@@ -460,10 +461,9 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderTransition(w, web.TransitionPageData{
-		Title:       "登录成功",
-		Heading:     "登录成功",
-		Description: "正在返回 OronBox",
-		ButtonLabel: "打开 OronBox",
+		Title:       "授权完成",
+		Heading:     "授权完成",
+		Description: "可以返回 OronBox 继续使用",
 		Target:      transitionTarget,
 		Auto:        true,
 		Tone:        "success",

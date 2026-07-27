@@ -28,8 +28,8 @@ func (a *App) handleCreateFeedback(w http.ResponseWriter, r *http.Request) {
 	request.TargetSource = strings.TrimSpace(request.TargetSource)
 	request.TargetID = strings.TrimSpace(request.TargetID)
 	request.TargetURL = strings.TrimSpace(request.TargetURL)
-	if request.Kind != "feedback" && request.Kind != "report" {
-		writeJSON(w, http.StatusBadRequest, errorBody("invalid_kind", "kind must be feedback or report"))
+	if request.Kind != store.FeedbackKindFeedback && !store.IsReportKind(request.Kind) {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_kind", "kind must be feedback, resource_report, or comment_report"))
 		return
 	}
 	if request.Subject == "" || request.Message == "" || len([]rune(request.Subject)) > 120 || len([]rune(request.Message)) > 10000 {
@@ -47,11 +47,15 @@ func (a *App) handleCreateFeedback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if request.Kind == "report" && request.TargetID == "" {
-		writeJSON(w, http.StatusBadRequest, errorBody("invalid_target", "resource report requires a target"))
+	isReport := store.IsReportKind(request.Kind)
+	if isReport && request.TargetID == "" {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_target", "report requires a target"))
 		return
 	}
-	if request.Kind == "report" {
+	if isReport {
+		if request.Kind == store.FeedbackKindCommentReport {
+			request.TargetSource = "comment"
+		}
 		exists, err := a.store.FeedbackTargetExists(r.Context(), request.TargetSource, request.TargetID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, errorBody("target_lookup_failed", err.Error()))

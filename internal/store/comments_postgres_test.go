@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -60,10 +61,15 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateComment(ctx, resourceID, userID, "", "fast", "visible"); !errors.Is(err, store.ErrCommentTooFast) {
-		t.Fatalf("fast comment error = %v", err)
+	for index := 0; index < 4; index++ {
+		if _, err := s.CreateComment(ctx, resourceID, userID, "", fmt.Sprintf("burst-%d", index), "visible"); err != nil {
+			t.Fatalf("burst comment %d: %v", index, err)
+		}
 	}
-	_, _ = db.ExecContext(ctx, `UPDATE resource_comments SET created_at=created_at-interval '10 seconds' WHERE id=$1`, top.ID)
+	if _, err := s.CreateComment(ctx, resourceID, userID, "", "limited", "visible"); !errors.Is(err, store.ErrCommentTooFast) {
+		t.Fatalf("sixth comment error = %v", err)
+	}
+	_, _ = db.ExecContext(ctx, `UPDATE resource_comments SET created_at=created_at-interval '2 minutes' WHERE user_id=$1`, userID)
 	reply, err := s.CreateComment(ctx, resourceID, replierID, top.ID, "reply", "visible")
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +103,12 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if hiddenReplyMessages != 1 {
 		t.Fatalf("approved reply messages = %d, want 1", hiddenReplyMessages)
 	}
+	if err := s.SoftDeleteComment(ctx, reply.ID, userID); !errors.Is(err, store.ErrCommentNotFound) {
+		t.Fatalf("non-owner delete error = %v, want ErrCommentNotFound", err)
+	}
+	if err := s.AdminDeleteComment(ctx, reply.ID); err != nil {
+		t.Fatalf("privileged delete: %v", err)
+	}
 	if err := s.SoftDeleteComment(ctx, top.ID, userID); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +116,7 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || !items[0].Deleted || len(items[0].Replies) != 2 {
+	if len(items) != 0 {
 		t.Fatalf("unexpected thread: %#v", items)
 	}
 	var replyMessages int

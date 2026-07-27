@@ -197,10 +197,9 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		actor := store.AdminSession{ID: sessionID, UserID: user.ID, Username: user.Username, ExpiresAt: expiresAt}
 		_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "success", a.clientIP(r), r.UserAgent(), "")
 		a.renderTransition(w, web.TransitionPageData{
-			Title:       "登录成功",
-			Heading:     "登录成功",
-			Description: "正在进入 OronBox 管理后台",
-			ButtonLabel: "进入管理后台",
+			Title:       "授权完成",
+			Heading:     "授权完成",
+			Description: "可以返回 OronBox 继续使用",
 			Target:      template.URL("/admin"),
 			Auto:        true,
 			Tone:        "success",
@@ -668,7 +667,7 @@ func (a *App) handleAdminReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "admin_reports", map[string]any{
-		"Title":  "资源举报",
+		"Title":  "举报",
 		"Page":   page,
 		"Items":  page.Items,
 		"Query":  page.Query,
@@ -678,7 +677,7 @@ func (a *App) handleAdminReports(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminReport(w http.ResponseWriter, r *http.Request) {
 	ticket, err := a.store.Feedback(r.Context(), r.PathValue("ticket"), "", true)
-	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && ticket.Kind != "report") {
+	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && !store.IsReportKind(ticket.Kind)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -708,7 +707,7 @@ func (a *App) handleAdminReportUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	ticketID := r.PathValue("ticket")
 	ticket, err := a.store.Feedback(r.Context(), ticketID, "", true)
-	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && ticket.Kind != "report") {
+	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && !store.IsReportKind(ticket.Kind)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -728,11 +727,11 @@ func (a *App) handleAdminReportUpdate(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
 	updated, err := a.store.UpdateFeedback(r.Context(), ticketID, store.FeedbackUpdate{Status: status, Reply: reply, AuthorID: actor.UserID})
 	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "resource_report.update", "failure", a.clientIP(r), r.UserAgent(), "ticket="+ticketID+" error="+err.Error())
+		_ = a.store.RecordAudit(r.Context(), actor, ticket.Kind+".update", "failure", a.clientIP(r), r.UserAgent(), "ticket="+ticketID+" error="+err.Error())
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	_ = a.store.RecordAudit(r.Context(), actor, "resource_report.update", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("ticket=%s target=%s status=%s", ticketID, updated.TargetID, updated.Status))
+	_ = a.store.RecordAudit(r.Context(), actor, ticket.Kind+".update", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("ticket=%s target=%s status=%s", ticketID, updated.TargetID, updated.Status))
 	http.Redirect(w, r, "/admin/reports/"+ticketID+"?action=updated", http.StatusFound)
 }
 

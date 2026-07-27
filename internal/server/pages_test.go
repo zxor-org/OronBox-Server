@@ -73,10 +73,9 @@ func TestLoginSuccessTransitionRendersBeforeDeepLink(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	app.renderTransition(recorder, web.TransitionPageData{
-		Title:       "登录成功",
-		Heading:     "登录成功",
-		Description: "正在返回 OronBox",
-		ButtonLabel: "打开 OronBox",
+		Title:       "授权完成",
+		Heading:     "授权完成",
+		Description: "可以返回 OronBox 继续使用",
 		Target:      template.URL("oronbox://oauth/callback?ticket=one-time"),
 		Auto:        true,
 		Tone:        "success",
@@ -90,14 +89,19 @@ func TestLoginSuccessTransitionRendersBeforeDeepLink(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		"登录成功",
-		"正在返回 OronBox",
+		"授权完成",
+		"可以返回 OronBox 继续使用",
+		"没有自动打开？",
+		"点此重试",
 		"oronbox://oauth/callback?ticket=one-time",
 		"location.replace",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("login transition is missing %q", expected)
 		}
+	}
+	if strings.Contains(body, "transition-progress") {
+		t.Fatal("OAuth transition still renders a progress indicator")
 	}
 }
 

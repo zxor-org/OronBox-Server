@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 7
+const schemaVersion int64 = 8
 
 const notificationSchema = `
 CREATE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -55,7 +55,7 @@ END $$;
 CREATE TRIGGER resources_moderation_message AFTER UPDATE OF moderation_state ON resources FOR EACH ROW EXECUTE FUNCTION notify_resource_moderation();
 CREATE FUNCTION notify_report_result() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF NEW.kind='report' AND OLD.status<>NEW.status THEN
+ IF NEW.kind IN ('report','resource_report','comment_report') AND OLD.status<>NEW.status THEN
   INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','举报处理结果',CASE WHEN NEW.resolution='' THEN '举报处理状态已更新为 '||NEW.status ELSE NEW.resolution END,NEW.id::text);
  END IF;
  RETURN NEW;
@@ -114,7 +114,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("release PostgreSQL schema lock: %w", err)
 			}
-			return migrateV7(ctx, db)
+			return migrateV7(ctx, db, true)
+		case 7:
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("release PostgreSQL schema lock: %w", err)
+			}
+			return migrateV8(ctx, db)
 		default:
 			return fmt.Errorf("database schema version %d is unsupported; drop and recreate the database for schema version %d", installedVersion.Int64, schemaVersion)
 		}
@@ -268,7 +273,7 @@ CREATE TABLE audit_logs (
 );
 CREATE TABLE feedback_tickets (
  id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- kind text NOT NULL CHECK (kind IN ('feedback','report')), subject text NOT NULL, message text NOT NULL,
+ kind text NOT NULL CHECK (kind IN ('feedback','report','resource_report','comment_report')), subject text NOT NULL, message text NOT NULL,
  target_source text NOT NULL DEFAULT '', target_id text NOT NULL DEFAULT '', target_url text NOT NULL DEFAULT '',
  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','replied','resolved','dismissed','closed')),
  resolution text NOT NULL DEFAULT '',
@@ -277,7 +282,7 @@ CREATE TABLE feedback_tickets (
 CREATE INDEX feedback_tickets_user_idx ON feedback_tickets(user_id,updated_at DESC);
 CREATE INDEX feedback_tickets_status_idx ON feedback_tickets(status,updated_at DESC);
 CREATE INDEX feedback_tickets_admin_idx ON feedback_tickets(kind,status,target_source,updated_at DESC);
-CREATE INDEX feedback_tickets_target_idx ON feedback_tickets(target_source,target_id) WHERE kind='report';
+CREATE INDEX feedback_tickets_target_idx ON feedback_tickets(target_source,target_id) WHERE kind IN ('report','resource_report','comment_report');
 CREATE TABLE feedback_replies (
  id uuid PRIMARY KEY, ticket_id uuid NOT NULL REFERENCES feedback_tickets(id) ON DELETE CASCADE,
  author_id uuid REFERENCES users(id) ON DELETE SET NULL, message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
@@ -522,12 +527,12 @@ CREATE TABLE announcements (
 		return fmt.Errorf("commit PostgreSQL schema v6 migration: %w", err)
 	}
 	if chain {
-		return migrateV7(ctx, db)
+		return migrateV7(ctx, db, true)
 	}
 	return nil
 }
 
-func migrateV7(ctx context.Context, db *sql.DB) error {
+func migrateV7(ctx context.Context, db *sql.DB, chain bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin PostgreSQL schema v7 transaction: %w", err)
@@ -553,6 +558,45 @@ func migrateV7(ctx context.Context, db *sql.DB) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit PostgreSQL schema v7 migration: %w", err)
+	}
+	if chain {
+		return migrateV8(ctx, db)
+	}
+	return nil
+}
+
+// migrateV8 distinguishes resource and comment reports at the database layer
+// and makes result notifications cover both report types.
+func migrateV8(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin PostgreSQL schema v8 transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox-server-schema'))`); err != nil {
+		return fmt.Errorf("lock PostgreSQL schema: %w", err)
+	}
+	const migration = `
+ALTER TABLE feedback_tickets DROP CONSTRAINT feedback_tickets_kind_check;
+ALTER TABLE feedback_tickets ADD CONSTRAINT feedback_tickets_kind_check CHECK (kind IN ('feedback','report','resource_report','comment_report'));
+DROP INDEX feedback_tickets_target_idx;
+CREATE INDEX feedback_tickets_target_idx ON feedback_tickets(target_source,target_id) WHERE kind IN ('report','resource_report','comment_report');
+CREATE OR REPLACE FUNCTION notify_report_result() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.kind IN ('report','resource_report','comment_report') AND OLD.status<>NEW.status THEN
+  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','举报处理结果',CASE WHEN NEW.resolution='' THEN '举报处理状态已更新为 '||NEW.status ELSE NEW.resolution END,NEW.id::text);
+ END IF;
+ RETURN NEW;
+END $$;
+`
+	if _, err := tx.ExecContext(ctx, migration); err != nil {
+		return fmt.Errorf("apply PostgreSQL schema v8 migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(8)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v8: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit PostgreSQL schema v8 migration: %w", err)
 	}
 	return nil
 }

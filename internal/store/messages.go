@@ -13,14 +13,16 @@ import (
 var ErrMessageRecipients = errors.New("at least one valid recipient is required")
 
 type UserMessage struct {
-	ID        string     `json:"id"`
-	Kind      string     `json:"kind"`
-	Type      string     `json:"type"`
-	Title     string     `json:"title"`
-	Body      string     `json:"body"`
-	Ref       string     `json:"ref,omitempty"`
-	ReadAt    *time.Time `json:"read_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID               string     `json:"id"`
+	Kind             string     `json:"kind"`
+	Type             string     `json:"type"`
+	Title            string     `json:"title"`
+	Body             string     `json:"body"`
+	Ref              string     `json:"ref,omitempty"`
+	TargetResourceID string     `json:"target_resource_id,omitempty"`
+	TargetCommentID  string     `json:"target_comment_id,omitempty"`
+	ReadAt           *time.Time `json:"read_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 type Announcement struct {
@@ -32,7 +34,20 @@ type Announcement struct {
 }
 
 func (s *Store) UserMessages(ctx context.Context, userID string) ([]UserMessage, int, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,kind,title,body,ref,read_at,created_at FROM user_messages WHERE user_id=$1 AND expires_at>now() ORDER BY created_at DESC LIMIT 100`, userID)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT message.id::text,message.kind,message.title,message.body,message.ref,message.read_at,message.created_at,
+ CASE
+  WHEN message.kind IN ('comment_reply','moderation') THEN COALESCE((SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=message.ref),(SELECT resource.id::text FROM resources resource WHERE resource.id::text=message.ref),'')
+  WHEN message.kind='review_result' THEN COALESCE((SELECT revision.resource_id::text FROM resource_revisions revision WHERE revision.id::text=message.ref),'')
+  WHEN message.kind='report_result' THEN COALESCE((SELECT CASE WHEN ticket.target_source='comment' THEN (SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=ticket.target_id) WHEN ticket.target_source IN ('oronBox','oronbox','resource') THEN ticket.target_id ELSE '' END FROM feedback_tickets ticket WHERE ticket.id::text=message.ref),'')
+  ELSE ''
+ END,
+ CASE
+  WHEN message.kind IN ('comment_reply','moderation') AND EXISTS(SELECT 1 FROM resource_comments comment WHERE comment.id::text=message.ref) THEN message.ref
+  WHEN message.kind='report_result' THEN COALESCE((SELECT CASE WHEN ticket.target_source='comment' THEN ticket.target_id ELSE '' END FROM feedback_tickets ticket WHERE ticket.id::text=message.ref),'')
+  ELSE ''
+ END
+FROM user_messages message WHERE message.user_id=$1 AND message.expires_at>now() ORDER BY message.created_at DESC LIMIT 100`, userID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -40,7 +55,7 @@ func (s *Store) UserMessages(ctx context.Context, userID string) ([]UserMessage,
 	items := []UserMessage{}
 	for rows.Next() {
 		var item UserMessage
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Title, &item.Body, &item.Ref, &item.ReadAt, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Title, &item.Body, &item.Ref, &item.ReadAt, &item.CreatedAt, &item.TargetResourceID, &item.TargetCommentID); err != nil {
 			return nil, 0, err
 		}
 		item.Type = item.Kind
@@ -49,6 +64,11 @@ func (s *Store) UserMessages(ctx context.Context, userID string) ([]UserMessage,
 	var unread int
 	err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1 AND read_at IS NULL AND expires_at>now()`, userID).Scan(&unread)
 	return items, unread, err
+}
+
+func (s *Store) ClearUserMessages(ctx context.Context, userID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM user_messages WHERE user_id=$1`, userID)
+	return err
 }
 
 func (s *Store) ReadUserMessage(ctx context.Context, userID, id string) error {

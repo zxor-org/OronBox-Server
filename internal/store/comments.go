@@ -12,24 +12,25 @@ import (
 
 var (
 	ErrCommentNotFound = errors.New("comment was not found")
-	ErrCommentTooFast  = errors.New("comments are limited to one every 5 seconds")
+	ErrCommentTooFast  = errors.New("comments are limited to five per minute")
 	ErrCommentQuota    = errors.New("daily comment quota exceeded")
 )
 
 type Comment struct {
-	ID              string     `json:"id"`
-	ResourceID      string     `json:"resource_id"`
-	UserID          string     `json:"user_id"`
-	ParentID        string     `json:"parent_id,omitempty"`
-	Body            string     `json:"body"`
-	Deleted         bool       `json:"deleted"`
-	Username        string     `json:"username"`
-	AvatarURL       string     `json:"avatar_url"`
-	BandBBSUserID   int64      `json:"bandbbs_user_id"`
-	ModerationState string     `json:"moderation_state,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	EditedAt        *time.Time `json:"edited_at,omitempty"`
-	Replies         []Comment  `json:"replies,omitempty"`
+	ID               string     `json:"id"`
+	ResourceID       string     `json:"resource_id"`
+	UserID           string     `json:"user_id"`
+	ParentID         string     `json:"parent_id,omitempty"`
+	Body             string     `json:"body"`
+	Deleted          bool       `json:"deleted"`
+	Username         string     `json:"username"`
+	AvatarURL        string     `json:"avatar_url"`
+	BandBBSUserID    int64      `json:"bandbbs_user_id"`
+	ModerationState  string     `json:"moderation_state,omitempty"`
+	ModerationAction string     `json:"moderation_action,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	EditedAt         *time.Time `json:"edited_at,omitempty"`
+	Replies          []Comment  `json:"replies,omitempty"`
 }
 
 const commentSelect = `
@@ -47,19 +48,18 @@ func scanComment(scanner interface{ Scan(dest ...any) error }, comment *Comment)
 	return err
 }
 
-// ListComments returns one page of top-level comments for a resource with
-// their one-level replies. Deleted comments stay as placeholders so reply
-// threads keep their structure; hidden (pre-moderation) comments are only
-// visible to their author.
-func (s *Store) ListComments(ctx context.Context, resourceID, viewerID string, before time.Time, limit int) ([]Comment, error) {
+// ListComments returns visible, non-deleted top-level comments and their
+// visible, non-deleted one-level replies. Hidden and deleted records remain in
+// storage for moderation and audit purposes, but are never public content.
+func (s *Store) ListComments(ctx context.Context, resourceID, _ string, before time.Time, limit int) ([]Comment, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, commentSelect+`
 WHERE comment.resource_id=$1 AND comment.parent_id IS NULL
- AND (comment.moderation_state='visible' OR comment.user_id=$2)
- AND comment.created_at<$3
-ORDER BY comment.created_at DESC LIMIT $4`, resourceID, viewerID, before, limit)
+ AND comment.moderation_state='visible' AND comment.deleted_at IS NULL
+ AND comment.created_at<$2
+ORDER BY comment.created_at DESC LIMIT $3`, resourceID, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -79,8 +79,8 @@ ORDER BY comment.created_at DESC LIMIT $4`, resourceID, viewerID, before, limit)
 	}
 	if len(ids) > 0 {
 		replyRows, err := s.db.QueryContext(ctx, commentSelect+`
-WHERE comment.parent_id=ANY($1) AND (comment.moderation_state='visible' OR comment.user_id=$2)
-ORDER BY comment.created_at`, ids, viewerID)
+WHERE comment.parent_id=ANY($1) AND comment.moderation_state='visible' AND comment.deleted_at IS NULL
+ORDER BY comment.created_at`, ids)
 		if err != nil {
 			return nil, err
 		}
@@ -119,16 +119,15 @@ func (s *Store) CreateModeratedComment(ctx context.Context, resourceID, userID, 
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "comment:"+userID); err != nil {
 		return Comment{}, err
 	}
-	var lastAt sql.NullTime
-	var daily int
-	err = tx.QueryRowContext(ctx, `SELECT max(created_at),count(*) FILTER (WHERE created_at>now()-interval '24 hours') FROM resource_comments WHERE user_id=$1`, userID).Scan(&lastAt, &daily)
+	var minute, daily int
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE created_at>now()-interval '1 minute'),count(*) FILTER (WHERE created_at>now()-interval '24 hours') FROM resource_comments WHERE user_id=$1`, userID).Scan(&minute, &daily)
 	if err != nil {
 		return Comment{}, err
 	}
-	if lastAt.Valid && time.Since(lastAt.Time) < 5*time.Second {
+	if minute >= 5 {
 		return Comment{}, ErrCommentTooFast
 	}
-	if daily >= 20 {
+	if daily >= 100 {
 		return Comment{}, ErrCommentQuota
 	}
 	var resourceVisible bool
@@ -188,6 +187,18 @@ func (s *Store) SoftDeleteComment(ctx context.Context, commentID, userID string)
 	return nil
 }
 
+// AdminDeleteComment marks any visible comment as deleted.
+func (s *Store) AdminDeleteComment(ctx context.Context, commentID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE resource_comments SET deleted_at=now() WHERE id=$1 AND deleted_at IS NULL`, commentID)
+	if err != nil {
+		return err
+	}
+	if rows, _ := result.RowsAffected(); rows != 1 {
+		return ErrCommentNotFound
+	}
+	return nil
+}
+
 func (s *Store) CommentTargetExists(ctx context.Context, commentID string) (bool, error) {
 	if _, err := uuid.Parse(commentID); err != nil {
 		return false, nil
@@ -213,7 +224,7 @@ func (s *Store) AdminCommentQueue(ctx context.Context, page, perPage int) ([]Adm
 		perPage = 25
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM comment_moderation moderation JOIN resource_comments comment ON comment.id=moderation.comment_id WHERE moderation.human_reviewed_at IS NULL AND moderation.action IN ('review','block')`).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM comment_moderation moderation JOIN resource_comments comment ON comment.id=moderation.comment_id WHERE moderation.human_reviewed_at IS NULL AND moderation.action='review'`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
@@ -222,7 +233,7 @@ SELECT comment.id::text,comment.resource_id::text,comment.user_id::text,COALESCE
  moderation.action,moderation.reason,moderation.model
 FROM resource_comments comment JOIN users author ON author.id=comment.user_id
 JOIN comment_moderation moderation ON moderation.comment_id=comment.id
-WHERE moderation.human_reviewed_at IS NULL AND moderation.action IN ('review','block')
+WHERE moderation.human_reviewed_at IS NULL AND moderation.action='review'
 ORDER BY comment.created_at LIMIT $1 OFFSET $2`, perPage, (page-1)*perPage)
 	if err != nil {
 		return nil, 0, err

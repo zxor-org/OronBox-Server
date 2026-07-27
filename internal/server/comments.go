@@ -96,11 +96,19 @@ func (a *App) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorBody("comment_blocked", verdict.Reason))
 		return
 	}
+	comment.ModerationAction = verdict.Action
 	writeJSON(w, http.StatusCreated, comment)
 }
 
 func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
-	if err := a.store.SoftDeleteComment(r.Context(), r.PathValue("id"), currentUser(r).ID); errors.Is(err, store.ErrCommentNotFound) {
+	user := currentUser(r)
+	var err error
+	if user.Role == "admin" {
+		err = a.store.AdminDeleteComment(r.Context(), r.PathValue("id"))
+	} else {
+		err = a.store.SoftDeleteComment(r.Context(), r.PathValue("id"), user.ID)
+	}
+	if errors.Is(err, store.ErrCommentNotFound) {
 		writeJSON(w, http.StatusNotFound, errorBody("comment_not_found", err.Error()))
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("comment_delete_failed", err.Error()))

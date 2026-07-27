@@ -61,8 +61,8 @@ func TestAdminTemplatesRender(t *testing.T) {
 		},
 		"server_home": map[string]any{"Title": "Server"},
 		"transition_page": TransitionPageData{
-			Title: "登录成功", Heading: "登录成功", Description: "正在返回 OronBox",
-			ButtonLabel: "打开 OronBox", Target: template.URL("oronbox://oauth?ticket=test"),
+			Title: "授权完成", Heading: "授权完成", Description: "可以返回 OronBox 继续使用",
+			Target: template.URL("oronbox://oauth?ticket=test"),
 			Auto: true, Tone: "success",
 		},
 	}

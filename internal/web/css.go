@@ -712,24 +712,16 @@ input:focus, select:focus, textarea:focus { border: 2px solid var(--primary); pa
 .standalone-card > p { margin: 0; color: var(--outline); font-size: 13px; }
 .standalone-actions { margin-top: 20px; }
 .full-button { width: 100%; }
-.transition-progress {
-  height: 3px;
-  margin: 20px -8px -8px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--surface-high);
+.transition-retry {
+  display: inline-block;
+  margin-top: 12px;
+  color: var(--on-surface-variant);
+  font-size: 13px;
 }
-.transition-progress span {
-  display: block;
-  width: 40%;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--primary);
-  animation: progress 1.1s cubic-bezier(.4, 0, .2, 1) infinite;
-}
-@keyframes progress {
-  from { transform: translateX(-120%); }
-  to { transform: translateX(350%); }
+.transition-retry span {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .server-card { width: min(420px, 100%); }
 

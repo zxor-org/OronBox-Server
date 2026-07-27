@@ -13,6 +13,19 @@ import (
 
 var ErrFeedbackNotFound = errors.New("feedback ticket not found")
 
+const (
+	FeedbackKindFeedback       = "feedback"
+	FeedbackKindLegacyReport   = "report"
+	FeedbackKindResourceReport = "resource_report"
+	FeedbackKindCommentReport  = "comment_report"
+)
+
+func IsReportKind(kind string) bool {
+	return kind == FeedbackKindLegacyReport ||
+		kind == FeedbackKindResourceReport ||
+		kind == FeedbackKindCommentReport
+}
+
 type FeedbackTicket struct {
 	ID           string          `json:"id"`
 	Kind         string          `json:"kind"`
@@ -186,7 +199,7 @@ func (s *Store) FeedbackList(ctx context.Context, userID string, privileged bool
 func (query AdminFeedbackQuery) normalized() AdminFeedbackQuery {
 	query.Search = strings.TrimSpace(query.Search)
 	query.TargetSource = strings.TrimSpace(query.TargetSource)
-	if query.Kind != "feedback" && query.Kind != "report" {
+	if query.Kind != FeedbackKindFeedback && !IsReportKind(query.Kind) {
 		query.Kind = ""
 	}
 	if !validFeedbackStatus(query.Status) {
@@ -213,7 +226,11 @@ func (s *Store) AdminFeedback(ctx context.Context, raw AdminFeedbackQuery) (Feed
 		where = append(where, strings.ReplaceAll(clause, "?", fmt.Sprintf("$%d", len(args))))
 	}
 	if query.Kind != "" {
-		add(`ticket.kind=?`, query.Kind)
+		if query.Kind == FeedbackKindLegacyReport {
+			where = append(where, `ticket.kind IN ('report','resource_report','comment_report')`)
+		} else {
+			add(`ticket.kind=?`, query.Kind)
+		}
 	}
 	if query.Status != "" {
 		add(`ticket.status=?`, query.Status)
