@@ -365,7 +365,7 @@ func (s *Service) verifyBundleBindings(ctx context.Context, tx *sql.Tx, artifact
 			}
 			claimed[deviceID] = true
 			var exists bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1 AND platform='vela_os')`, deviceID).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1 AND platform='vela_os' AND codename NOT IN ('m66','n69'))`, deviceID).Scan(&exists); err != nil {
 				return err
 			}
 			if !exists {

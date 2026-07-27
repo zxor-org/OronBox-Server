@@ -224,19 +224,21 @@ func validAstroBoxConfig(value map[string]any) bool {
 }
 
 type PublicResource struct {
-	ID            string    `json:"id"`
-	Slug          string    `json:"slug"`
-	Name          string    `json:"name"`
-	Summary       string    `json:"summary"`
-	Owner         string    `json:"owner"`
-	PreviewSHA256 string    `json:"preview_sha256"`
-	IconSHA256    string    `json:"icon_sha256"`
-	CoverSHA256   string    `json:"cover_sha256"`
-	Kind          string    `json:"kind"`
-	Version       string    `json:"version"`
-	Devices       []string  `json:"devices"`
-	DownloadCount int       `json:"download_count"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	Slug               string    `json:"slug"`
+	Name               string    `json:"name"`
+	Summary            string    `json:"summary"`
+	Owner              string    `json:"owner"`
+	OwnerBandBBSUserID int64     `json:"owner_bandbbs_user_id"`
+	OwnerAvatarURL     string    `json:"owner_avatar_url"`
+	PreviewSHA256      string    `json:"preview_sha256"`
+	IconSHA256         string    `json:"icon_sha256"`
+	CoverSHA256        string    `json:"cover_sha256"`
+	Kind               string    `json:"kind"`
+	Version            string    `json:"version"`
+	Devices            []string  `json:"devices"`
+	DownloadCount      int       `json:"download_count"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type PublicResourceDetail struct {

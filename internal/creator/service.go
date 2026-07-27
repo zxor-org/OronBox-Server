@@ -379,7 +379,7 @@ func (s *Service) ReviewQueue(ctx context.Context) ([]Workspace, error) {
 }
 
 func (s *Service) Devices(ctx context.Context) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,codename,display_name,platform,astrobox_id,vendor FROM devices WHERE platform='vela_os' ORDER BY vendor,display_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,codename,display_name,platform,astrobox_id,vendor FROM devices WHERE platform='vela_os' AND codename NOT IN ('m66','n69') ORDER BY vendor,display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -416,7 +416,7 @@ func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]Pub
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id WHERE `+filter, query.Search, query.Kind, query.Devices).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,r.kind,
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,u.bandbbs_user_id,u.avatar_url,r.kind,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
@@ -431,7 +431,7 @@ FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN 
 	for rows.Next() {
 		var item PublicResource
 		var devices []byte
-		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.Kind, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &item.DownloadCount, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.Kind, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &item.DownloadCount, &item.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		_ = json.Unmarshal(devices, &item.Devices)
@@ -444,14 +444,14 @@ func (s *Service) PublicResource(ctx context.Context, resourceID string) (Public
 	var summary PublicResource
 	var devices []byte
 	var revisionID string
-	err := s.db.QueryRowContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,r.kind,
+	err := s.db.QueryRowContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,u.bandbbs_user_id,u.avatar_url,r.kind,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
 `+highestVersionSQL+`,
 COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id),'[]'),r.download_count,r.updated_at,rr.id::text
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id WHERE r.id=$1 AND r.moderation_state='visible'`, resourceID).
-		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.Kind, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.DownloadCount, &summary.UpdatedAt, &revisionID)
+		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.OwnerBandBBSUserID, &summary.OwnerAvatarURL, &summary.Kind, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.DownloadCount, &summary.UpdatedAt, &revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublicResourceDetail{}, ErrNotFound
 	}

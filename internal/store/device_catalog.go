@@ -20,11 +20,10 @@ type contextExecer interface {
 }
 
 var supportedDeviceCatalog = []catalogDevice{
-	{codename: "m66", name: "Xiaomi Smart Band 8", platform: "vela_os", astroboxID: "m66", vendor: "xiaomi"},
 	{codename: "m67", name: "Xiaomi Smart Band 8 Pro", platform: "vela_os", astroboxID: "m67", vendor: "xiaomi"},
+	{codename: "l61", name: "Xiaomi Watch S1 Pro", platform: "vela_os", astroboxID: "l61", vendor: "xiaomi"},
 	{codename: "n66", name: "Xiaomi Smart Band 9", platform: "vela_os", astroboxID: "xmb9", vendor: "xiaomi"},
 	{codename: "n67", name: "Xiaomi Smart Band 9 Pro", platform: "vela_os", astroboxID: "xmb9p", vendor: "xiaomi"},
-	{codename: "n69", name: "Xiaomi Smart Band 9 Active", platform: "vela_os", astroboxID: "n69", vendor: "xiaomi"},
 	{codename: "o66", name: "Xiaomi Smart Band 10", platform: "vela_os", astroboxID: "xmb10", vendor: "xiaomi"},
 	{codename: "o66nfc", name: "Xiaomi Smart Band 10 NFC", platform: "vela_os", astroboxID: "xmb10nfc", vendor: "xiaomi"},
 	{codename: "p67", name: "Xiaomi Smart Band 10 Pro", platform: "vela_os", astroboxID: "xmb10p", vendor: "xiaomi"},
@@ -33,6 +32,7 @@ var supportedDeviceCatalog = []catalogDevice{
 	{codename: "o62m", name: "Xiaomi Watch S4 15th Anniversary", platform: "vela_os", astroboxID: "xmws4xring", vendor: "xiaomi"},
 	{codename: "o63", name: "Xiaomi Watch S4 41mm", platform: "vela_os", astroboxID: "xmws441", vendor: "xiaomi"},
 	{codename: "p62", name: "Xiaomi Watch S5", platform: "vela_os", astroboxID: "xmws5", vendor: "xiaomi"},
+	{codename: "n65", name: "REDMI Watch 4", platform: "vela_os", astroboxID: "xmrw4", vendor: "redmi"},
 	{codename: "o65", name: "REDMI Watch 5", platform: "vela_os", astroboxID: "xmrw5", vendor: "redmi"},
 	{codename: "o65m", name: "REDMI Watch 5 eSIM", platform: "vela_os", astroboxID: "xmrw5xring", vendor: "redmi"},
 	{codename: "p65", name: "REDMI Watch 6", platform: "vela_os", astroboxID: "xmrw6", vendor: "redmi"},
