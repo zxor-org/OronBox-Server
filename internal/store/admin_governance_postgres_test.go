@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -21,7 +22,24 @@ func TestResourceModerationControlsPublicVisibility(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	db, err := store.Open(databaseURL)
+	adminDB, err := store.Open(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adminDB.Close()
+	databaseName := "testdb_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := adminDB.ExecContext(ctx, `CREATE DATABASE `+databaseName); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = adminDB.ExecContext(context.Background(), `DROP DATABASE `+databaseName)
+	})
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Path = "/" + databaseName
+	db, err := store.Open(parsed.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,19 +107,19 @@ func TestResourceModerationControlsPublicVisibility(t *testing.T) {
 
 	admin := store.AdminSession{UserID: adminID, Username: "governance-admin-" + adminID}
 	assertVisible(true)
-	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "suspend", admin); err != nil {
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "suspend", "", admin); err != nil {
 		t.Fatal(err)
 	}
 	assertVisible(false)
-	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "restore", admin); err != nil {
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "restore", "", admin); err != nil {
 		t.Fatal(err)
 	}
 	assertVisible(true)
-	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "archive", admin); err != nil {
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "freeze", "", admin); err != nil {
 		t.Fatal(err)
 	}
 	assertVisible(false)
-	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "activate", admin); err != nil {
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "unfreeze", "", admin); err != nil {
 		t.Fatal(err)
 	}
 	assertVisible(true)
@@ -112,5 +130,27 @@ func TestResourceModerationControlsPublicVisibility(t *testing.T) {
 	}
 	if actorID != adminID {
 		t.Fatalf("resource event actor = %q, want %q", actorID, adminID)
+	}
+
+	// Artifact downloads are counted once per user or anonymous IP per 24h.
+	if _, err := db.ExecContext(ctx, `INSERT INTO revision_artifacts(id,revision_id,blob_sha256,original_name,package_format) VALUES($1,$2,$3,'app.rpk','vela_quickapp')`, uuid.NewString(), revisionID, blobSHA); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := resourceStore.RecordDownload(ctx, blobSHA, "", "anonymous-ip", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := resourceStore.RecordDownload(ctx, blobSHA, ownerID, "owner-ip", 200); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var downloadCount int
+	if err := db.QueryRowContext(ctx, `SELECT download_count FROM resources WHERE id=$1`, resourceID).Scan(&downloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if downloadCount != 2 {
+		t.Fatalf("download_count = %d, want 2 (dedup per user/IP)", downloadCount)
 	}
 }

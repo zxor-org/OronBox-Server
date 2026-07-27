@@ -91,6 +91,9 @@ func (s *Store) FeedbackTargetExists(ctx context.Context, source, id string) (bo
 	if id == "" {
 		return false, nil
 	}
+	if strings.EqualFold(source, "comment") {
+		return s.CommentTargetExists(ctx, id)
+	}
 	if source != "" && !strings.EqualFold(source, "oronbox") {
 		return true, nil
 	}

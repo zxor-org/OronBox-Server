@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -56,4 +57,15 @@ func (r *R2) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete R2 object %s: %w", key, err)
 	}
 	return nil
+}
+
+// PresignGet issues a short-lived download URL for a private object.
+func (r *R2) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	request, err := s3.NewPresignClient(r.client).PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(r.bucket), Key: aws.String(key),
+	}, s3.WithPresignExpires(ttl))
+	if err != nil {
+		return "", fmt.Errorf("presign R2 object %s: %w", key, err)
+	}
+	return request.URL, nil
 }

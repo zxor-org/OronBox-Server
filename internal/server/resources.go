@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +16,8 @@ import (
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
 	"github.com/zxor-org/OronBox-Server/internal/creator"
 	"github.com/zxor-org/OronBox-Server/internal/model"
+	"github.com/zxor-org/OronBox-Server/internal/observability"
+	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
 type userContextKey struct{}
@@ -30,8 +34,23 @@ func (a *App) requireUser(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, errorBody("unauthorized", "OronBox access token is invalid or expired"))
 			return
 		}
+		if user.BannedAt != nil {
+			writeJSON(w, http.StatusForbidden, errorBody("banned", "account is banned: "+user.BanReason))
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
 	})
+}
+
+// requireCreator rejects users whose creator capability is frozen.
+func (a *App) requireCreator(next http.HandlerFunc) http.Handler {
+	return a.requireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if currentUser(r).CreatorFrozenAt != nil {
+			writeJSON(w, http.StatusForbidden, errorBody("creator_frozen", "creator capability is frozen by an administrator"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 func currentUser(r *http.Request) model.User {
@@ -101,22 +120,50 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 
 var sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+// handleBlob is the single choke point for public content downloads. It
+// optionally authenticates the caller, enforces the per-IP rate limit and the
+// per-user daily quota, counts artifact downloads, and then either redirects
+// to a short-lived presigned R2 URL (the bucket stays private) or streams
+// from local storage.
 func (a *App) handleBlob(w http.ResponseWriter, r *http.Request) {
 	digest := r.PathValue("sha256")
 	if !sha256Pattern.MatchString(digest) {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_blob", "invalid SHA-256"))
 		return
 	}
+	ip := a.clientIP(r)
+	if !a.downloadLimiter.allow(ip) {
+		writeJSON(w, http.StatusTooManyRequests, errorBody("rate_limited", "too many downloads, slow down"))
+		return
+	}
+	var userID string
+	if header := strings.TrimSpace(r.Header.Get("Authorization")); len(header) >= 8 && strings.EqualFold(header[:7], "Bearer ") {
+		if user, err := a.store.UserByAccessToken(r.Context(), authcore.HashToken(strings.TrimSpace(header[7:]), a.cfg.SessionSecret)); err == nil {
+			userID = user.ID
+		}
+	}
 	record, err := a.store.PublicBlob(r.Context(), digest)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorBody("blob_not_found", "blob was not found"))
 		return
 	}
-	line := r.URL.Query().Get("line")
-	r2Ready := record.R2State == "ready" && record.R2Key != "" && a.cfg.Storage.R2.PublicBaseURL != ""
-	if line != "local" && r2Ready {
-		http.Redirect(w, r, a.cfg.Storage.R2.PublicBaseURL+"/"+record.R2Key, http.StatusTemporaryRedirect)
+	ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ip+"|"+a.cfg.SessionSecret)))
+	if err := a.store.RecordDownload(r.Context(), digest, userID, ipHash, a.cfg.Limits.DownloadDailyLimit); errors.Is(err, store.ErrDownloadQuota) {
+		writeJSON(w, http.StatusTooManyRequests, errorBody("quota_exceeded", err.Error()))
 		return
+	} else if err != nil {
+		observability.From(r.Context()).With("component", "downloads").Warn("record download failed", "error", err)
+	}
+	line := r.URL.Query().Get("line")
+	r2Ready := record.R2State == "ready" && record.R2Key != "" && a.r2 != nil
+	if line != "local" && r2Ready {
+		url, err := a.r2.PresignGet(r.Context(), record.R2Key, a.cfg.Limits.DownloadPresignTTL)
+		if err != nil {
+			observability.From(r.Context()).With("component", "downloads").Error("presign R2 download failed", "key", record.R2Key, "error", err)
+		} else {
+			http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+			return
+		}
 	}
 	if line == "r2" {
 		writeJSON(w, http.StatusServiceUnavailable, errorBody("r2_unavailable", "R2 replica is not available for this blob"))

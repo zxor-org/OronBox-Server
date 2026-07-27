@@ -14,6 +14,7 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/coordinator"
 	"github.com/zxor-org/OronBox-Server/internal/creator"
+	"github.com/zxor-org/OronBox-Server/internal/moderation"
 	"github.com/zxor-org/OronBox-Server/internal/oauth/bandbbs"
 	githuboauth "github.com/zxor-org/OronBox-Server/internal/oauth/github"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
@@ -56,6 +57,11 @@ func main() {
 	log.Info("local blob storage ready", "root", cfg.Storage.LocalRoot, "upload_limit_bytes", cfg.Limits.UploadMaxBytes, "media_limit_bytes", cfg.Limits.PreviewMaxBytes)
 	bandBBSOAuth := bandbbs.NewClient(cfg.BandBBS, 15*time.Second)
 	creatorService := creator.New(db, blobs, creator.Limits{UploadMaxBytes: cfg.Limits.UploadMaxBytes, PreviewMaxBytes: cfg.Limits.PreviewMaxBytes, PreviewMaxCount: cfg.Limits.PreviewMaxCount})
+	moderationService := moderation.New(
+		moderation.Endpoint{Name: "deepseek", BaseURL: cfg.Moderation.Primary.BaseURL, APIKey: cfg.Moderation.Primary.APIKey, Model: cfg.Moderation.Primary.Model},
+		moderation.Endpoint{Name: "glm", BaseURL: cfg.Moderation.Fallback.BaseURL, APIKey: cfg.Moderation.Fallback.APIKey, Model: cfg.Moderation.Fallback.Model},
+		cfg.Moderation.Timeout,
+	)
 	secrets, err := auth.NewSecrets(cfg.EncryptionKey)
 	if err != nil {
 		log.Error("credential encryption initialization failed", "error", err)
@@ -79,13 +85,15 @@ func main() {
 	go coord.Run(ctx)
 
 	app := server.New(server.Dependencies{
-		Config:    cfg,
-		Store:     s,
-		BandBBS:   bandBBSOAuth,
-		GitHub:    githuboauth.New(cfg.GitHub),
-		StartedAt: time.Now().UTC(),
-		Blobs:     blobs,
-		Creator:   creatorService,
+		Config:     cfg,
+		Store:      s,
+		BandBBS:    bandBBSOAuth,
+		GitHub:     githuboauth.New(cfg.GitHub),
+		StartedAt:  time.Now().UTC(),
+		Blobs:      blobs,
+		Creator:    creatorService,
+		R2:         r2,
+		Moderation: moderationService,
 	})
 
 	httpServer := &http.Server{

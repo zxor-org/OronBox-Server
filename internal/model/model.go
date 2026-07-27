@@ -3,13 +3,16 @@ package model
 import "time"
 
 type User struct {
-	ID            string    `json:"id"`
-	BandBBSUserID int64     `json:"bandbbs_user_id"`
-	Username      string    `json:"username"`
-	AvatarURL     string    `json:"avatar_url"`
-	Role          string    `json:"role"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID              string     `json:"id"`
+	BandBBSUserID   int64      `json:"bandbbs_user_id"`
+	Username        string     `json:"username"`
+	AvatarURL       string     `json:"avatar_url"`
+	Role            string     `json:"role"`
+	BannedAt        *time.Time `json:"banned_at,omitempty"`
+	BanReason       string     `json:"ban_reason,omitempty"`
+	CreatorFrozenAt *time.Time `json:"creator_frozen_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 type SessionTokens struct {

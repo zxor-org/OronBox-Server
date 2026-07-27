@@ -1,11 +1,13 @@
 package server
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/zxor-org/OronBox-Server/internal/legal"
+	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
 var legalDocuments = map[string]string{
@@ -46,13 +48,42 @@ func (a *App) handleAppRelease(w http.ResponseWriter, r *http.Request) {
 	if channel == "" {
 		channel = "stable"
 	}
-	asset := a.cfg.Releases.DownloadURL
+	release, err := a.store.LatestAppRelease(r.Context(), channel, platform, arch)
+	if errors.Is(err, store.ErrReleaseNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("release_not_found", "no release is published for this channel"))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("release_read_failed", err.Error()))
+		return
+	}
+	asset := release.DownloadURL
 	if asset != "" {
-		asset = strings.NewReplacer("{platform}", platform, "{arch}", arch, "{channel}", channel, "{version}", a.cfg.Releases.LatestVersion).Replace(asset)
+		asset = strings.NewReplacer("{platform}", platform, "{arch}", arch, "{channel}", channel, "{version}", release.Version).Replace(asset)
 	}
-	notes := a.cfg.Releases.ReleaseNotesZH
+	notes := release.NotesZH
 	if preferredLanguage(r) == "en" {
-		notes = a.cfg.Releases.ReleaseNotesEN
+		notes = release.NotesEN
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"latest_version": a.cfg.Releases.LatestVersion, "minimum_version": a.cfg.Releases.MinimumVersion, "mandatory": a.cfg.Releases.MinimumVersion != "" && a.cfg.Releases.MinimumVersion == a.cfg.Releases.LatestVersion, "release_notes": notes, "published_at": a.cfg.Releases.PublishedAt, "download_url": asset, "source_url": fmt.Sprintf("https://github.com/zxor-org/OronBox/releases/tag/%s", a.cfg.Releases.LatestVersion), "channel": channel, "platform": platform, "arch": arch})
+	currentVersion := strings.TrimSpace(r.URL.Query().Get("version"))
+	writeJSON(w, http.StatusOK, map[string]any{"latest_version": release.Version, "minimum_version": release.MinimumVersion, "mandatory": currentVersion != "" && release.MinimumVersion != "" && versionLess(currentVersion, release.MinimumVersion), "release_notes": notes, "published_at": release.PublishedAt, "download_url": asset, "source_url": "https://github.com/zxor-org/OronBox/releases/tag/" + release.Version, "channel": channel, "platform": platform, "arch": arch})
+}
+
+func versionLess(left, right string) bool {
+	left = strings.TrimPrefix(strings.SplitN(left, "+", 2)[0], "v")
+	right = strings.TrimPrefix(strings.SplitN(right, "+", 2)[0], "v")
+	a, b := strings.Split(left, "."), strings.Split(right, ".")
+	for index := 0; index < len(a) || index < len(b); index++ {
+		var av, bv int
+		if index < len(a) {
+			av, _ = strconv.Atoi(a[index])
+		}
+		if index < len(b) {
+			bv, _ = strconv.Atoi(b[index])
+		}
+		if av != bv {
+			return av < bv
+		}
+	}
+	return false
 }

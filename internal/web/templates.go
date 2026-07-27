@@ -55,7 +55,7 @@ func statusClass(value any) string {
 		return "info"
 	case "archived", "superseded", "cancelled", "expired", "used", "dismissed":
 		return "neutral"
-	case "rejected", "failed", "failure", "aborted", "error", "suspended":
+	case "rejected", "failed", "failure", "aborted", "error", "suspended", "frozen":
 		return "danger"
 	default:
 		return "neutral"
@@ -71,7 +71,7 @@ func statusLabel(value any) string {
 		"reviewing": "外部审核", "failed": "失败", "cancelled": "已取消",
 		"open": "待处理", "investigating": "处理中", "replied": "已回复",
 		"resolved": "已解决", "dismissed": "已驳回", "closed": "已关闭",
-		"visible": "正常", "suspended": "已下架",
+		"visible": "正常", "suspended": "已下架", "frozen": "已冻结",
 		"success": "成功", "failure": "失败", "ok": "正常",
 		"receiving": "接收中", "verifying": "校验中", "committed": "已提交",
 		"expired": "已过期", "used": "已使用", "aborted": "已中止",
@@ -305,11 +305,14 @@ const templates = `
     <a class="nav-link" data-nav-path="/admin" href="/admin"><span class="material-symbols-outlined">dashboard</span><span>概览</span></a>
     <a class="nav-link" data-nav-path="/admin/review" href="/admin/review"><span class="material-symbols-outlined">fact_check</span><span>待审核</span></a>
     <a class="nav-link" data-nav-path="/admin/resources" href="/admin/resources"><span class="material-symbols-outlined">inventory_2</span><span>全部资源</span></a>
+    <a class="nav-link" data-nav-path="/admin/users" href="/admin/users"><span class="material-symbols-outlined">group</span><span>用户</span></a>
+    <a class="nav-link" data-nav-path="/admin/comments" href="/admin/comments"><span class="material-symbols-outlined">forum</span><span>评论审核</span></a>
     <a class="nav-link" data-nav-path="/admin/reports" data-nav-alias="/admin/feedback" href="/admin/reports"><span class="material-symbols-outlined">report</span><span>举报与反馈</span></a>
     <a class="nav-link" data-nav-path="/admin/oauth/events" href="/admin/oauth/events"><span class="material-symbols-outlined">timeline</span><span>OAuth 事件</span></a>
     <a class="nav-link" data-nav-path="/admin/oauth/states" href="/admin/oauth/states"><span class="material-symbols-outlined">key</span><span>OAuth States</span></a>
     <a class="nav-link" data-nav-path="/admin/oauth/tickets" href="/admin/oauth/tickets"><span class="material-symbols-outlined">confirmation_number</span><span>登录 Tickets</span></a>
     <a class="nav-link" data-nav-path="/admin/clients" href="/admin/clients"><span class="material-symbols-outlined">devices</span><span>客户端</span></a>
+    <a class="nav-link" data-nav-path="/admin/releases" href="/admin/releases"><span class="material-symbols-outlined">new_releases</span><span>客户端版本</span></a>
     <a class="nav-link" data-nav-path="/admin/health" href="/admin/health"><span class="material-symbols-outlined">monitoring</span><span>运行状态</span></a>
     <a class="nav-link" data-nav-path="/admin/audit" href="/admin/audit"><span class="material-symbols-outlined">history</span><span>审计日志</span></a>
     <a class="nav-link" data-nav-path="/admin/settings" href="/admin/settings"><span class="material-symbols-outlined">tune</span><span>设置</span></a>
@@ -518,8 +521,23 @@ const templates = `
     <dt>Public URL</dt><dd><code>{{.Config.PublicURL}}</code></dd>
     <dt>服务版本</dt><dd>{{.Config.Version}} {{.Config.Commit}}</dd>
   </dl></section>
+  <section class="panel span-2"><div class="section-header"><div><h2>发布公告</h2><p>公告会在用户进入应用时展示</p></div></div><form method="post" action="/admin/announcements"><label><span>标题</span><input name="title" required maxlength="200"></label><label><span>正文</span><textarea name="body" rows="6" required></textarea></label><div class="actions"><button class="filled-button" type="submit">发布公告</button></div></form></section>
+  <section class="panel span-2"><div class="section-header"><div><h2>公告管理</h2><p>公告原始记录不会自动过期，只能在这里手动删除</p></div></div><div class="stack-list">{{range .Announcements}}<article class="stack-row"><div><strong>{{.Title}}</strong><span class="cell-note">{{dateTime .PublishedAt}}</span><p>{{.Body}}</p></div><form method="post" action="/admin/announcements/{{.ID}}/delete"><button class="outlined-button danger" type="submit" data-confirm="确定删除这条公告吗？相关用户通知也会一并删除">删除</button></form></article>{{else}}<p class="muted">尚未发布公告</p>{{end}}</div></section>
 </div>
 {{template "admin_close" .}}
+{{end}}
+
+{{define "admin_releases"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>客户端版本</h1><p>发布版本并维护各平台、架构和渠道的更新信息</p></div></header>
+<div class="content-grid">
+<section class="panel"><div class="section-header"><div><h2>发布新版本</h2></div></div><form method="post" action="/admin/releases">
+<label><span>版本号</span><input name="version" required placeholder="1.2.3"></label><label><span>渠道</span><select name="channel"><option value="stable">stable</option><option value="beta">beta</option><option value="nightly">nightly</option></select></label>
+<label><span>平台</span><select name="platform"><option value="all">全部</option><option value="android">Android</option><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option><option value="web">Web</option></select></label><label><span>架构</span><input name="arch" value="all" placeholder="all / x64 / arm64"></label>
+<label><span>最低可用版本</span><input name="minimum_version" placeholder="留空表示不强制更新"></label><label><span>下载地址模板</span><input name="download_url" required placeholder="支持 {version} {platform} {arch} {channel}"></label>
+<label><span>中文更新说明</span><textarea name="notes_zh" rows="5"></textarea></label><label><span>英文更新说明</span><textarea name="notes_en" rows="5"></textarea></label><div class="actions"><button class="filled-button" type="submit">发布版本</button></div></form></section>
+<section class="panel"><div class="section-header"><div><h2>发布历史</h2></div></div><div class="table-wrap"><table><thead><tr><th>版本</th><th>渠道</th><th>目标</th><th>最低版本</th><th>发布时间</th></tr></thead><tbody>{{range .Items}}<tr><td><strong>{{.Version}}</strong></td><td>{{.Channel}}</td><td>{{.Platform}} / {{.Arch}}</td><td>{{if .MinimumVersion}}{{.MinimumVersion}}{{else}}—{{end}}</td><td>{{dateTime .PublishedAt}}</td></tr>{{else}}<tr><td colspan="5" class="table-empty">尚未发布客户端版本</td></tr>{{end}}</tbody></table></div></section>
+</div>{{template "admin_close" .}}
 {{end}}
 
 {{define "admin_health"}}
@@ -534,7 +552,7 @@ const templates = `
 <div class="content-grid settings-grid">
   <section class="panel"><div class="section-header"><div><h2>数据库</h2></div><span class="status {{if eqs .DBStatus "ok"}}success{{else}}danger{{end}}">{{if eqs .DBStatus "ok"}}正常{{else}}异常{{end}}</span></div><p class="diagnostic">{{.DBStatus}}</p></section>
   <section class="panel"><div class="section-header"><div><h2>进程</h2></div><span class="status success">运行中</span></div><dl class="settings compact"><dt>启动时间</dt><dd>{{.Stats.StartedAt}}</dd></dl></section>
-  <section class="panel span-2"><div class="section-header"><div><h2>维护</h2><p>移除已经过期的 OAuth State 和登录 Ticket</p></div></div><form method="post" action="/admin/cleanup"><button class="outlined-button" type="submit">立即清理过期记录</button></form></section>
+  <section class="panel span-2"><div class="section-header"><div><h2>维护</h2><p>在单个事务中清理过期 OAuth State、登录 Ticket、后台会话和系统消息；公告原始记录不会被清理</p></div></div><form method="post" action="/admin/cleanup"><button class="outlined-button" type="submit">立即清理过期记录</button></form></section>
 </div>
 {{template "admin_close" .}}
 {{end}}
@@ -583,11 +601,10 @@ const templates = `
   <label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="名称、Slug、简介或资源 ID"></label>
   <label><span>创作者</span><input name="owner" value="{{.Query.Owner}}" placeholder="用户名或用户 ID"></label>
   <label><span>类型</span><select name="kind"><option value="">全部</option><option value="quickapp" {{if eqs .Query.Kind "quickapp"}}selected{{end}}>快应用</option><option value="watchface" {{if eqs .Query.Kind "watchface"}}selected{{end}}>表盘</option></select></label>
-  <details class="filter-more" {{if or .Query.Lifecycle .Query.Moderation .Query.RevisionState .Query.ReviewState .Query.PublicationTarget .Query.PublicationState}}open{{end}}>
+  <details class="filter-more" {{if or .Query.Moderation .Query.RevisionState .Query.ReviewState .Query.PublicationTarget .Query.PublicationState}}open{{end}}>
     <summary><span class="material-symbols-outlined">tune</span>更多筛选</summary>
     <div class="filter-more-grid">
-      <label><span>生命周期</span><select name="lifecycle"><option value="">全部</option><option value="active" {{if eqs .Query.Lifecycle "active"}}selected{{end}}>活跃</option><option value="archived" {{if eqs .Query.Lifecycle "archived"}}selected{{end}}>已归档</option></select></label>
-      <label><span>管理状态</span><select name="moderation"><option value="">全部</option><option value="visible" {{if eqs .Query.Moderation "visible"}}selected{{end}}>正常</option><option value="suspended" {{if eqs .Query.Moderation "suspended"}}selected{{end}}>已下架</option></select></label>
+      <label><span>管理状态</span><select name="moderation"><option value="">全部</option><option value="visible" {{if eqs .Query.Moderation "visible"}}selected{{end}}>正常</option><option value="suspended" {{if eqs .Query.Moderation "suspended"}}selected{{end}}>已下架</option><option value="frozen" {{if eqs .Query.Moderation "frozen"}}selected{{end}}>已冻结</option></select></label>
       <label><span>修订状态</span><select name="revision_state"><option value="">全部</option><option value="submitted" {{if eqs .Query.RevisionState "submitted"}}selected{{end}}>待审核</option><option value="approved" {{if eqs .Query.RevisionState "approved"}}selected{{end}}>已通过</option><option value="rejected" {{if eqs .Query.RevisionState "rejected"}}selected{{end}}>已拒绝</option><option value="superseded" {{if eqs .Query.RevisionState "superseded"}}selected{{end}}>已取代</option></select></label>
       <label><span>审核状态</span><select name="review_state"><option value="">全部</option><option value="pending" {{if eqs .Query.ReviewState "pending"}}selected{{end}}>待处理</option><option value="approved" {{if eqs .Query.ReviewState "approved"}}selected{{end}}>已通过</option><option value="rejected" {{if eqs .Query.ReviewState "rejected"}}selected{{end}}>已拒绝</option><option value="superseded" {{if eqs .Query.ReviewState "superseded"}}selected{{end}}>已取代</option></select></label>
       <label><span>发布目标</span><select name="target"><option value="">全部</option><option value="oronbox" {{if eqs .Query.PublicationTarget "oronbox"}}selected{{end}}>OronBox</option><option value="bandbbs" {{if eqs .Query.PublicationTarget "bandbbs"}}selected{{end}}>米坛</option><option value="astrobox" {{if eqs .Query.PublicationTarget "astrobox"}}selected{{end}}>AstroBox</option></select></label>
@@ -601,13 +618,13 @@ const templates = `
 <thead><tr><th>资源</th><th>创作者</th><th>类型</th><th>状态</th><th>最新修订</th><th>发布目标</th><th>更新时间</th><th></th></tr></thead>
 <tbody>{{range .Items}}<tr>
   <td><a class="resource-name" href="/admin/resources/{{.ID}}">{{.Name}}</a><span class="cell-note"><code>{{.Slug}}</code> · {{.ID}}</span></td>
-  <td>{{.Owner}}</td><td>{{kindLabel .Kind}}</td><td><span class="status {{statusClass .State}}">{{statusLabel .State}}</span>{{if ne .ModerationState "visible"}} <span class="status {{statusClass .ModerationState}}">{{statusLabel .ModerationState}}</span>{{end}}</td>
+  <td>{{.Owner}}</td><td>{{kindLabel .Kind}}</td><td><span class="status {{statusClass .ModerationState}}">{{statusLabel .ModerationState}}</span>{{if .ModerationBy}}<span class="cell-note">{{if eqs .ModerationBy "owner"}}创作者下架{{else}}管理员操作{{end}}</span>{{end}}</td>
   <td>{{if .RevisionNo}}#{{.RevisionNo}} · {{statusLabel .RevisionState}}{{else}}未发布{{end}}{{if .ReviewState}}<span class="cell-note">审核：{{statusLabel .ReviewState}}</span>{{end}}</td>
   <td><div class="tag-stack">{{range .Publications}}<span class="status {{statusClass .State}}" title="{{targetLabel .Target}} · {{statusLabel .State}}">{{targetLabel .Target}}</span>{{else}}—{{end}}</div></td><td class="secondary nowrap">{{dateTime .UpdatedAt}}</td>
   <td><a class="row-action" href="/admin/resources/{{.ID}}">查看</a></td>
 </tr>{{else}}<tr><td class="table-empty" colspan="8">没有符合筛选条件的资源</td></tr>{{end}}</tbody>
 </table></div>
-{{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="资源分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&owner={{urlquery .Query.Owner}}&kind={{urlquery .Query.Kind}}&lifecycle={{urlquery .Query.Lifecycle}}&moderation={{urlquery .Query.Moderation}}&revision_state={{urlquery .Query.RevisionState}}&review_state={{urlquery .Query.ReviewState}}&target={{urlquery .Query.PublicationTarget}}&publication_state={{urlquery .Query.PublicationState}}&sort={{urlquery .Query.Sort}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&owner={{urlquery .Query.Owner}}&kind={{urlquery .Query.Kind}}&lifecycle={{urlquery .Query.Lifecycle}}&moderation={{urlquery .Query.Moderation}}&revision_state={{urlquery .Query.RevisionState}}&review_state={{urlquery .Query.ReviewState}}&target={{urlquery .Query.PublicationTarget}}&publication_state={{urlquery .Query.PublicationState}}&sort={{urlquery .Query.Sort}}">下一页</a>{{end}}</div></nav>{{end}}
+{{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="资源分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&owner={{urlquery .Query.Owner}}&kind={{urlquery .Query.Kind}}&moderation={{urlquery .Query.Moderation}}&revision_state={{urlquery .Query.RevisionState}}&review_state={{urlquery .Query.ReviewState}}&target={{urlquery .Query.PublicationTarget}}&publication_state={{urlquery .Query.PublicationState}}&sort={{urlquery .Query.Sort}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&owner={{urlquery .Query.Owner}}&kind={{urlquery .Query.Kind}}&moderation={{urlquery .Query.Moderation}}&revision_state={{urlquery .Query.RevisionState}}&review_state={{urlquery .Query.ReviewState}}&target={{urlquery .Query.PublicationTarget}}&publication_state={{urlquery .Query.PublicationState}}&sort={{urlquery .Query.Sort}}">下一页</a>{{end}}</div></nav>{{end}}
 </div>
 </section>
 {{template "admin_close" .}}
@@ -615,15 +632,22 @@ const templates = `
 
 {{define "admin_resource_detail"}}
 {{template "admin_open" .}}
-<header class="page-header detail-header"><div><a class="back-link" href="/admin/resources">← 全部资源</a><div class="title-line"><h1>{{.Item.Name}}</h1><span class="status {{statusClass .Item.State}}">{{statusLabel .Item.State}}</span><span class="status {{statusClass .Item.ModerationState}}">{{statusLabel .Item.ModerationState}}</span></div><p>{{.Item.Owner}} · <code>{{.Item.Slug}}</code></p></div></header>
+<header class="page-header detail-header"><div><a class="back-link" href="/admin/resources">← 全部资源</a><div class="title-line"><h1>{{.Item.Name}}</h1><span class="status {{statusClass .Item.ModerationState}}">{{statusLabel .Item.ModerationState}}</span></div><p>{{.Item.Owner}} · <code>{{.Item.Slug}}</code></p></div></header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>资源状态已更新</div>{{end}}
 <div class="content-grid detail-grid">
   <section class="panel"><div class="section-header"><div><h2>资源信息</h2></div></div><dl class="settings">
-    <dt>资源 ID</dt><dd><code>{{.Item.ID}}</code></dd><dt>Slug</dt><dd><code>{{.Item.Slug}}</code></dd><dt>创作者</dt><dd>{{.Item.Owner}}<span class="cell-note"><code>{{.Item.OwnerID}}</code></span></dd><dt>平台</dt><dd>{{platformLabel .Item.Platform}}</dd><dt>类型</dt><dd>{{kindLabel .Item.Kind}}</dd><dt>最新修订</dt><dd>{{if .Item.RevisionNo}}#{{.Item.RevisionNo}} · {{statusLabel .Item.RevisionState}}{{else}}未发布{{end}}</dd><dt>创建时间</dt><dd>{{dateTime .Item.CreatedAt}}</dd><dt>更新时间</dt><dd>{{dateTime .Item.UpdatedAt}}</dd>
+    <dt>资源 ID</dt><dd><code>{{.Item.ID}}</code></dd><dt>Slug</dt><dd><code>{{.Item.Slug}}</code></dd><dt>创作者</dt><dd>{{.Item.Owner}}<span class="cell-note"><code>{{.Item.OwnerID}}</code></span></dd><dt>平台</dt><dd>{{platformLabel .Item.Platform}}</dd><dt>类型</dt><dd>{{kindLabel .Item.Kind}}</dd><dt>管理状态</dt><dd><span class="status {{statusClass .Item.ModerationState}}">{{statusLabel .Item.ModerationState}}</span>{{if .Item.ModerationBy}}<span class="cell-note">{{if eqs .Item.ModerationBy "owner"}}创作者下架{{else}}管理员操作{{end}}{{if .Item.ModerationAt}} · {{dateTime .Item.ModerationAt}}{{end}}</span>{{end}}</dd>{{if .Item.ModerationReason}}<dt>管理原因</dt><dd>{{.Item.ModerationReason}}</dd>{{end}}<dt>最新修订</dt><dd>{{if .Item.RevisionNo}}#{{.Item.RevisionNo}} · {{statusLabel .Item.RevisionState}}{{else}}未发布{{end}}</dd><dt>创建时间</dt><dd>{{dateTime .Item.CreatedAt}}</dd><dt>更新时间</dt><dd>{{dateTime .Item.UpdatedAt}}</dd>
   </dl></section>
   <section class="panel"><div class="section-header"><div><h2>管理</h2><p>资源操作会写入审计日志</p></div></div><div class="management-actions">
-    <form method="post" action="/admin/resources/{{.Item.ID}}/state">{{if eqs .Item.ModerationState "suspended"}}<button class="outlined-button" name="action" value="restore">恢复公开</button>{{else}}<button class="outlined-button danger" name="action" value="suspend" data-confirm="确定下架这个资源吗？它将从公开资源列表中隐藏">下架资源</button>{{end}}</form>
-    <form method="post" action="/admin/resources/{{.Item.ID}}/state">{{if eqs .Item.State "archived"}}<button class="outlined-button" name="action" value="activate">恢复活跃</button>{{else}}<button class="outlined-button" name="action" value="archive" data-confirm="确定归档这个资源吗？">归档资源</button>{{end}}</form>
+    {{if eqs .Item.ModerationState "frozen"}}
+    <form method="post" action="/admin/resources/{{.Item.ID}}/state"><button class="outlined-button" name="action" value="unfreeze">解除冻结</button></form>
+    {{else if eqs .Item.ModerationState "suspended"}}
+    <form method="post" action="/admin/resources/{{.Item.ID}}/state"><button class="outlined-button" name="action" value="restore">恢复公开</button></form>
+    <form method="post" action="/admin/resources/{{.Item.ID}}/state"><input name="reason" placeholder="冻结原因（可选）"><button class="outlined-button danger" name="action" value="freeze" data-confirm="确定冻结这个资源吗？创作者将无法再修改它">冻结资源</button></form>
+    {{else}}
+    <form method="post" action="/admin/resources/{{.Item.ID}}/state"><input name="reason" placeholder="下架原因（可选）"><button class="outlined-button danger" name="action" value="suspend" data-confirm="确定下架这个资源吗？它将从公开资源列表中隐藏">下架资源</button></form>
+    <form method="post" action="/admin/resources/{{.Item.ID}}/state"><input name="reason" placeholder="冻结原因（可选）"><button class="outlined-button danger" name="action" value="freeze" data-confirm="确定冻结这个资源吗？创作者将无法再修改它">冻结资源</button></form>
+    {{end}}
     {{if eq .Item.RevisionNo 0}}<form method="post" action="/admin/resources/{{.Item.ID}}/state"><button class="outlined-button danger" name="action" value="delete" data-confirm="确定永久删除这个从未发布的资源吗？">永久删除</button></form>{{end}}
   </div></section>
   <section class="panel span-2"><div class="section-header"><div><h2>发布状态</h2></div></div><div class="stack-list">{{range .Publications}}<article class="stack-row"><div><strong>{{targetLabel .Target}}</strong><span class="cell-note">尝试 {{.Attempts}} 次 · {{dateTime .UpdatedAt}}</span>{{if .ExternalURL}}<a class="cell-note" href="{{.ExternalURL}}" target="_blank" rel="noopener noreferrer">打开外部页面 ↗</a>{{end}}</div><span class="status {{statusClass .State}}">{{statusLabel .State}}</span>{{if .ErrorMessage}}<p class="row-error">{{.ErrorMessage}}</p>{{end}}</article>{{else}}<p class="muted">没有发布记录</p>{{end}}</div></section>
@@ -634,6 +658,50 @@ const templates = `
   <section class="panel span-2"><div class="section-header"><div><h2>资源事件</h2><p>资源生命周期和管理操作记录</p></div></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>事件</th><th>操作者</th><th>ID</th></tr></thead><tbody>{{range .Detail.Events}}<tr><td class="secondary nowrap">{{dateTime .CreatedAt}}</td><td><code>{{.EventType}}</code></td><td>{{if .Actor}}{{.Actor}}{{else}}系统{{end}}</td><td>{{.ID}}</td></tr>{{else}}<tr><td class="table-empty" colspan="4">没有资源事件</td></tr>{{end}}</tbody></table></div></section>
   <section class="panel span-2"><details class="snapshot"><summary>查看完整工作区快照</summary><pre>{{.Snapshot}}</pre></details></section>
 </div>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_users"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>用户</h1><p>管理账号、角色与治理能力，操作会写入审计日志</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>{{if eqs .Action "message_sent"}}管理员消息已发送{{else}}用户操作已完成{{end}}</div>{{end}}
+<section class="panel list-panel">
+<form class="filter-bar" method="get" action="/admin/users">
+  <label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="用户名或米坛用户 ID"></label>
+  <div class="filter-actions"><button class="filled-button" type="submit">筛选</button><a class="text-link filter-reset" href="/admin/users">清除</a></div>
+</form>
+<form id="admin-message-form" method="post" action="/admin/users/messages" class="filter-bar">
+  <label class="search-field"><span>消息标题</span><input name="title" required maxlength="200" placeholder="发送给勾选用户"></label>
+  <label class="search-field"><span>消息正文</span><input name="body" required maxlength="2000" placeholder="管理员消息内容"></label>
+  <div class="filter-actions"><button class="filled-button" type="submit">发送消息</button></div>
+</form>
+<div class="table-panel"><div class="table-wrap"><table>
+<thead><tr><th>选择</th><th>用户</th><th>米坛 ID</th><th>角色</th><th>状态</th><th>资源 / 工单</th><th>注册时间</th><th>管理</th></tr></thead>
+<tbody>{{range .Items}}<tr>
+  <td><input type="checkbox" name="user" value="{{.ID}}" form="admin-message-form" aria-label="选择 {{.Username}}"></td>
+  <td>{{.Username}}<span class="cell-note"><code>{{.ID}}</code></span></td>
+  <td><code>{{.BandBBSUserID}}</code></td>
+  <td><form method="post" action="/admin/users/{{.ID}}/state"><input type="hidden" name="action" value="set_role"><select name="role" onchange="this.form.submit()"><option value="user" {{if eqs .Role "user"}}selected{{end}}>用户</option><option value="reviewer" {{if eqs .Role "reviewer"}}selected{{end}}>审核员</option><option value="admin" {{if eqs .Role "admin"}}selected{{end}}>管理员</option></select></form></td>
+  <td>{{if .BannedAt}}<span class="status danger">已封禁</span>{{if .BanReason}}<span class="cell-note">{{.BanReason}}</span>{{end}}{{else}}<span class="status success">正常</span>{{end}}{{if .CreatorFrozenAt}}<span class="cell-note">创作者已冻结</span>{{end}}</td>
+  <td>{{.ResourceCount}} / {{.TicketCount}}</td>
+  <td class="secondary nowrap">{{dateTime .CreatedAt}}</td>
+  <td><div class="tag-stack">
+    {{if .BannedAt}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="unban">解封</button></form>
+    {{else}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><input name="reason" placeholder="封禁原因（可选）"><button class="outlined-button danger" name="action" value="ban" data-confirm="确定封禁该用户吗？将吊销其全部客户端会话">封禁</button></form>
+    {{end}}
+    {{if .CreatorFrozenAt}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="unfreeze_creator">解冻创作者</button></form>
+    {{else}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="freeze_creator" data-confirm="确定冻结该用户的创作者功能吗？其将无法提交或管理资源">冻结创作者</button></form>
+    {{end}}
+  </div></td>
+</tr>{{else}}<tr><td class="table-empty" colspan="8">没有匹配的用户</td></tr>{{end}}</tbody>
+</table></div>
+{{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="用户分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}">下一页</a>{{end}}</div></nav>{{end}}
+</div>
+</section>
 {{template "admin_close" .}}
 {{end}}
 
@@ -682,6 +750,19 @@ const templates = `
 <form class="filter-bar" method="get" action="/admin/feedback"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标资源"></label><label><span>类型</span><select name="kind"><option value="">全部</option><option value="report" {{if eqs .Query.Kind "report"}}selected{{end}}>资源举报</option><option value="feedback" {{if eqs .Query.Kind "feedback"}}selected{{end}}>意见反馈</option></select></label><label><span>来源</span><input name="source" value="{{.Query.TargetSource}}" placeholder="oronbox"></label><label><span>状态</span><select name="status"><option value="">全部</option><option value="open" {{if eqs .Query.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Query.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Query.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Query.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Query.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Query.Status "closed"}}selected{{end}}>已关闭</option></select></label><button class="filled-button" type="submit">筛选</button><a class="text-link filter-reset" href="/admin/feedback">清除</a></form>
 <div class="ticket-list">{{range .Items}}<article class="ticket-card"><header><div><div class="title-line"><span class="status {{if eqs .Kind "report"}}danger{{else}}info{{end}}">{{kindLabel .Kind}}</span><h2>{{if eqs .Kind "report"}}<a class="resource-name" href="/admin/reports/{{.ID}}">{{.Subject}}</a>{{else}}{{.Subject}}{{end}}</h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header><div class="ticket-message">{{.Message}}</div>{{if and (ne .Kind "report") (ne .Status "closed")}}<form method="post" action="/admin/feedback/{{.ID}}" class="reply-form"><label>答复<textarea name="message" rows="3" required placeholder="答复将显示在用户客户端"></textarea></label><div class="actions"><button class="filled-button" type="submit" name="close" value="no">发送答复</button><button class="outlined-button" type="submit" name="close" value="yes">答复并关闭</button></div></form>{{end}}</article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有反馈</h2><p>当前筛选条件下没有记录</p></section>{{end}}</div>
 {{if gt .Page.TotalPages 1}}<nav class="pagination" aria-label="反馈分页"><span>第 {{.Page.Page}} / {{.Page.TotalPages}} 页</span><div>{{if gt .Page.Page 1}}<a class="outlined-button" href="?page={{sub1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&kind={{urlquery .Query.Kind}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">上一页</a>{{end}}{{if lt .Page.Page .Page.TotalPages}}<a class="outlined-button" href="?page={{add1 .Page.Page}}&per_page={{.Page.PerPage}}&q={{urlquery .Query.Search}}&kind={{urlquery .Query.Kind}}&source={{urlquery .Query.TargetSource}}&status={{urlquery .Query.Status}}">下一页</a>{{end}}</div></nav>{{end}}
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_comments"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>评论审核</h1><p>处理 AI 标记的评论并配置审核提示词</p></div><span class="count-badge">{{.Total}} 项</span></header>
+<div class="content-grid">
+  <section class="panel span-2"><div class="section-header"><div><h2>待人工复审</h2></div></div>
+    <div class="ticket-list">{{range .Items}}<article class="ticket-card"><header><div><strong>{{.Username}}</strong><p class="ticket-meta">米坛 ID {{.BandBBSUserID}} · {{dateTime .CreatedAt}}</p></div><span class="status danger">{{.ModerationAction}}</span></header><div class="ticket-message">{{.Body}}</div><p class="muted">{{.ModerationModel}} · {{.ModerationReason}}</p><form method="post" action="/admin/comments/{{.ID}}" class="actions"><button class="filled-button" name="action" value="approve">通过</button><button class="outlined-button danger" name="action" value="hide">隐藏</button></form></article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有待复审评论</h2></section>{{end}}</div>
+  </section>
+  <section class="panel"><div class="section-header"><div><h2>审核提示词</h2></div></div><form method="post" action="/admin/comments/prompt"><label><span>提示词</span><textarea name="prompt" rows="12" required>{{.Prompt}}</textarea></label><div class="actions"><button class="filled-button" type="submit">保存</button></div></form></section>
+  <section class="panel"><div class="section-header"><div><h2>测试台</h2><p>用当前提示词测试任意文本</p></div></div><form method="post" action="/admin/comments/test"><label><span>测试内容</span><textarea name="text" rows="8" required>{{.TestText}}</textarea></label><div class="actions"><button class="filled-button" type="submit">运行审核</button></div></form>{{if .TestResult}}<h3>原始 JSON</h3><pre class="diagnostic">{{.TestResult}}</pre>{{end}}</section>
+</div>
 {{template "admin_close" .}}
 {{end}}
 `

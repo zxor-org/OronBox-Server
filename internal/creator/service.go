@@ -107,8 +107,8 @@ func (s *Service) List(ctx context.Context, ownerID string) ([]Workspace, error)
 // which is the editing baseline for the next publish.
 func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Workspace, error) {
 	var result Workspace
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,owner_id::text,slug,kind,state,moderation_state,COALESCE(current_revision_id::text,''),created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).
-		Scan(&result.Resource.ID, &result.Resource.OwnerID, &result.Resource.Slug, &result.Resource.Kind, &result.Resource.State, &result.Resource.ModerationState, &result.Resource.CurrentRevisionID, &result.Resource.CreatedAt, &result.Resource.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,owner_id::text,slug,kind,moderation_state,COALESCE(moderation_by,''),moderation_reason,moderation_at,download_count,COALESCE(current_revision_id::text,''),created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).
+		Scan(&result.Resource.ID, &result.Resource.OwnerID, &result.Resource.Slug, &result.Resource.Kind, &result.Resource.ModerationState, &result.Resource.ModerationBy, &result.Resource.ModerationReason, &result.Resource.ModerationAt, &result.Resource.DownloadCount, &result.Resource.CurrentRevisionID, &result.Resource.CreatedAt, &result.Resource.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, ErrNotFound
 	}
@@ -160,23 +160,65 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 	return result, nil
 }
 
-func (s *Service) SetArchived(ctx context.Context, ownerID, resourceID string, archived bool) (Workspace, error) {
-	state := ResourceActive
-	if archived {
-		state = ResourceArchived
+// SetModeration applies the creator-side moderation transitions: "takedown"
+// hides the resource from the public catalog (visible -> suspended by owner)
+// and "restore" brings an owner-suspended resource back. Takedown cancels the
+// resource's pending/running publications, the same cascading effect as the
+// admin suspend action. Frozen and admin-suspended resources are out of the
+// creator's reach.
+func (s *Service) SetModeration(ctx context.Context, ownerID, resourceID, action string) (Workspace, error) {
+	if action != "takedown" && action != "restore" {
+		return Workspace{}, fmt.Errorf("%w: unknown moderation action %q", ErrInvalid, action)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE resources SET state=$3,updated_at=now() WHERE id=$1 AND owner_id=$2`, resourceID, ownerID, state)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return Workspace{}, err
 	}
-	if count, _ := result.RowsAffected(); count != 1 {
+	defer tx.Rollback()
+	var moderationState, moderationBy string
+	err = tx.QueryRowContext(ctx, `SELECT moderation_state,COALESCE(moderation_by,'') FROM resources WHERE id=$1 AND owner_id=$2 FOR UPDATE`, resourceID, ownerID).Scan(&moderationState, &moderationBy)
+	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, ErrNotFound
 	}
-	event := "resource restored"
-	if archived {
-		event = "resource archived"
+	if err != nil {
+		return Workspace{}, err
 	}
-	log(ctx).Info(event, "resource_id", resourceID, "owner_id", ownerID)
+	eventType := ""
+	switch action {
+	case "takedown":
+		if moderationState == "frozen" {
+			return Workspace{}, fmt.Errorf("%w: resource is frozen by an administrator", ErrConflict)
+		}
+		if moderationState == "suspended" && moderationBy != "owner" {
+			return Workspace{}, fmt.Errorf("%w: resource is suspended by an administrator", ErrConflict)
+		}
+		eventType = "resource.suspended"
+	case "restore":
+		if moderationState != "suspended" || moderationBy != "owner" {
+			return Workspace{}, fmt.Errorf("%w: only an owner-suspended resource can be restored by its creator", ErrConflict)
+		}
+		eventType = "resource.restored"
+	}
+	if action == "takedown" && moderationState != "suspended" {
+		if _, err = tx.ExecContext(ctx, `UPDATE publications publication SET state='cancelled',error_message='cancelled by resource moderation',updated_at=now() FROM resource_revisions revision WHERE publication.revision_id=revision.id AND revision.resource_id=$1 AND publication.state IN ('pending','running')`, resourceID); err != nil {
+			return Workspace{}, err
+		}
+	}
+	if action == "takedown" {
+		_, err = tx.ExecContext(ctx, `UPDATE resources SET moderation_state='suspended',moderation_by='owner',moderation_reason='',moderation_at=now(),updated_at=now() WHERE id=$1`, resourceID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE resources SET moderation_state='visible',moderation_by=NULL,moderation_reason='',moderation_at=NULL,updated_at=now() WHERE id=$1`, resourceID)
+	}
+	if err != nil {
+		return Workspace{}, err
+	}
+	if err = event(ctx, tx, resourceID, ownerID, eventType, map[string]any{"actor": "owner", "action": action, "previous_moderation": moderationState, "previous_moderation_by": moderationBy}); err != nil {
+		return Workspace{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return Workspace{}, err
+	}
+	log(ctx).Info("resource moderation changed", "resource_id", resourceID, "owner_id", ownerID, "action", action, "previous_moderation", moderationState)
 	return s.Workspace(ctx, ownerID, resourceID)
 }
 
@@ -259,6 +301,7 @@ func (s *Service) Review(ctx context.Context, revisionID, reviewerID string, app
 	if err = tx.QueryRowContext(ctx, `UPDATE resource_revisions SET state=$2 WHERE id=$1 RETURNING resource_id::text,revision_no`, revisionID, revisionState).Scan(&resourceID, &revisionNo); err != nil {
 		return err
 	}
+	var restoredByReview bool
 	if approve {
 		if _, err = tx.ExecContext(ctx, `
 UPDATE resource_revisions previous
@@ -277,6 +320,19 @@ WHERE approved.id=$1
 		if _, err = tx.ExecContext(ctx, `UPDATE publications SET state=CASE WHEN target='oronbox' THEN 'published' ELSE 'pending' END,updated_at=now() WHERE revision_id=$1`, revisionID); err != nil {
 			return err
 		}
+		// An approved revision makes the resource sellable again: lift a
+		// suspension (owner takedown or admin action) so it returns to the
+		// public catalog. Frozen resources stay locked until an admin acts.
+		restored, err := tx.ExecContext(ctx, `UPDATE resources SET moderation_state='visible',moderation_by=NULL,moderation_reason='',moderation_at=NULL,updated_at=now() WHERE id=$1 AND moderation_state='suspended'`, resourceID)
+		if err != nil {
+			return err
+		}
+		if count, _ := restored.RowsAffected(); count == 1 {
+			restoredByReview = true
+			if err = event(ctx, tx, resourceID, reviewerID, "resource.restored", map[string]any{"trigger": "review_approved", "revision_id": revisionID, "revision_no": revisionNo, "previous_moderation": "suspended"}); err != nil {
+				return err
+			}
+		}
 	} else if _, err = tx.ExecContext(ctx, `UPDATE publications SET state='cancelled',updated_at=now() WHERE revision_id=$1`, revisionID); err != nil {
 		return err
 	}
@@ -288,6 +344,9 @@ WHERE approved.id=$1
 		event = "revision approved"
 	}
 	log(ctx).Info(event, "resource_id", resourceID, "revision_id", revisionID, "revision_no", revisionNo, "reviewer_id", reviewerID, "has_note", strings.TrimSpace(note) != "")
+	if restoredByReview {
+		log(ctx).Info("resource restored by review approval", "resource_id", resourceID, "revision_id", revisionID, "reviewer_id", reviewerID)
+	}
 	return nil
 }
 
@@ -334,9 +393,7 @@ func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 	return result, rows.Err()
 }
 
-// highestVersion picks the most plausible "latest" package version among a
-// revision's artifacts; length-then-lexical ordering tracks semver for the
-// version schemes creators actually use.
+// Pick the highest package version exposed by the revision.
 const highestVersionSQL = `COALESCE((SELECT package_version FROM revision_artifacts WHERE revision_id=rr.id AND package_version<>'' ORDER BY length(package_version) DESC,package_version DESC LIMIT 1),'')`
 
 func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]PublicResource, int, error) {
@@ -352,7 +409,7 @@ func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]Pub
 	} else if query.Sort == "random" {
 		order = "random()"
 	}
-	filter := `r.state='active' AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2) AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id AND d.codename=ANY($3::text[])))`
+	filter := `r.moderation_state='visible' AND r.current_revision_id IS NOT NULL AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2) AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id AND d.codename=ANY($3::text[])))`
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id WHERE `+filter, query.Search, query.Kind, query.Devices).Scan(&total); err != nil {
 		return nil, 0, err
@@ -362,7 +419,7 @@ COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND rol
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
 `+highestVersionSQL+`,
-COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id),'[]'),r.updated_at
+COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id),'[]'),r.download_count,r.updated_at
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id WHERE `+filter+` ORDER BY `+order+` LIMIT $4 OFFSET $5`, query.Search, query.Kind, query.Devices, query.Limit, query.Offset)
 	if err != nil {
 		return nil, 0, err
@@ -372,7 +429,7 @@ FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN 
 	for rows.Next() {
 		var item PublicResource
 		var devices []byte
-		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.Kind, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.Kind, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &item.DownloadCount, &item.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		_ = json.Unmarshal(devices, &item.Devices)
@@ -390,9 +447,9 @@ COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND rol
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
 `+highestVersionSQL+`,
-COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id),'[]'),r.updated_at,rr.id::text
-FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id WHERE r.id=$1 AND r.state='active' AND r.moderation_state='visible'`, resourceID).
-		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.Kind, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.UpdatedAt, &revisionID)
+COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id),'[]'),r.download_count,r.updated_at,rr.id::text
+FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id WHERE r.id=$1 AND r.moderation_state='visible'`, resourceID).
+		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.Kind, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.DownloadCount, &summary.UpdatedAt, &revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublicResourceDetail{}, ErrNotFound
 	}

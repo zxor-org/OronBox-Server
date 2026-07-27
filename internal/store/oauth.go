@@ -117,21 +117,36 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 	return err
 }
 
-func (s *Store) CleanupExpired(ctx context.Context) (int64, int64, error) {
-	stateResult, err := s.db.ExecContext(ctx, `DELETE FROM oauth_states WHERE expires_at < now()`)
+type CleanupStats struct {
+	OAuthStates, LoginTickets, AdminSessions, UserMessages int64
+}
+
+func (s *Store) CleanupExpired(ctx context.Context) (CleanupStats, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, err
+		return CleanupStats{}, err
 	}
-	ticketResult, err := s.db.ExecContext(ctx, `DELETE FROM login_tickets WHERE expires_at < now()`)
-	if err != nil {
-		return 0, 0, err
+	defer tx.Rollback()
+	stats := CleanupStats{}
+	for _, item := range []struct {
+		query string
+		count *int64
+	}{
+		{`DELETE FROM oauth_states WHERE expires_at < now()`, &stats.OAuthStates},
+		{`DELETE FROM login_tickets WHERE expires_at < now()`, &stats.LoginTickets},
+		{`DELETE FROM admin_sessions WHERE expires_at < now()`, &stats.AdminSessions},
+		{`DELETE FROM user_messages WHERE expires_at < now()`, &stats.UserMessages},
+	} {
+		result, err := tx.ExecContext(ctx, item.query)
+		if err != nil {
+			return CleanupStats{}, err
+		}
+		*item.count, _ = result.RowsAffected()
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE expires_at < now()`); err != nil {
-		return 0, 0, err
+	if err := tx.Commit(); err != nil {
+		return CleanupStats{}, err
 	}
-	stateRows, _ := stateResult.RowsAffected()
-	ticketRows, _ := ticketResult.RowsAffected()
-	return stateRows, ticketRows, nil
+	return stats, nil
 }
 
 type GrantSummary struct {

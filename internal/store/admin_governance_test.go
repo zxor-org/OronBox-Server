@@ -10,7 +10,6 @@ func TestAdminResourceQueryNormalization(t *testing.T) {
 	t.Parallel()
 	query := (AdminResourceQuery{
 		Kind:              "firmware",
-		Lifecycle:         "deleted",
 		Moderation:        "blocked",
 		RevisionState:     "draft",
 		ReviewState:       "unknown",
@@ -20,7 +19,7 @@ func TestAdminResourceQueryNormalization(t *testing.T) {
 		Page:              -1,
 		PerPage:           1000,
 	}).normalized()
-	if query.Kind != "" || query.Lifecycle != "" || query.Moderation != "" || query.RevisionState != "" || query.ReviewState != "" || query.PublicationTarget != "" || query.PublicationState != "" {
+	if query.Kind != "" || query.Moderation != "" || query.RevisionState != "" || query.ReviewState != "" || query.PublicationTarget != "" || query.PublicationState != "" {
 		t.Fatalf("invalid filters were not discarded: %#v", query)
 	}
 	if query.Sort != "updated_desc" || query.Page != 1 || query.PerPage != 100 {
@@ -32,8 +31,7 @@ func TestAdminResourceQueryKeepsGovernanceFilters(t *testing.T) {
 	t.Parallel()
 	query := (AdminResourceQuery{
 		Kind:              "quickapp",
-		Lifecycle:         "archived",
-		Moderation:        "suspended",
+		Moderation:        "frozen",
 		RevisionState:     "approved",
 		ReviewState:       "approved",
 		PublicationTarget: "astrobox",
@@ -42,7 +40,7 @@ func TestAdminResourceQueryKeepsGovernanceFilters(t *testing.T) {
 		Page:              3,
 		PerPage:           40,
 	}).normalized()
-	if query.Kind != "quickapp" || query.Lifecycle != "archived" || query.Moderation != "suspended" || query.RevisionState != "approved" || query.ReviewState != "approved" || query.PublicationTarget != "astrobox" || query.PublicationState != "reviewing" {
+	if query.Kind != "quickapp" || query.Moderation != "frozen" || query.RevisionState != "approved" || query.ReviewState != "approved" || query.PublicationTarget != "astrobox" || query.PublicationState != "reviewing" {
 		t.Fatalf("valid filters changed: %#v", query)
 	}
 	if query.Sort != "owner" || query.Page != 3 || query.PerPage != 40 {
@@ -90,7 +88,7 @@ func TestGovernanceRoutesTreatMalformedIDsAsMissing(t *testing.T) {
 	if _, err := databaseFreeStore.AdminResource(context.Background(), "not-a-uuid"); !errors.Is(err, ErrAdminResourceNotFound) {
 		t.Fatalf("AdminResource malformed ID error = %v", err)
 	}
-	if _, err := databaseFreeStore.AdminManageResource(context.Background(), "not-a-uuid", "suspend", AdminSession{}); !errors.Is(err, ErrAdminResourceNotFound) {
+	if _, err := databaseFreeStore.AdminManageResource(context.Background(), "not-a-uuid", "suspend", "", AdminSession{}); !errors.Is(err, ErrAdminResourceNotFound) {
 		t.Fatalf("AdminManageResource malformed ID error = %v", err)
 	}
 	if _, err := databaseFreeStore.Feedback(context.Background(), "not-a-uuid", "", true); !errors.Is(err, ErrFeedbackNotFound) {

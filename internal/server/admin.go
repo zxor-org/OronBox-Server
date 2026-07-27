@@ -39,6 +39,21 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/oauth2/bandbbs/start?app_id=oronbox-admin&platform=web&return_uri=%s/admin", a.cfg.PublicURL), http.StatusFound)
 }
 
+// requireAdminRole wraps requireAdmin and additionally demands a users.role
+// value, so reviewers can reach the moderation pages while account
+// administration stays limited to admins.
+func (a *App) requireAdminRole(role string, next http.HandlerFunc) http.HandlerFunc {
+	return a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		session := currentAdmin(r)
+		user, err := a.store.UserByID(r.Context(), session.UserID)
+		if err != nil || (role == "admin" && user.Role != "admin") {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
+}
+
 func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
 	_ = a.store.RecordAudit(r.Context(), actor, "admin_logout", "success", a.clientIP(r), r.UserAgent(), "")
@@ -162,7 +177,7 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/login?error=invalid_ticket", http.StatusFound)
 			return
 		}
-		if !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) {
+		if !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) && user.Role != "admin" && user.Role != "reviewer" {
 			actor := store.AdminSession{UserID: user.ID, Username: user.Username}
 			_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "failure", a.clientIP(r), r.UserAgent(), "not authorized")
 			http.Redirect(w, r, "/admin/login?error=not_authorized", http.StatusFound)
@@ -245,6 +260,15 @@ func (a *App) handleAdminClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
+	announcements := []store.Announcement{}
+	if a.store != nil {
+		var err error
+		announcements, err = a.store.AdminAnnouncements(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	type oauthSettings struct {
 		ClientID      string
 		RedirectURI   string
@@ -278,6 +302,8 @@ func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		"BandBBSSecretState": map[bool]string{true: "已配置", false: "未配置"}[a.cfg.BandBBS.ClientSecret != ""],
 		"GitHubSecretState":  map[bool]string{true: "已配置", false: "未配置"}[a.cfg.GitHub.ClientSecret != ""],
+		"Announcements":      announcements,
+		"Action":             r.URL.Query().Get("action"),
 	})
 }
 
@@ -305,9 +331,9 @@ func (a *App) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
-	stateRows, ticketRows, err := a.store.CleanupExpired(r.Context())
+	stats, err := a.store.CleanupExpired(r.Context())
 	result := "success"
-	message := fmt.Sprintf("states=%d tickets=%d", stateRows, ticketRows)
+	message := fmt.Sprintf("states=%d tickets=%d admin_sessions=%d messages=%d", stats.OAuthStates, stats.LoginTickets, stats.AdminSessions, stats.UserMessages)
 	if err != nil {
 		result = "failure"
 		message = err.Error()
@@ -449,12 +475,52 @@ func reviewItems(raw string) []string {
 	return items
 }
 
+func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	page, err := a.store.AdminUsers(r.Context(), store.AdminUserQuery{
+		Search:  r.URL.Query().Get("q"),
+		Page:    positiveInt(r.URL.Query().Get("page"), 1),
+		PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_users", map[string]any{
+		"Title":  "用户",
+		"Page":   page,
+		"Items":  page.Items,
+		"Query":  page.Query,
+		"Action": r.URL.Query().Get("action"),
+	})
+}
+
+func (a *App) handleAdminUserState(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	userID := r.PathValue("user")
+	action := strings.TrimSpace(r.FormValue("action"))
+	actor := currentAdmin(r)
+	item, err := a.store.AdminManageUser(r.Context(), userID, action, r.FormValue("reason"), r.FormValue("role"), actor)
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "user."+action, "failure", a.clientIP(r), r.UserAgent(), "user="+userID+" error="+err.Error())
+		status := http.StatusConflict
+		if errors.Is(err, store.ErrAdminUserNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "user."+action, "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("user=%s(%d) role=%s reason=%s", item.Username, item.BandBBSUserID, item.Role, r.FormValue("reason")))
+	http.Redirect(w, r, "/admin/users?action=done", http.StatusFound)
+}
+
 func (a *App) handleAdminResources(w http.ResponseWriter, r *http.Request) {
 	query := store.AdminResourceQuery{
 		Search:            r.URL.Query().Get("q"),
 		Owner:             r.URL.Query().Get("owner"),
 		Kind:              r.URL.Query().Get("kind"),
-		Lifecycle:         r.URL.Query().Get("lifecycle"),
 		Moderation:        r.URL.Query().Get("moderation"),
 		RevisionState:     r.URL.Query().Get("revision_state"),
 		ReviewState:       r.URL.Query().Get("review_state"),
@@ -507,8 +573,9 @@ func (a *App) handleAdminResourceState(w http.ResponseWriter, r *http.Request) {
 	}
 	resourceID := r.PathValue("resource")
 	action := strings.TrimSpace(r.FormValue("action"))
+	reason := strings.TrimSpace(r.FormValue("reason"))
 	actor := currentAdmin(r)
-	result, err := a.store.AdminManageResource(r.Context(), resourceID, action, actor)
+	result, err := a.store.AdminManageResource(r.Context(), resourceID, action, reason, actor)
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "resource."+action, "failure", a.clientIP(r), r.UserAgent(), "resource="+resourceID+" error="+err.Error())
 		status := http.StatusConflict
@@ -518,16 +585,15 @@ func (a *App) handleAdminResourceState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
-	_ = a.store.RecordAudit(r.Context(), actor, "resource."+action, "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("resource=%s slug=%s previous_state=%s state=%s previous_moderation=%s moderation=%s deleted=%t", result.ID, result.Slug, result.PreviousState, result.State, result.PreviousModeration, result.ModerationState, result.Deleted))
+	_ = a.store.RecordAudit(r.Context(), actor, "resource."+action, "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("resource=%s slug=%s previous_moderation=%s moderation=%s reason=%s deleted=%t", result.ID, result.Slug, result.PreviousModeration, result.ModerationState, result.Reason, result.Deleted))
 	observability.From(r.Context()).With("component", "admin").Info(
 		"admin resource state changed",
 		"resource_id", resourceID,
 		"action", action,
 		"admin_user", actor.Username,
-		"previous_state", result.PreviousState,
-		"state", result.State,
 		"previous_moderation", result.PreviousModeration,
 		"moderation", result.ModerationState,
+		"reason", result.Reason,
 	)
 	if result.Deleted {
 		http.Redirect(w, r, "/admin/resources?action=deleted", http.StatusFound)

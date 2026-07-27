@@ -128,12 +128,16 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	}
 	defer tx.Rollback()
 	var resourceKind ResourceKind
-	err = tx.QueryRowContext(ctx, `SELECT kind FROM resources WHERE id=$1 AND owner_id=$2 FOR UPDATE`, resourceID, ownerID).Scan(&resourceKind)
+	var moderationState string
+	err = tx.QueryRowContext(ctx, `SELECT kind,moderation_state FROM resources WHERE id=$1 AND owner_id=$2 FOR UPDATE`, resourceID, ownerID).Scan(&resourceKind, &moderationState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, ErrNotFound
 	}
 	if err != nil {
 		return Workspace{}, err
+	}
+	if moderationState == "frozen" {
+		return Workspace{}, fmt.Errorf("%w: resource is frozen by an administrator", ErrConflict)
 	}
 	if resourceKind != kind {
 		return Workspace{}, fmt.Errorf("%w: manifest kind does not match the resource", ErrInvalid)

@@ -24,7 +24,7 @@ func TestAdminTemplatesRender(t *testing.T) {
 	}
 	resourceItem := store.AdminResourceItem{
 		ID: "resource-id", Name: "Resource", Slug: "resource", Owner: "author",
-		Kind: "quickapp", State: "active", ModerationState: "visible",
+		Kind: "quickapp", ModerationState: "visible",
 	}
 	resourcePage := store.AdminResourcePage{
 		Items: []store.AdminResourceItem{resourceItem}, Total: 1, Page: 1,
@@ -42,10 +42,12 @@ func TestAdminTemplatesRender(t *testing.T) {
 		"admin_states":    map[string]any{"Title": "t", "States": []any{}},
 		"admin_tickets":   map[string]any{"Title": "t", "Tickets": []any{}},
 		"admin_clients":   map[string]any{"Title": "t", "Clients": []any{}},
-		"admin_settings":  map[string]any{"Title": "t", "Config": config, "BandBBSSecretState": "已配置", "GitHubSecretState": "已配置"},
+		"admin_settings":  map[string]any{"Title": "t", "Config": config, "BandBBSSecretState": "已配置", "GitHubSecretState": "已配置", "Announcements": []store.Announcement{}},
 		"admin_health":    map[string]any{"Title": "t", "DBStatus": "ok", "Stats": model.Stats{}},
 		"admin_audit":     map[string]any{"Title": "t", "Logs": []any{}},
 		"admin_review":    map[string]any{"Title": "t", "Items": []any{}},
+		"admin_comments":  map[string]any{"Title": "t", "Items": []store.AdminCommentItem{}, "Total": 0, "Page": 1, "Prompt": "prompt"},
+		"admin_releases":  map[string]any{"Title": "t", "Items": []store.AppRelease{}},
 		"admin_resources": map[string]any{"Title": "t", "Items": resourcePage.Items, "Page": resourcePage, "Query": resourcePage.Query},
 		"admin_resource_detail": map[string]any{
 			"Title": "t", "Item": resourceItem, "Detail": resourceDetail,
@@ -108,7 +110,7 @@ func TestAdminResourceDetailExposesProtectedMediaAndArtifactActions(t *testing.T
 	recorder := httptest.NewRecorder()
 	item := store.AdminResourceItem{
 		ID: "resource-id", Name: "Resource", Slug: "resource", Owner: "author",
-		Kind: "quickapp", State: "active", ModerationState: "visible",
+		Kind: "quickapp", ModerationState: "visible",
 	}
 	detail := store.AdminResourceDetail{Resource: item}
 	err := NewTemplates().Render(recorder, "admin_resource_detail", map[string]any{
@@ -145,7 +147,6 @@ func TestAdminResourcesExposeGovernanceFiltersAndPreserveThemAcrossPages(t *test
 		Search:            "music",
 		Owner:             "creator",
 		Kind:              "quickapp",
-		Lifecycle:         "active",
 		Moderation:        "suspended",
 		RevisionState:     "approved",
 		ReviewState:       "approved",
@@ -157,7 +158,7 @@ func TestAdminResourcesExposeGovernanceFiltersAndPreserveThemAcrossPages(t *test
 	}
 	item := store.AdminResourceItem{
 		ID: "resource-id", Name: "Music", Slug: "music", Owner: "creator",
-		Kind: "quickapp", State: "active", ModerationState: "suspended",
+		Kind: "quickapp", ModerationState: "suspended",
 		Publications: []store.AdminPublication{{Target: "astrobox", State: "reviewing"}},
 	}
 	page := store.AdminResourcePage{

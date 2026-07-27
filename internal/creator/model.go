@@ -17,13 +17,6 @@ func (kind ResourceKind) Valid() bool {
 	return kind == QuickApp || kind == Watchface
 }
 
-type ResourceState string
-
-const (
-	ResourceActive   ResourceState = "active"
-	ResourceArchived ResourceState = "archived"
-)
-
 type RevisionState string
 
 const (
@@ -70,15 +63,18 @@ const (
 )
 
 type Resource struct {
-	ID                string        `json:"id"`
-	OwnerID           string        `json:"owner_id"`
-	Slug              string        `json:"slug"`
-	Kind              ResourceKind  `json:"kind"`
-	State             ResourceState `json:"state"`
-	ModerationState   string        `json:"moderation_state"`
-	CurrentRevisionID string        `json:"current_revision_id,omitempty"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
+	ID                string       `json:"id"`
+	OwnerID           string       `json:"owner_id"`
+	Slug              string       `json:"slug"`
+	Kind              ResourceKind `json:"kind"`
+	ModerationState   string       `json:"moderation_state"`
+	ModerationBy      string       `json:"moderation_by,omitempty"`
+	ModerationReason  string       `json:"moderation_reason,omitempty"`
+	ModerationAt      *time.Time   `json:"moderation_at,omitempty"`
+	DownloadCount     int          `json:"download_count"`
+	CurrentRevisionID string       `json:"current_revision_id,omitempty"`
+	CreatedAt         time.Time    `json:"created_at"`
+	UpdatedAt         time.Time    `json:"updated_at"`
 }
 
 type Revision struct {
@@ -238,6 +234,7 @@ type PublicResource struct {
 	Kind          string    `json:"kind"`
 	Version       string    `json:"version"`
 	Devices       []string  `json:"devices"`
+	DownloadCount int       `json:"download_count"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 

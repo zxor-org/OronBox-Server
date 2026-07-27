@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,20 +23,51 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
-func TestCreatorLifecycle(t *testing.T) {
+// testDatabase provisions a per-test database so packages running in
+// parallel processes never share serializable predicate locks.
+func testDatabase(t *testing.T) *sql.DB {
+	t.Helper()
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
 	}
 	ctx := context.Background()
-	db, err := store.Open(databaseURL)
+	admin, err := store.Open(databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer admin.Close()
+	name := "testdb_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+name); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Path = "/" + name
+	db, err := store.Open(parsed.String())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		db.Close()
+		admin, err := store.Open(databaseURL)
+		if err != nil {
+			return
+		}
+		defer admin.Close()
+		_, _ = admin.ExecContext(context.Background(), `DROP DATABASE `+name)
+	})
+	return db
+}
+
+func TestCreatorLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db := testDatabase(t)
 	userID := uuid.NewString()
 	if _, err := db.ExecContext(ctx, `INSERT INTO users(id,bandbbs_user_id,username) VALUES($1,$2,$3)`, userID, time.Now().UnixNano(), "creator-test"); err != nil {
 		t.Fatal(err)
@@ -149,6 +183,128 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	if _, err := service.Workspace(ctx, userID, workspace.Resource.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("workspace after deletion error = %v, want not found", err)
+	}
+}
+
+func TestCreatorModerationLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db := testDatabase(t)
+	ownerID, adminID := uuid.NewString(), uuid.NewString()
+	if _, err := db.ExecContext(ctx, `INSERT INTO users(id,bandbbs_user_id,username) VALUES($1,$2,$3),($4,$5,$6)`,
+		ownerID, time.Now().UnixNano(), "moderation-owner",
+		adminID, time.Now().UnixNano()+1, "moderation-admin",
+	); err != nil {
+		t.Fatal(err)
+	}
+	local, err := blob.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(db, local, Limits{UploadMaxBytes: 1 << 20, PreviewMaxBytes: 1 << 20, PreviewMaxCount: 4})
+	workspace, err := service.Create(ctx, ownerID, "moderation-"+uuid.NewString(), Watchface)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceID := workspace.Resource.ID
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM resources WHERE id=$1`, resourceID)
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM users WHERE id IN ($1,$2)`, ownerID, adminID)
+	})
+	deviceRows, err := service.Devices(ctx)
+	if err != nil || len(deviceRows) == 0 {
+		t.Fatalf("devices: %v, count=%d", err, len(deviceRows))
+	}
+	watchface := make([]byte, 128)
+	copy(watchface, []byte{0x5a, 0xa5, 0x34, 0x12})
+	var preview bytes.Buffer
+	if err := png.Encode(&preview, image.NewNRGBA(image.Rect(0, 0, 300, 300))); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"artifacts/face.bin":  watchface,
+		"media/preview-0.png": preview.Bytes(),
+	}
+	manifest := map[string]any{
+		"version": 1,
+		"kind":    "watchface",
+		"name":    "Moderation face",
+		"summary": "Summary",
+		"media": map[string]any{"previews": []any{map[string]any{
+			"file": "media/preview-0.png", "sha256": testSHA256(preview.Bytes()), "width": 300, "height": 300,
+		}}},
+		"artifacts": []any{map[string]any{
+			"file":          "artifacts/face.bin",
+			"original_name": "face.bin",
+			"type":          "velaos_watchface",
+			"sha256":        testSHA256(watchface),
+			"device_ids":    []string{deviceRows[0].ID},
+		}},
+	}
+	publish := func() Workspace {
+		t.Helper()
+		workspace, err := service.Publish(ctx, ownerID, resourceID, testBundle(t, manifest, files))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workspace
+	}
+	admin := store.AdminSession{UserID: adminID, Username: "moderation-admin"}
+	resourceStore := store.New(db)
+
+	workspace = publish()
+	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner takedown hides the resource and the owner can restore it.
+	workspace, err = service.SetModeration(ctx, ownerID, resourceID, "takedown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Resource.ModerationState != "suspended" || workspace.Resource.ModerationBy != "owner" {
+		t.Fatalf("after takedown = %q/%q", workspace.Resource.ModerationState, workspace.Resource.ModerationBy)
+	}
+	workspace, err = service.SetModeration(ctx, ownerID, resourceID, "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Resource.ModerationState != "visible" {
+		t.Fatalf("after restore = %q", workspace.Resource.ModerationState)
+	}
+
+	// Admin suspend blocks owner restore but still allows a new revision;
+	// approving that revision returns the resource to visible.
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "suspend", "policy violation", admin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SetModeration(ctx, ownerID, resourceID, "restore"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("owner restore after admin suspend error = %v, want conflict", err)
+	}
+	workspace = publish()
+	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = service.Workspace(ctx, ownerID, resourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Resource.ModerationState != "visible" {
+		t.Fatalf("after review approval = %q, want visible", workspace.Resource.ModerationState)
+	}
+
+	// Frozen resources reject publish until an admin unfreezes them.
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "freeze", "", admin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Publish(ctx, ownerID, resourceID, testBundle(t, manifest, files)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("publish while frozen error = %v, want conflict", err)
+	}
+	if _, err := resourceStore.AdminManageResource(ctx, resourceID, "unfreeze", "", admin); err != nil {
+		t.Fatal(err)
+	}
+	workspace = publish()
+	if workspace.Revisions[0].State != RevisionSubmitted {
+		t.Fatalf("revision after unfreeze = %q", workspace.Revisions[0].State)
 	}
 }
 

@@ -36,7 +36,7 @@ type Config struct {
 	AccessTokenTTL    time.Duration
 	RefreshTokenTTL   time.Duration
 	Admin             AdminConfig
-	Releases          ReleasesConfig
+	Moderation        ModerationConfig
 	Retention         RetentionConfig
 	Version           string
 	Commit            string
@@ -92,16 +92,30 @@ type R2Config struct {
 }
 
 type LimitsConfig struct {
-	UploadMaxBytes  int64
-	PreviewMaxBytes int64
-	PreviewMaxCount int
+	UploadMaxBytes     int64
+	PreviewMaxBytes    int64
+	PreviewMaxCount    int
+	DownloadRatePerMin int
+	DownloadDailyLimit int
+	DownloadPresignTTL time.Duration
 }
 
 type AdminConfig struct {
 	BandBBSUserIDs []int64
 }
 
-type ReleasesConfig struct{ LatestVersion, MinimumVersion, ReleaseNotesZH, ReleaseNotesEN, PublishedAt, DownloadURL string }
+type ModerationEndpointConfig struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
+type ModerationConfig struct {
+	Primary  ModerationEndpointConfig
+	Fallback ModerationEndpointConfig
+	Timeout  time.Duration
+}
+
 type RetentionConfig struct{ Unpublished, Audit, Feedback, OrphanBlobs, Interval time.Duration }
 
 func Load() Config {
@@ -153,9 +167,12 @@ func Load() Config {
 			},
 		},
 		Limits: LimitsConfig{
-			UploadMaxBytes:  int64Env("UPLOAD_MAX_BYTES", 100<<20),
-			PreviewMaxBytes: int64Env("PREVIEW_MAX_BYTES", 10<<20),
-			PreviewMaxCount: int(int64Env("PREVIEW_MAX_COUNT", 12)),
+			UploadMaxBytes:     int64Env("UPLOAD_MAX_BYTES", 100<<20),
+			PreviewMaxBytes:    int64Env("PREVIEW_MAX_BYTES", 10<<20),
+			PreviewMaxCount:    int(int64Env("PREVIEW_MAX_COUNT", 12)),
+			DownloadRatePerMin: int(int64Env("DOWNLOAD_RATE_PER_MINUTE", 30)),
+			DownloadDailyLimit: int(int64Env("DOWNLOAD_DAILY_LIMIT", 200)),
+			DownloadPresignTTL: durationEnv("DOWNLOAD_PRESIGN_TTL", 10*time.Minute),
 		},
 		ClientRedirectURI: env("CLIENT_REDIRECT_URI", "oronbox://oauth/bandbbs"),
 		WebClientOrigins:  stringListEnv("WEB_CLIENT_ORIGINS"),
@@ -167,7 +184,19 @@ func Load() Config {
 		Admin: AdminConfig{
 			BandBBSUserIDs: int64ListEnv("ADMIN_BANDBBS_USER_IDS"),
 		},
-		Releases:  ReleasesConfig{LatestVersion: env("RELEASE_LATEST_VERSION", env("APP_VERSION", "dev")), MinimumVersion: env("RELEASE_MINIMUM_VERSION", ""), ReleaseNotesZH: env("RELEASE_NOTES_ZH", env("RELEASE_NOTES", "")), ReleaseNotesEN: env("RELEASE_NOTES_EN", env("RELEASE_NOTES", "")), PublishedAt: env("RELEASE_PUBLISHED_AT", ""), DownloadURL: env("RELEASE_DOWNLOAD_URL", "")},
+		Moderation: ModerationConfig{
+			Primary: ModerationEndpointConfig{
+				BaseURL: strings.TrimRight(env("MODERATION_BASE_URL", "https://api.deepseek.com"), "/"),
+				APIKey:  env("MODERATION_API_KEY", ""),
+				Model:   env("MODERATION_MODEL", "deepseek-v4-flash"),
+			},
+			Fallback: ModerationEndpointConfig{
+				BaseURL: strings.TrimRight(env("MODERATION_FALLBACK_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"), "/"),
+				APIKey:  env("MODERATION_FALLBACK_API_KEY", ""),
+				Model:   env("MODERATION_FALLBACK_MODEL", "glm-4-flash"),
+			},
+			Timeout: durationEnv("MODERATION_TIMEOUT", 4*time.Second),
+		},
 		Retention: RetentionConfig{Unpublished: durationEnv("RETENTION_UNPUBLISHED", 180*24*time.Hour), Audit: durationEnv("RETENTION_AUDIT", 180*24*time.Hour), Feedback: durationEnv("RETENTION_FEEDBACK", 365*24*time.Hour), OrphanBlobs: durationEnv("RETENTION_ORPHAN_BLOBS", 7*24*time.Hour), Interval: durationEnv("RETENTION_INTERVAL", 6*time.Hour)},
 		Version:   env("APP_VERSION", "dev"),
 		Commit:    env("GIT_COMMIT", ""),
@@ -219,8 +248,8 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("GITHUB_CLIENT_SECRET and GITHUB_REDIRECT_URI are required when GitHub OAuth is configured"))
 	}
 	if c.Storage.R2.Enabled {
-		if c.Storage.R2.Endpoint == "" || c.Storage.R2.Bucket == "" || c.Storage.R2.AccessKeyID == "" || c.Storage.R2.SecretAccessKey == "" || c.Storage.R2.PublicBaseURL == "" {
-			errs = append(errs, errors.New("R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_PUBLIC_BASE_URL are required when R2 is enabled"))
+		if c.Storage.R2.Endpoint == "" || c.Storage.R2.Bucket == "" || c.Storage.R2.AccessKeyID == "" || c.Storage.R2.SecretAccessKey == "" {
+			errs = append(errs, errors.New("R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required when R2 is enabled"))
 		}
 		if endpoint, err := url.Parse(c.Storage.R2.Endpoint); err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
 			errs = append(errs, errors.New("R2_ENDPOINT must be an absolute URL"))

@@ -20,6 +20,7 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/creator"
 	"github.com/zxor-org/OronBox-Server/internal/model"
+	"github.com/zxor-org/OronBox-Server/internal/moderation"
 	"github.com/zxor-org/OronBox-Server/internal/oauth/bandbbs"
 	githuboauth "github.com/zxor-org/OronBox-Server/internal/oauth/github"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
@@ -33,26 +34,31 @@ const (
 )
 
 type Dependencies struct {
-	Config    config.Config
-	Store     *store.Store
-	BandBBS   *bandbbs.Client
-	GitHub    *githuboauth.Client
-	StartedAt time.Time
-	Blobs     blob.Store
-	Creator   *creator.Service
+	Config     config.Config
+	Store      *store.Store
+	BandBBS    *bandbbs.Client
+	GitHub     *githuboauth.Client
+	StartedAt  time.Time
+	Blobs      blob.Store
+	Creator    *creator.Service
+	R2         *blob.R2
+	Moderation *moderation.Service
 }
 
 type App struct {
-	cfg            config.Config
-	store          *store.Store
-	bandbbs        *bandbbs.Client
-	github         *githuboauth.Client
-	startedAt      time.Time
-	secrets        *authcore.Secrets
-	blobs          blob.Store
-	creator        *creator.Service
-	templates      *web.Templates
-	trustedProxies []*net.IPNet
+	cfg             config.Config
+	store           *store.Store
+	bandbbs         *bandbbs.Client
+	github          *githuboauth.Client
+	startedAt       time.Time
+	secrets         *authcore.Secrets
+	blobs           blob.Store
+	creator         *creator.Service
+	r2              *blob.R2
+	moderation      *moderation.Service
+	templates       *web.Templates
+	trustedProxies  []*net.IPNet
+	downloadLimiter *ipRateLimiter
 }
 
 func New(deps Dependencies) *App {
@@ -61,15 +67,18 @@ func New(deps Dependencies) *App {
 		panic(err)
 	}
 	app := &App{
-		cfg:       deps.Config,
-		store:     deps.Store,
-		bandbbs:   deps.BandBBS,
-		github:    deps.GitHub,
-		startedAt: deps.StartedAt,
-		secrets:   secrets,
-		blobs:     deps.Blobs,
-		creator:   deps.Creator,
-		templates: web.NewTemplates(),
+		cfg:             deps.Config,
+		store:           deps.Store,
+		bandbbs:         deps.BandBBS,
+		github:          deps.GitHub,
+		startedAt:       deps.StartedAt,
+		secrets:         secrets,
+		blobs:           deps.Blobs,
+		creator:         deps.Creator,
+		r2:              deps.R2,
+		moderation:      deps.Moderation,
+		templates:       web.NewTemplates(),
+		downloadLimiter: newIPRateLimiter(deps.Config.Limits.DownloadRatePerMin),
 	}
 	for _, value := range deps.Config.TrustedProxyCIDRs {
 		if _, network, parseErr := net.ParseCIDR(value); parseErr == nil {
@@ -106,6 +115,13 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("POST /api/session/revoke", a.requireUser(http.HandlerFunc(a.handleSessionRevoke)))
 	mux.HandleFunc("GET /api/resources", a.handleListResources)
 	mux.HandleFunc("GET /api/resources/{id}", a.handleResource)
+	mux.HandleFunc("GET /api/resources/{id}/comments", a.handleListComments)
+	mux.Handle("POST /api/resources/{id}/comments", a.requireUser(http.HandlerFunc(a.handleCreateComment)))
+	mux.Handle("DELETE /api/comments/{id}", a.requireUser(http.HandlerFunc(a.handleDeleteComment)))
+	mux.Handle("GET /api/messages", a.requireUser(http.HandlerFunc(a.handleMessages)))
+	mux.Handle("POST /api/messages/{id}/read", a.requireUser(http.HandlerFunc(a.handleReadMessage)))
+	mux.Handle("GET /api/announcements/unread", a.requireUser(http.HandlerFunc(a.handleAnnouncements)))
+	mux.Handle("POST /api/announcements/read", a.requireUser(http.HandlerFunc(a.handleReadAnnouncements)))
 	mux.HandleFunc("GET /api/devices", a.handleDevices)
 	mux.HandleFunc("GET /api/meta/legal/{document}", a.handleLegalDocument)
 	mux.HandleFunc("GET /api/app/releases", a.handleAppRelease)
@@ -119,13 +135,15 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("GET /api/feedback", a.requireUser(http.HandlerFunc(a.handleFeedbackList)))
 	mux.Handle("GET /api/feedback/{ticket}", a.requireUser(http.HandlerFunc(a.handleFeedback)))
 	mux.Handle("POST /api/feedback/{ticket}/replies", a.requireUser(http.HandlerFunc(a.handleFeedbackReply)))
-	mux.Handle("GET /api/creator/resources", a.requireUser(http.HandlerFunc(a.handleCreatorList)))
-	mux.Handle("POST /api/creator/resources", a.requireUser(http.HandlerFunc(a.handleCreatorCreate)))
-	mux.Handle("GET /api/creator/resources/{resource}", a.requireUser(http.HandlerFunc(a.handleCreatorWorkspace)))
-	mux.Handle("POST /api/creator/resources/{resource}/publish", a.requireUser(http.HandlerFunc(a.handleCreatorPublish)))
-	mux.Handle("GET /api/creator/resources/{resource}/blobs/{sha256}", a.requireUser(http.HandlerFunc(a.handleCreatorBlob)))
-	mux.Handle("PATCH /api/creator/resources/{resource}/archive", a.requireUser(http.HandlerFunc(a.handleCreatorArchive)))
-	mux.Handle("DELETE /api/creator/resources/{resource}", a.requireUser(http.HandlerFunc(a.handleCreatorDelete)))
+	mux.Handle("GET /api/creator/resources", a.requireCreator(a.handleCreatorList))
+	mux.Handle("POST /api/creator/resources", a.requireCreator(a.handleCreatorCreate))
+	mux.Handle("GET /api/creator/resources/{resource}", a.requireCreator(a.handleCreatorWorkspace))
+	mux.Handle("POST /api/creator/resources/{resource}/publish", a.requireCreator(a.handleCreatorPublish))
+	mux.Handle("GET /api/creator/resources/{resource}/blobs/{sha256}", a.requireCreator(a.handleCreatorBlob))
+	mux.Handle("POST /api/creator/resources/{resource}/takedown", a.requireCreator(a.handleCreatorTakedown))
+	mux.Handle("POST /api/creator/resources/{resource}/restore", a.requireCreator(a.handleCreatorRestore))
+	mux.Handle("PATCH /api/creator/resources/{resource}/archive", a.requireCreator(a.handleCreatorArchive))
+	mux.Handle("DELETE /api/creator/resources/{resource}", a.requireCreator(a.handleCreatorDelete))
 
 	mux.HandleFunc("GET /assets/app.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -155,7 +173,18 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /admin/oauth/states", a.requireAdmin(a.handleAdminStates))
 	mux.HandleFunc("GET /admin/oauth/tickets", a.requireAdmin(a.handleAdminTickets))
 	mux.HandleFunc("GET /admin/clients", a.requireAdmin(a.handleAdminClients))
+	mux.HandleFunc("GET /admin/users", a.requireAdminRole("admin", a.handleAdminUsers))
+	mux.HandleFunc("GET /admin/comments", a.requireAdmin(a.handleAdminComments))
+	mux.HandleFunc("POST /admin/comments/{comment}", a.requireAdmin(a.handleAdminCommentDecision))
+	mux.HandleFunc("POST /admin/comments/prompt", a.requireAdmin(a.handleAdminModerationPrompt))
+	mux.HandleFunc("POST /admin/comments/test", a.requireAdmin(a.handleAdminModerationTest))
+	mux.HandleFunc("POST /admin/users/{user}/state", a.requireAdminRole("admin", a.handleAdminUserState))
+	mux.HandleFunc("POST /admin/users/messages", a.requireAdminRole("admin", a.handleAdminUserMessage))
 	mux.HandleFunc("GET /admin/settings", a.requireAdmin(a.handleAdminSettings))
+	mux.HandleFunc("GET /admin/releases", a.requireAdmin(a.handleAdminReleases))
+	mux.HandleFunc("POST /admin/releases", a.requireAdmin(a.handleAdminPublishRelease))
+	mux.HandleFunc("POST /admin/announcements", a.requireAdmin(a.handleAdminAnnouncement))
+	mux.HandleFunc("POST /admin/announcements/{announcement}/delete", a.requireAdmin(a.handleAdminDeleteAnnouncement))
 	mux.HandleFunc("GET /admin/health", a.requireAdmin(a.handleAdminHealth))
 	mux.HandleFunc("GET /admin/audit", a.requireAdmin(a.handleAdminAudit))
 	mux.HandleFunc("POST /admin/cleanup", a.requireAdmin(a.handleAdminCleanup))
@@ -351,6 +380,19 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		http.Redirect(w, r, "/auth/failed?error=identity_save_failed", http.StatusFound)
+		return
+	}
+	// The env whitelist keeps working as the super-admin bootstrap: members
+	// are promoted to the admin role on every login.
+	if containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) && user.Role != "admin" {
+		if user, err = a.store.SetUserRole(r.Context(), user.ID, "admin"); err != nil {
+			http.Redirect(w, r, "/auth/failed?error=identity_save_failed", http.StatusFound)
+			return
+		}
+	}
+	if user.BannedAt != nil {
+		a.recordEvent(r, "identity", "failure", meta, stateID, "", providerUserID, "", actualScopes, "account_banned", "account is banned", start)
+		http.Redirect(w, r, "/auth/failed?error=account_banned", http.StatusFound)
 		return
 	}
 	accessCipher, err := a.secrets.Encrypt(token.AccessToken)

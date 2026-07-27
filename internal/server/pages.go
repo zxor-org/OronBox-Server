@@ -62,6 +62,8 @@ func authErrorMessage(code string) string {
 		return "未能读取或保存账号信息，请稍后重试"
 	case "account_mismatch":
 		return "授权账号与当前登录账号不一致"
+	case "account_banned":
+		return "账号已被封禁，如有疑问请通过工单联系管理员"
 	case "grant_encrypt_failed", "grant_save_failed", "ticket_create_failed":
 		return "服务端未能保存授权结果，请稍后重试"
 	default:

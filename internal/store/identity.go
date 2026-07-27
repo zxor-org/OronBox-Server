@@ -14,6 +14,39 @@ import (
 
 var ErrInvalidCredential = errors.New("credential is invalid or expired")
 
+// userColumns lists the users table columns userScanner expects, in order.
+const userColumns = `id::text,bandbbs_user_id,username,avatar_url,role,banned_at,ban_reason,creator_frozen_at,created_at,updated_at`
+
+// userColumnsAliased is userColumns with the "u" table alias used in joins.
+const userColumnsAliased = `u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,u.created_at,u.updated_at`
+
+// userScanner scans a row whose user columns follow userColumns order,
+// optionally wrapped by prefix/suffix destinations.
+type userScanner struct {
+	user                      *model.User
+	bannedAt, creatorFrozenAt sql.NullTime
+}
+
+func newUserScanner(user *model.User) *userScanner {
+	return &userScanner{user: user}
+}
+
+func (scanner *userScanner) dest(prefix, suffix []any) []any {
+	user := scanner.user
+	return append(append(append([]any{}, prefix...),
+		&user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role,
+		&scanner.bannedAt, &user.BanReason, &scanner.creatorFrozenAt, &user.CreatedAt, &user.UpdatedAt), suffix...)
+}
+
+func (scanner *userScanner) finish() {
+	if scanner.bannedAt.Valid {
+		scanner.user.BannedAt = &scanner.bannedAt.Time
+	}
+	if scanner.creatorFrozenAt.Valid {
+		scanner.user.CreatorFrozenAt = &scanner.creatorFrozenAt.Time
+	}
+}
+
 type UpsertUserParams struct {
 	BandBBSUserID int64
 	Username      string
@@ -75,28 +108,43 @@ type SessionParams struct {
 
 func (s *Store) UpsertUser(ctx context.Context, params UpsertUserParams) (model.User, error) {
 	var user model.User
+	scanner := newUserScanner(&user)
 	err := s.db.QueryRowContext(ctx, `
 INSERT INTO users(id, bandbbs_user_id, username, avatar_url)
 VALUES($1,$2,$3,$4)
 ON CONFLICT(bandbbs_user_id) DO UPDATE SET username=excluded.username, avatar_url=excluded.avatar_url, updated_at=now()
-RETURNING id::text, bandbbs_user_id, username, avatar_url, role, created_at, updated_at`,
+RETURNING `+userColumns,
 		uuid.NewString(), params.BandBBSUserID, params.Username, params.AvatarURL,
-	).Scan(&user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
-	return user, err
+	).Scan(scanner.dest(nil, nil)...)
+	if err != nil {
+		return user, err
+	}
+	scanner.finish()
+	return user, nil
 }
 
 func (s *Store) SetUserRole(ctx context.Context, userID, role string) (model.User, error) {
 	var user model.User
-	err := s.db.QueryRowContext(ctx, `UPDATE users SET role=$2,updated_at=now() WHERE id=$1 RETURNING id::text,bandbbs_user_id,username,avatar_url,role,created_at,updated_at`, userID, role).
-		Scan(&user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
-	return user, err
+	scanner := newUserScanner(&user)
+	err := s.db.QueryRowContext(ctx, `UPDATE users SET role=$2,updated_at=now() WHERE id=$1 RETURNING `+userColumns, userID, role).
+		Scan(scanner.dest(nil, nil)...)
+	if err != nil {
+		return user, err
+	}
+	scanner.finish()
+	return user, nil
 }
 
 func (s *Store) UserByID(ctx context.Context, userID string) (model.User, error) {
 	var user model.User
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,bandbbs_user_id,username,avatar_url,role,created_at,updated_at FROM users WHERE id=$1`, userID).
-		Scan(&user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
-	return user, err
+	scanner := newUserScanner(&user)
+	err := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1`, userID).
+		Scan(scanner.dest(nil, nil)...)
+	if err != nil {
+		return user, err
+	}
+	scanner.finish()
+	return user, nil
 }
 
 func (s *Store) UpsertOAuthGrant(ctx context.Context, params GrantParams) error {
@@ -127,19 +175,21 @@ func (s *Store) ConsumeLoginTicket(ctx context.Context, ticketHash []byte, sessi
 	}
 	defer tx.Rollback()
 	var user model.User
+	scanner := newUserScanner(&user)
 	var ticketID string
 	var tokenCipher []byte
 	err = tx.QueryRowContext(ctx, `
-SELECT t.id::text,u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.created_at,u.updated_at,COALESCE(t.token_cipher,''::bytea)
+SELECT t.id::text,`+userColumnsAliased+`,COALESCE(t.token_cipher,''::bytea)
 FROM login_tickets t JOIN users u ON u.id=t.user_id
 WHERE t.ticket_hash=$1 AND t.used_at IS NULL AND t.expires_at>now() FOR UPDATE`, ticketHash).
-		Scan(&ticketID, &user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt, &tokenCipher)
+		Scan(scanner.dest([]any{&ticketID}, []any{&tokenCipher})...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, nil, ErrInvalidCredential
 	}
 	if err != nil {
 		return model.User{}, nil, err
 	}
+	scanner.finish()
 	if _, err = tx.ExecContext(ctx, `UPDATE login_tickets SET used_at=now() WHERE id=$1`, ticketID); err != nil {
 		return model.User{}, nil, err
 	}
@@ -159,15 +209,20 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,'')::inet,$11)`, uuid.NewString(), 
 
 func (s *Store) UserByAccessToken(ctx context.Context, accessHash []byte) (model.User, error) {
 	var user model.User
+	scanner := newUserScanner(&user)
 	err := s.db.QueryRowContext(ctx, `
-SELECT u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.created_at,u.updated_at
+SELECT `+userColumnsAliased+`
 FROM sessions s JOIN users u ON u.id=s.user_id
 WHERE s.access_hash=$1 AND s.revoked_at IS NULL AND s.access_expires_at>now()`, accessHash).
-		Scan(&user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
+		Scan(scanner.dest(nil, nil)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrInvalidCredential
 	}
-	return user, err
+	if err != nil {
+		return user, err
+	}
+	scanner.finish()
+	return user, nil
 }
 
 func (s *Store) RevokeSession(ctx context.Context, accessHash []byte) error {
@@ -189,17 +244,19 @@ func (s *Store) RotateSession(ctx context.Context, currentRefreshHash []byte, se
 	defer tx.Rollback()
 	var sessionID string
 	var user model.User
+	scanner := newUserScanner(&user)
 	err = tx.QueryRowContext(ctx, `
-SELECT s.id::text,u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.created_at,u.updated_at
+SELECT s.id::text,`+userColumnsAliased+`
 FROM sessions s JOIN users u ON u.id=s.user_id
 WHERE s.refresh_hash=$1 AND s.revoked_at IS NULL AND s.refresh_expires_at>now() FOR UPDATE`, currentRefreshHash).
-		Scan(&sessionID, &user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
+		Scan(scanner.dest([]any{&sessionID}, nil)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrInvalidCredential
 	}
 	if err != nil {
 		return model.User{}, err
 	}
+	scanner.finish()
 	_, err = tx.ExecContext(ctx, `
 UPDATE sessions SET access_hash=$1,refresh_hash=$2,access_expires_at=$3,refresh_expires_at=$4,last_seen_at=now(),
  app_id=$5,app_version=$6,platform=$7,ip=NULLIF($8,'')::inet,user_agent=$9 WHERE id=$10`,
@@ -222,18 +279,20 @@ func nullableBytes(value []byte) any {
 // user identity without creating a OronBox session.
 func (s *Store) ConsumeLoginTicketIdentity(ctx context.Context, ticketHash []byte) (model.User, error) {
 	var user model.User
+	scanner := newUserScanner(&user)
 	var ticketID string
 	err := s.db.QueryRowContext(ctx, `
-SELECT t.id::text,u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.created_at,u.updated_at
+SELECT t.id::text,`+userColumnsAliased+`
 FROM login_tickets t JOIN users u ON u.id=t.user_id
 WHERE t.ticket_hash=$1 AND t.used_at IS NULL AND t.expires_at>now() FOR UPDATE`, ticketHash).
-		Scan(&ticketID, &user.ID, &user.BandBBSUserID, &user.Username, &user.AvatarURL, &user.Role, &user.CreatedAt, &user.UpdatedAt)
+		Scan(scanner.dest([]any{&ticketID}, nil)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return user, ErrInvalidCredential
 	}
 	if err != nil {
 		return user, err
 	}
+	scanner.finish()
 	_, err = s.db.ExecContext(ctx, `UPDATE login_tickets SET used_at=now() WHERE id=$1`, ticketID)
 	return user, err
 }

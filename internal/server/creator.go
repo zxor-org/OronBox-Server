@@ -66,9 +66,28 @@ func (a *App) handleCreatorPublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, workspace)
 }
 
+func (a *App) handleCreatorTakedown(w http.ResponseWriter, r *http.Request) {
+	a.writeCreatorModeration(w, r, "takedown")
+}
+
+func (a *App) handleCreatorRestore(w http.ResponseWriter, r *http.Request) {
+	a.writeCreatorModeration(w, r, "restore")
+}
+
+// handleCreatorArchive keeps the legacy archive endpoint working as an alias
+// for the moderation transitions.
+// TODO: remove once released clients no longer call PATCH .../archive.
 func (a *App) handleCreatorArchive(w http.ResponseWriter, r *http.Request) {
 	archived, _ := strconv.ParseBool(r.URL.Query().Get("archived"))
-	workspace, err := a.creator.SetArchived(r.Context(), currentUser(r).ID, r.PathValue("resource"), archived)
+	action := "restore"
+	if archived {
+		action = "takedown"
+	}
+	a.writeCreatorModeration(w, r, action)
+}
+
+func (a *App) writeCreatorModeration(w http.ResponseWriter, r *http.Request, action string) {
+	workspace, err := a.creator.SetModeration(r.Context(), currentUser(r).ID, r.PathValue("resource"), action)
 	if err != nil {
 		a.writeCreatorError(w, err)
 		return

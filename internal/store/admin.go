@@ -106,7 +106,7 @@ func (s *Store) Stats(ctx context.Context, startedAt time.Time) (model.Stats, er
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM login_tickets WHERE expires_at > now() AND used_at IS NULL`).Scan(&stats.ActiveTickets); err != nil {
 		return stats, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*),count(*) FILTER (WHERE state='active' AND moderation_state='visible' AND current_revision_id IS NOT NULL) FROM resources`).Scan(&stats.ResourcesTotal, &stats.PublishedResources); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*),count(*) FILTER (WHERE moderation_state='visible' AND current_revision_id IS NOT NULL) FROM resources`).Scan(&stats.ResourcesTotal, &stats.PublishedResources); err != nil {
 		return stats, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM review_cases WHERE state='pending'`).Scan(&stats.PendingReviews); err != nil {

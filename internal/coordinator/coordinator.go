@@ -153,8 +153,7 @@ WITH candidate AS (
    AND NOT EXISTS (
     SELECT 1
     FROM resources resource
-    WHERE resource.state='active'
-      AND resource.moderation_state='visible'
+    WHERE resource.moderation_state='visible'
       AND resource.current_revision_id IS NOT NULL
       AND (
        EXISTS (
@@ -214,8 +213,7 @@ WITH candidate AS (
  )
  AND EXISTS (
   SELECT 1 FROM resources resource
-  WHERE resource.state='active'
-    AND resource.moderation_state='visible'
+  WHERE resource.moderation_state='visible'
     AND resource.current_revision_id IS NOT NULL
     AND (
      EXISTS (
@@ -267,7 +265,7 @@ func (c *Coordinator) publishOne(ctx context.Context) error {
 WITH candidate AS (
  SELECT p.id FROM publications p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources resource ON resource.id=rr.resource_id
  WHERE p.state='pending' AND p.target<>'oronbox' AND p.next_attempt_at<=now() AND rr.state='approved'
-   AND resource.state='active' AND resource.moderation_state='visible'
+   AND resource.moderation_state='visible'
  ORDER BY p.created_at LIMIT 1 FOR UPDATE OF p SKIP LOCKED
 ), claimed AS (
  UPDATE publications p SET state='running',attempts=attempts+1,updated_at=now() FROM candidate c WHERE p.id=c.id
