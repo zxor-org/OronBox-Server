@@ -77,7 +77,7 @@ func TestCreatorLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(db, local, Limits{UploadMaxBytes: 1 << 20, PreviewMaxBytes: 1 << 20, PreviewMaxCount: 4})
-	workspace, err := service.Create(ctx, userID, "test-"+uuid.NewString(), Watchface)
+	workspace, err := service.Create(ctx, userID, "test-"+uuid.NewString(), "Test watchface", Watchface)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestCreatorModerationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(db, local, Limits{UploadMaxBytes: 1 << 20, PreviewMaxBytes: 1 << 20, PreviewMaxCount: 4})
-	workspace, err := service.Create(ctx, ownerID, "moderation-"+uuid.NewString(), Watchface)
+	workspace, err := service.Create(ctx, ownerID, "moderation-"+uuid.NewString(), "Moderation watchface", Watchface)
 	if err != nil {
 		t.Fatal(err)
 	}

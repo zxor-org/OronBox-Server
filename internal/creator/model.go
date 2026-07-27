@@ -66,6 +66,7 @@ type Resource struct {
 	ID                string       `json:"id"`
 	OwnerID           string       `json:"owner_id"`
 	Slug              string       `json:"slug"`
+	DraftName         string       `json:"draft_name"`
 	Kind              ResourceKind `json:"kind"`
 	ModerationState   string       `json:"moderation_state"`
 	ModerationBy      string       `json:"moderation_by,omitempty"`

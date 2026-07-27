@@ -22,13 +22,14 @@ func (a *App) handleCreatorList(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleCreatorCreate(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Slug string               `json:"slug"`
+		Name string               `json:"name"`
 		Kind creator.ResourceKind `json:"kind"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
 		return
 	}
-	workspace, err := a.creator.Create(r.Context(), currentUser(r).ID, request.Slug, request.Kind)
+	workspace, err := a.creator.Create(r.Context(), currentUser(r).ID, request.Slug, request.Name, request.Kind)
 	if err != nil {
 		a.writeCreatorError(w, err)
 		return

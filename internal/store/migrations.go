@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 8
+const schemaVersion int64 = 9
 
 const notificationSchema = `
 CREATE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -119,7 +119,12 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("release PostgreSQL schema lock: %w", err)
 			}
-			return migrateV8(ctx, db)
+			return migrateV8(ctx, db, true)
+		case 8:
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("release PostgreSQL schema lock: %w", err)
+			}
+			return migrateV9(ctx, db)
 		default:
 			return fmt.Errorf("database schema version %d is unsupported; drop and recreate the database for schema version %d", installedVersion.Int64, schemaVersion)
 		}
@@ -194,7 +199,7 @@ CREATE TABLE blob_replicas (
  PRIMARY KEY(blob_sha256,backend)
 );
 CREATE TABLE resources (
- id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id), slug text NOT NULL,
+ id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id), slug text NOT NULL, draft_name text NOT NULL DEFAULT '',
  platform text NOT NULL DEFAULT 'vela_os' CHECK (platform='vela_os'),
  kind text NOT NULL CHECK (kind IN ('quickapp','watchface')),
  moderation_state text NOT NULL DEFAULT 'visible' CHECK (moderation_state IN ('visible','suspended','frozen')),
@@ -560,14 +565,14 @@ func migrateV7(ctx context.Context, db *sql.DB, chain bool) error {
 		return fmt.Errorf("commit PostgreSQL schema v7 migration: %w", err)
 	}
 	if chain {
-		return migrateV8(ctx, db)
+		return migrateV8(ctx, db, true)
 	}
 	return nil
 }
 
 // migrateV8 distinguishes resource and comment reports at the database layer
 // and makes result notifications cover both report types.
-func migrateV8(ctx context.Context, db *sql.DB) error {
+func migrateV8(ctx context.Context, db *sql.DB, chain bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin PostgreSQL schema v8 transaction: %w", err)
@@ -597,6 +602,32 @@ END $$;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit PostgreSQL schema v8 migration: %w", err)
+	}
+	if chain {
+		return migrateV9(ctx, db)
+	}
+	return nil
+}
+
+// migrateV9 gives resources a display name before their first revision.
+func migrateV9(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin PostgreSQL schema v9 transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox-server-schema'))`); err != nil {
+		return fmt.Errorf("lock PostgreSQL schema: %w", err)
+	}
+	const migration = `ALTER TABLE resources ADD COLUMN draft_name text NOT NULL DEFAULT '';`
+	if _, err := tx.ExecContext(ctx, migration); err != nil {
+		return fmt.Errorf("apply PostgreSQL schema v9 migration: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(9)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v9: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit PostgreSQL schema v9 migration: %w", err)
 	}
 	return nil
 }

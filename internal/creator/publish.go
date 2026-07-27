@@ -148,15 +148,6 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	if err := s.verifyBundlePublications(ctx, tx, ownerID, &manifest, artifacts, publications); err != nil {
 		return Workspace{}, err
 	}
-	var duplicateResource string
-	err = tx.QueryRowContext(ctx, `SELECT DISTINCT rr.resource_id::text FROM revision_artifacts ra JOIN resource_revisions rr ON rr.id=ra.revision_id WHERE ra.package_id<>'' AND ra.package_id=ANY($1) AND rr.resource_id<>$2 AND rr.state IN ('submitted','approved') LIMIT 1`, artifactPackageIDs(artifacts), resourceID).Scan(&duplicateResource)
-	if err == nil {
-		return Workspace{}, fmt.Errorf("%w: package already belongs to resource %s", ErrConflict, duplicateResource)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return Workspace{}, err
-	}
-
 	stored := make(map[string]bool)
 	put := func(payload []byte, mediaType string) (string, int64, error) {
 		digest := sha256.Sum256(payload)
@@ -436,17 +427,4 @@ func verifySHA256(payload []byte, declared string) error {
 		return fmt.Errorf("%w: sha256 mismatch", ErrInvalid)
 	}
 	return nil
-}
-
-func artifactPackageIDs(artifacts []verifiedArtifact) []string {
-	result := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if artifact.analysis.PackageID != "" {
-			result = append(result, artifact.analysis.PackageID)
-		}
-	}
-	if len(result) == 0 {
-		return []string{""}
-	}
-	return result
 }

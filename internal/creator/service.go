@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/zxor-org/OronBox-Server/internal/blob"
@@ -51,10 +52,11 @@ func log(ctx context.Context) *slog.Logger {
 	return observability.From(ctx).With("component", "creator")
 }
 
-func (s *Service) Create(ctx context.Context, ownerID, slug string, kind ResourceKind) (Workspace, error) {
+func (s *Service) Create(ctx context.Context, ownerID, slug, name string, kind ResourceKind) (Workspace, error) {
 	slug = strings.ToLower(strings.TrimSpace(slug))
-	if !slugPattern.MatchString(slug) || !kind.Valid() {
-		return Workspace{}, fmt.Errorf("%w: slug or kind", ErrInvalid)
+	name = strings.TrimSpace(name)
+	if !slugPattern.MatchString(slug) || !kind.Valid() || name == "" || len([]rune(name)) > 120 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		return Workspace{}, fmt.Errorf("%w: slug, name, or kind", ErrInvalid)
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -62,7 +64,7 @@ func (s *Service) Create(ctx context.Context, ownerID, slug string, kind Resourc
 	}
 	defer tx.Rollback()
 	resourceID := uuid.NewString()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resources(id,owner_id,slug,kind) VALUES($1,$2,$3,$4)`, resourceID, ownerID, slug, kind); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resources(id,owner_id,slug,draft_name,kind) VALUES($1,$2,$3,$4,$5)`, resourceID, ownerID, slug, name, kind); err != nil {
 		return Workspace{}, err
 	}
 	if err = event(ctx, tx, resourceID, ownerID, "resource.created", map[string]any{"kind": kind}); err != nil {
@@ -107,8 +109,8 @@ func (s *Service) List(ctx context.Context, ownerID string) ([]Workspace, error)
 // which is the editing baseline for the next publish.
 func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Workspace, error) {
 	var result Workspace
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,owner_id::text,slug,kind,moderation_state,COALESCE(moderation_by,''),moderation_reason,moderation_at,download_count,COALESCE(current_revision_id::text,''),created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).
-		Scan(&result.Resource.ID, &result.Resource.OwnerID, &result.Resource.Slug, &result.Resource.Kind, &result.Resource.ModerationState, &result.Resource.ModerationBy, &result.Resource.ModerationReason, &result.Resource.ModerationAt, &result.Resource.DownloadCount, &result.Resource.CurrentRevisionID, &result.Resource.CreatedAt, &result.Resource.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,owner_id::text,slug,draft_name,kind,moderation_state,COALESCE(moderation_by,''),moderation_reason,moderation_at,download_count,COALESCE(current_revision_id::text,''),created_at,updated_at FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).
+		Scan(&result.Resource.ID, &result.Resource.OwnerID, &result.Resource.Slug, &result.Resource.DraftName, &result.Resource.Kind, &result.Resource.ModerationState, &result.Resource.ModerationBy, &result.Resource.ModerationReason, &result.Resource.ModerationAt, &result.Resource.DownloadCount, &result.Resource.CurrentRevisionID, &result.Resource.CreatedAt, &result.Resource.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, ErrNotFound
 	}
