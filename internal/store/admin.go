@@ -112,7 +112,7 @@ func (s *Store) Stats(ctx context.Context, startedAt time.Time) (model.Stats, er
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM review_cases WHERE state='pending'`).Scan(&stats.PendingReviews); err != nil {
 		return stats, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM feedback_tickets WHERE kind='report' AND status IN ('open','investigating','replied')`).Scan(&stats.OpenReports); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM feedback_tickets WHERE kind IN ('resource_report','comment_report') AND status IN ('open','investigating','replied')`).Scan(&stats.OpenReports); err != nil {
 		return stats, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM publications WHERE state='failed'`).Scan(&stats.FailedPublications); err != nil {

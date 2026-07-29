@@ -448,9 +448,13 @@ func (a *App) handleAdminReviewDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	revisionID := r.PathValue("revision")
 	note := strings.TrimSpace(r.FormValue("note"))
+	grade := strings.TrimSpace(r.FormValue("curation_grade"))
+	if grade == "" {
+		grade = "standard"
+	}
 	approved := decision == "approve"
 	actor := currentAdmin(r)
-	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, nil); err != nil {
+	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, nil, grade); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "resource.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -461,6 +465,122 @@ func (a *App) handleAdminReviewDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "resource.review", result, a.clientIP(r), r.UserAgent(), "revision="+revisionID)
 	http.Redirect(w, r, "/admin/review?decided=1", http.StatusFound)
+}
+
+func (a *App) handleAdminCollectionReviewQueue(w http.ResponseWriter, r *http.Request) {
+	items, err := a.creator.CollectionReviewQueue(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("collection_review_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"collections": items})
+}
+
+func (a *App) handleAdminCollectionReviewDecision(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Approve bool   `json:"approve"`
+		Note    string `json:"note"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	actor := currentAdmin(r)
+	err := a.creator.ReviewCollection(r.Context(), r.PathValue("revision"), actor.UserID, request.Approve, request.Note)
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
+		writeJSON(w, http.StatusConflict, errorBody("collection_review_failed", err.Error()))
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "success", a.clientIP(r), r.UserAgent(), "revision="+r.PathValue("revision"))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleAdminCollectionsPage(w http.ResponseWriter, r *http.Request) {
+	items, err := a.creator.CollectionReviewQueue(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_collections", map[string]any{"Title": "合集审核", "Items": items, "Action": r.URL.Query().Get("action")})
+}
+
+func (a *App) handleAdminCollectionReviewForm(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	approve := r.FormValue("decision") == "approve"
+	err := a.creator.ReviewCollection(r.Context(), r.PathValue("revision"), actor.UserID, approve, r.FormValue("note"))
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "success", a.clientIP(r), r.UserAgent(), "revision="+r.PathValue("revision"))
+	http.Redirect(w, r, "/admin/collections?action=reviewed", http.StatusFound)
+}
+
+func (a *App) handleAdminCoinsPage(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.store.AdminCoinStats(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ledger, err := a.store.AdminCoinLedger(r.Context(), strings.TrimSpace(r.URL.Query().Get("user")), 200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.render(w, "admin_coins", map[string]any{"Title": "硬币管理", "Stats": stats, "Ledger": ledger, "Action": r.URL.Query().Get("action")})
+}
+
+func (a *App) handleAdminCoinUserForm(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	userID, action, reason := strings.TrimSpace(r.FormValue("user_id")), r.FormValue("action"), strings.TrimSpace(r.FormValue("reason"))
+	var err error
+	switch action {
+	case "adjust":
+		var delta int64
+		delta, err = strconv.ParseInt(r.FormValue("delta_units"), 10, 64)
+		if err == nil {
+			_, err = a.store.AdminAdjustCoins(r.Context(), userID, delta, reason, actor.UserID)
+		}
+	case "freeze":
+		err = a.store.AdminSetCoinFreeze(r.Context(), userID, true, reason)
+	case "unfreeze":
+		err = a.store.AdminSetCoinFreeze(r.Context(), userID, false, reason)
+	default:
+		err = fmt.Errorf("unknown coin action")
+	}
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "coins."+action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "coins."+action, "success", a.clientIP(r), r.UserAgent(), "user="+userID+" reason="+reason)
+	http.Redirect(w, r, "/admin/coins?action="+action, http.StatusFound)
+}
+
+func (a *App) handleAdminCoinInvalidateForm(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	err := a.store.AdminInvalidateCoinVote(r.Context(), r.FormValue("resource_id"), r.FormValue("user_id"), r.FormValue("reason"), actor.UserID)
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "coins.invalidate", "failure", a.clientIP(r), r.UserAgent(), err.Error())
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "coins.invalidate", "success", a.clientIP(r), r.UserAgent(), "resource="+r.FormValue("resource_id")+" user="+r.FormValue("user_id"))
+	http.Redirect(w, r, "/admin/coins?action=invalidated", http.StatusFound)
 }
 
 func reviewItems(raw string) []string {
@@ -655,7 +775,7 @@ func (a *App) handleAdminFeedbackReply(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminReports(w http.ResponseWriter, r *http.Request) {
 	page, err := a.store.AdminFeedback(r.Context(), store.AdminFeedbackQuery{
-		Kind:         "report",
+		Kind:         store.FeedbackKindReports,
 		Status:       r.URL.Query().Get("status"),
 		Search:       r.URL.Query().Get("q"),
 		TargetSource: r.URL.Query().Get("source"),

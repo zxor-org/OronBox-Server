@@ -1,14 +1,168 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/creator"
 )
+
+func (a *App) handleCreatorCollectionList(w http.ResponseWriter, r *http.Request) {
+	items, err := a.creator.ListCollections(r.Context(), currentUser(r).ID)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"collections": items})
+}
+
+func (a *App) handleCreatorCollectionCreate(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Slug    string               `json:"slug"`
+		Name    string               `json:"name"`
+		Summary string               `json:"summary"`
+		Kind    creator.ResourceKind `json:"kind"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	item, err := a.creator.CreateCollection(r.Context(), currentUser(r).ID, request.Slug, request.Name, request.Summary, request.Kind)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (a *App) handleCreatorCollection(w http.ResponseWriter, r *http.Request) {
+	item, err := a.creator.Collection(r.Context(), currentUser(r).ID, r.PathValue("collection"))
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *App) handleCreatorCollectionUpdate(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name    string `json:"name"`
+		Summary string `json:"summary"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	item, err := a.creator.UpdateCollectionMetadata(r.Context(), currentUser(r).ID, r.PathValue("collection"), request.Name, request.Summary)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *App) handleCreatorCollectionResources(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ResourceIDs              []string `json:"resource_ids"`
+		RepresentativeResourceID string   `json:"representative_resource_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	if err := a.creator.SetCollectionResources(r.Context(), currentUser(r).ID, r.PathValue("collection"), request.RepresentativeResourceID, request.ResourceIDs); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCreatorCollectionDelete(w http.ResponseWriter, r *http.Request) {
+	if err := a.creator.DeleteCollection(r.Context(), currentUser(r).ID, r.PathValue("collection")); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCreatorRelationships(w http.ResponseWriter, r *http.Request) {
+	resourceID := r.PathValue("resource")
+	if _, err := a.creator.Workspace(r.Context(), currentUser(r).ID, resourceID); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	collaborators, source, err := a.creator.ResourceRelationships(r.Context(), resourceID)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"collaborators": collaborators, "source": source})
+}
+
+func (a *App) handleCollaborationInvitations(w http.ResponseWriter, r *http.Request) {
+	invitations, err := a.creator.CollaborationInvitations(r.Context(), currentUser(r).ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("collaborations_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"invitations": invitations})
+}
+
+func (a *App) handleCreatorCollaboratorInvite(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		BandBBSUserID int64 `json:"bandbbs_user_id"`
+	}
+	if err := decodeJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	if err := a.creator.InviteCollaborator(r.Context(), currentUser(r).ID, r.PathValue("resource"), request.BandBBSUserID); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCollaboratorAccept(w http.ResponseWriter, r *http.Request) {
+	if err := a.creator.AcceptCollaborator(r.Context(), currentUser(r).ID, r.PathValue("resource")); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCollaboratorDecline(w http.ResponseWriter, r *http.Request) {
+	user := currentUser(r)
+	if err := a.creator.RemoveCollaborator(r.Context(), user.ID, r.PathValue("resource"), user.ID); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCollaboratorRemove(w http.ResponseWriter, r *http.Request) {
+	if err := a.creator.RemoveCollaborator(r.Context(), currentUser(r).ID, r.PathValue("resource"), r.PathValue("user")); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleCreatorSource(w http.ResponseWriter, r *http.Request) {
+	var request creator.ResourceSource
+	if err := decodeJSON(r, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	if err := a.creator.SetResourceSource(r.Context(), currentUser(r).ID, r.PathValue("resource"), request); err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 
 func (a *App) handleCreatorList(w http.ResponseWriter, r *http.Request) {
 	items, err := a.creator.List(r.Context(), currentUser(r).ID)
@@ -73,18 +227,6 @@ func (a *App) handleCreatorTakedown(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleCreatorRestore(w http.ResponseWriter, r *http.Request) {
 	a.writeCreatorModeration(w, r, "restore")
-}
-
-// handleCreatorArchive keeps the legacy archive endpoint working as an alias
-// for the moderation transitions.
-// TODO: remove once released clients no longer call PATCH .../archive.
-func (a *App) handleCreatorArchive(w http.ResponseWriter, r *http.Request) {
-	archived, _ := strconv.ParseBool(r.URL.Query().Get("archived"))
-	action := "restore"
-	if archived {
-		action = "takedown"
-	}
-	a.writeCreatorModeration(w, r, action)
 }
 
 func (a *App) writeCreatorModeration(w http.ResponseWriter, r *http.Request, action string) {

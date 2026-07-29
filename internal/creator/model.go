@@ -63,19 +63,22 @@ const (
 )
 
 type Resource struct {
-	ID                string       `json:"id"`
-	OwnerID           string       `json:"owner_id"`
-	Slug              string       `json:"slug"`
-	DraftName         string       `json:"draft_name"`
-	Kind              ResourceKind `json:"kind"`
-	ModerationState   string       `json:"moderation_state"`
-	ModerationBy      string       `json:"moderation_by,omitempty"`
-	ModerationReason  string       `json:"moderation_reason,omitempty"`
-	ModerationAt      *time.Time   `json:"moderation_at,omitempty"`
-	DownloadCount     int          `json:"download_count"`
-	CurrentRevisionID string       `json:"current_revision_id,omitempty"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
+	ID                 string       `json:"id"`
+	OwnerID            string       `json:"owner_id"`
+	Slug               string       `json:"slug"`
+	DraftName          string       `json:"draft_name"`
+	Kind               ResourceKind `json:"kind"`
+	CurationGrade      string       `json:"curation_grade"`
+	CollectionID       string       `json:"collection_id,omitempty"`
+	CollectionPosition int          `json:"collection_position"`
+	ModerationState    string       `json:"moderation_state"`
+	ModerationBy       string       `json:"moderation_by,omitempty"`
+	ModerationReason   string       `json:"moderation_reason,omitempty"`
+	ModerationAt       *time.Time   `json:"moderation_at,omitempty"`
+	DownloadCount      int          `json:"download_count"`
+	CurrentRevisionID  string       `json:"current_revision_id,omitempty"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
 type Revision struct {
@@ -84,6 +87,7 @@ type Revision struct {
 	Number     int           `json:"number"`
 	Name       string        `json:"name"`
 	Summary    string        `json:"summary"`
+	Attributes []string      `json:"attributes,omitempty"`
 	State      RevisionState `json:"state"`
 	CreatedAt  time.Time     `json:"created_at"`
 }
@@ -148,6 +152,55 @@ type Workspace struct {
 	Media           []Media       `json:"media"`
 	Review          *ReviewCase   `json:"review,omitempty"`
 	Publications    []Publication `json:"publications"`
+}
+
+type CollectionRevision struct {
+	ID           string        `json:"id"`
+	CollectionID string        `json:"collection_id"`
+	Number       int           `json:"number"`
+	Name         string        `json:"name"`
+	Summary      string        `json:"summary"`
+	State        RevisionState `json:"state"`
+	ReviewNote   string        `json:"review_note,omitempty"`
+	CreatedAt    time.Time     `json:"created_at"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+}
+
+type Collection struct {
+	ID                       string              `json:"id"`
+	OwnerID                  string              `json:"owner_id"`
+	Slug                     string              `json:"slug"`
+	Platform                 string              `json:"platform"`
+	Kind                     ResourceKind        `json:"kind"`
+	CurrentRevisionID        string              `json:"current_revision_id,omitempty"`
+	RepresentativeResourceID string              `json:"representative_resource_id,omitempty"`
+	CurrentRevision          *CollectionRevision `json:"current_revision,omitempty"`
+	PendingRevision          *CollectionRevision `json:"pending_revision,omitempty"`
+	ResourceCount            int                 `json:"resource_count"`
+	TotalCoins               int64               `json:"total_coins"`
+	CreatedAt                time.Time           `json:"created_at"`
+	UpdatedAt                time.Time           `json:"updated_at"`
+}
+
+type Collaborator struct {
+	UserID     string     `json:"user_id"`
+	Username   string     `json:"username"`
+	AvatarURL  string     `json:"avatar_url"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+}
+
+type CollaborationInvitation struct {
+	ResourceID   string    `json:"resource_id"`
+	ResourceName string    `json:"resource_name"`
+	Owner        string    `json:"owner"`
+	InvitedAt    time.Time `json:"invited_at"`
+}
+
+type ResourceSource struct {
+	AuthorName        string `json:"author_name"`
+	SourceURL         string `json:"source_url"`
+	LicenseName       string `json:"license_name"`
+	AuthorizationNote string `json:"authorization_note"`
 }
 
 type Device struct {
@@ -224,6 +277,7 @@ func validAstroBoxConfig(value map[string]any) bool {
 }
 
 type PublicResource struct {
+	CardType           string    `json:"card_type"`
 	ID                 string    `json:"id"`
 	Slug               string    `json:"slug"`
 	Name               string    `json:"name"`
@@ -237,21 +291,47 @@ type PublicResource struct {
 	Kind               string    `json:"kind"`
 	Version            string    `json:"version"`
 	Devices            []string  `json:"devices"`
+	Attributes         []string  `json:"attributes,omitempty"`
 	DownloadCount      int       `json:"download_count"`
+	CurationGrade      string    `json:"curation_grade"`
+	CoinCount          int64     `json:"coin_count"`
+	CollectionID       string    `json:"collection_id,omitempty"`
+	CollectionName     string    `json:"collection_name,omitempty"`
+	ResourceCount      int       `json:"resource_count,omitempty"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type PublicCollection struct {
+	ID                       string           `json:"id"`
+	Slug                     string           `json:"slug"`
+	Name                     string           `json:"name"`
+	Summary                  string           `json:"summary"`
+	Kind                     ResourceKind     `json:"kind"`
+	Owner                    string           `json:"owner"`
+	OwnerBandBBSUserID       int64            `json:"owner_bandbbs_user_id"`
+	OwnerAvatarURL           string           `json:"owner_avatar_url"`
+	RepresentativeResourceID string           `json:"representative_resource_id"`
+	Representative           *PublicResource  `json:"representative,omitempty"`
+	Resources                []PublicResource `json:"resources,omitempty"`
+	ResourceCount            int              `json:"resource_count"`
+	CoinCount                int64            `json:"coin_count"`
+	UpdatedAt                time.Time        `json:"updated_at"`
 }
 
 type PublicResourceDetail struct {
 	PublicResource
-	Media     []Media    `json:"media"`
-	Artifacts []Artifact `json:"artifacts"`
+	Media         []Media         `json:"media"`
+	Artifacts     []Artifact      `json:"artifacts"`
+	Collaborators []Collaborator  `json:"collaborators"`
+	Source        *ResourceSource `json:"source,omitempty"`
 }
 
 type PublicQuery struct {
-	Limit   int
-	Offset  int
-	Search  string
-	Kind    string
-	Sort    string
-	Devices []string
+	Limit      int
+	Offset     int
+	Search     string
+	Kind       string
+	Sort       string
+	Devices    []string
+	Attributes []string
 }

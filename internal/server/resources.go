@@ -89,9 +89,10 @@ func (a *App) handleListResources(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 	devices := strings.FieldsFunc(r.URL.Query().Get("devices"), func(r rune) bool { return r == ',' })
+	attributes := strings.FieldsFunc(r.URL.Query().Get("attributes"), func(r rune) bool { return r == ',' })
 	resources, total, err := a.creator.PublicResources(r.Context(), creator.PublicQuery{
 		Limit: limit, Offset: offset, Search: strings.TrimSpace(r.URL.Query().Get("query")),
-		Kind: strings.TrimSpace(r.URL.Query().Get("type")), Sort: r.URL.Query().Get("sort"), Devices: devices,
+		Kind: strings.TrimSpace(r.URL.Query().Get("type")), Sort: r.URL.Query().Get("sort"), Devices: devices, Attributes: attributes,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("list_failed", err.Error()))
@@ -107,6 +108,28 @@ func (a *App) handleResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resource)
+}
+
+func (a *App) handleCollections(w http.ResponseWriter, r *http.Request) {
+	items, err := a.creator.PublicCollections(r.Context(), r.URL.Query().Get("kind"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("collections_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"collections": items})
+}
+
+func (a *App) handleCollection(w http.ResponseWriter, r *http.Request) {
+	item, err := a.creator.PublicCollection(r.Context(), r.PathValue("id"))
+	if errors.Is(err, creator.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("collection_not_found", err.Error()))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("collection_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {

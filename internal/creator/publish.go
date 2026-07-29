@@ -44,11 +44,12 @@ type publishArtifactRef struct {
 }
 
 type publishManifest struct {
-	Version int    `json:"version"`
-	Kind    string `json:"kind"`
-	Name    string `json:"name"`
-	Summary string `json:"summary"`
-	Media   struct {
+	Version    int      `json:"version"`
+	Kind       string   `json:"kind"`
+	Name       string   `json:"name"`
+	Summary    string   `json:"summary"`
+	Attributes []string `json:"attributes"`
+	Media      struct {
 		Icon     *publishMediaRef  `json:"icon"`
 		Cover    *publishMediaRef  `json:"cover"`
 		Previews []publishMediaRef `json:"previews"`
@@ -101,6 +102,23 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	kind := ResourceKind(strings.TrimSpace(manifest.Kind))
 	if manifest.Version != 1 || !kind.Valid() || manifest.Name == "" || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
 		return Workspace{}, fmt.Errorf("%w: manifest metadata", ErrInvalid)
+	}
+	validAttributes := map[string]bool{"original": true, "derivative": true, "port": true, "template_skin": true, "ai_assisted": true, "ai_generated": true}
+	seenAttributes := make(map[string]bool, len(manifest.Attributes))
+	for _, attribute := range manifest.Attributes {
+		if !validAttributes[attribute] || seenAttributes[attribute] {
+			return Workspace{}, fmt.Errorf("%w: resource attributes", ErrInvalid)
+		}
+		seenAttributes[attribute] = true
+	}
+	provenanceCount := 0
+	for _, attribute := range []string{"original", "derivative", "port", "template_skin"} {
+		if seenAttributes[attribute] {
+			provenanceCount++
+		}
+	}
+	if provenanceCount > 1 || (seenAttributes["ai_assisted"] && seenAttributes["ai_generated"]) {
+		return Workspace{}, fmt.Errorf("%w: conflicting resource attributes", ErrInvalid)
 	}
 	media, err := s.verifyBundleMedia(files, &manifest)
 	if err != nil {
@@ -176,6 +194,11 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	revisionID := uuid.NewString()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary) VALUES($1,$2,$3,$4,$5)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary); err != nil {
 		return Workspace{}, err
+	}
+	for attribute := range seenAttributes {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revision_attributes(revision_id,attribute) VALUES($1,$2)`, revisionID, attribute); err != nil {
+			return Workspace{}, err
+		}
 	}
 	for _, item := range media {
 		digest, _, err := put(item.payload, item.mediaType)
