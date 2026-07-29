@@ -92,6 +92,21 @@ type Revision struct {
 	CreatedAt  time.Time     `json:"created_at"`
 }
 
+type ResourceLink struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+type ResourceAttribute struct {
+	ID          string  `json:"id"`
+	NameZH      string  `json:"name_zh"`
+	NameEN      string  `json:"name_en"`
+	Coefficient float64 `json:"coefficient"`
+	Enabled     bool    `json:"enabled"`
+	Position    int     `json:"position"`
+	UsageCount  int     `json:"usage_count,omitempty"`
+}
+
 type Blob struct {
 	SHA256    string    `json:"sha256"`
 	SizeBytes int64     `json:"size_bytes"`
@@ -145,13 +160,14 @@ type Publication struct {
 }
 
 type Workspace struct {
-	Resource        Resource      `json:"resource"`
-	CurrentRevision *Revision     `json:"current_revision,omitempty"`
-	Revisions       []Revision    `json:"revisions"`
-	Artifacts       []Artifact    `json:"artifacts"`
-	Media           []Media       `json:"media"`
-	Review          *ReviewCase   `json:"review,omitempty"`
-	Publications    []Publication `json:"publications"`
+	Resource        Resource       `json:"resource"`
+	CurrentRevision *Revision      `json:"current_revision,omitempty"`
+	Revisions       []Revision     `json:"revisions"`
+	Artifacts       []Artifact     `json:"artifacts"`
+	Media           []Media        `json:"media"`
+	Links           []ResourceLink `json:"links"`
+	Review          *ReviewCase    `json:"review,omitempty"`
+	Publications    []Publication  `json:"publications"`
 }
 
 type CollectionRevision struct {
@@ -324,6 +340,7 @@ type PublicResourceDetail struct {
 	Artifacts     []Artifact      `json:"artifacts"`
 	Collaborators []Collaborator  `json:"collaborators"`
 	Source        *ResourceSource `json:"source,omitempty"`
+	Links         []ResourceLink  `json:"links"`
 }
 
 type PublicQuery struct {

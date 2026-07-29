@@ -143,7 +143,7 @@ func TestCreatorLifecycle(t *testing.T) {
 	if len(workspace.Media) != 2 || workspace.Review == nil || workspace.Review.State != ReviewPending {
 		t.Fatalf("media/review = %#v %#v", workspace.Media, workspace.Review)
 	}
-	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, "standard"); err != nil {
+	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, []string{"original"}, "standard"); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err = service.Workspace(ctx, userID, workspace.Resource.ID)
@@ -162,7 +162,7 @@ func TestCreatorLifecycle(t *testing.T) {
 	if secondRevisionID == firstRevisionID {
 		t.Fatal("second publish reused the immutable revision")
 	}
-	if err := service.Review(ctx, secondRevisionID, "", true, "", nil, "featured"); err != nil {
+	if err := service.Review(ctx, secondRevisionID, "", true, "", nil, []string{"original"}, "featured"); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err = service.Workspace(ctx, userID, workspace.Resource.ID)
@@ -184,7 +184,7 @@ func TestCreatorLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	rejectedRevisionID := workspace.Revisions[0].ID
-	if err := service.Review(ctx, rejectedRevisionID, "", false, "needs work", nil, "standard"); err != nil {
+	if err := service.Review(ctx, rejectedRevisionID, "", false, "needs work", nil, nil, "standard"); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err = service.Workspace(ctx, userID, workspace.Resource.ID)
@@ -200,6 +200,10 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	if total != 1 || len(public) != 1 || public[0].ID != workspace.Resource.ID {
 		t.Fatalf("recommended public resources = %#v, total=%d", public, total)
+	}
+	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
+	if err != nil || total != 1 || len(public) != 1 || public[0].ID != workspace.Resource.ID {
+		t.Fatalf("author-search public resources = %#v, total=%d, error=%v", public, total, err)
 	}
 	collection, err := service.CreateCollection(ctx, userID, "collection-"+uuid.NewString(), "Test collection", "Summary", Watchface)
 	if err != nil {
@@ -220,6 +224,10 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	if total != 1 || len(public) != 1 || public[0].CardType != "collection" || public[0].ID != collection.ID {
 		t.Fatalf("collection public card = %#v, total=%d", public, total)
+	}
+	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
+	if err != nil || total != 1 || len(public) != 1 || public[0].ID != collection.ID {
+		t.Fatalf("author-search collection = %#v, total=%d, error=%v", public, total, err)
 	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Attributes: []string{"original"}})
 	if err != nil || total != 1 || len(public) != 1 {
@@ -302,7 +310,7 @@ func TestCreatorModerationLifecycle(t *testing.T) {
 	resourceStore := store.New(db)
 
 	workspace = publish()
-	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, "standard"); err != nil {
+	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, nil, "standard"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -331,7 +339,7 @@ func TestCreatorModerationLifecycle(t *testing.T) {
 		t.Fatalf("owner restore after admin suspend error = %v, want conflict", err)
 	}
 	workspace = publish()
-	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, "standard"); err != nil {
+	if err := service.Review(ctx, workspace.Revisions[0].ID, "", true, "", nil, nil, "standard"); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err = service.Workspace(ctx, ownerID, resourceID)

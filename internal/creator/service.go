@@ -25,6 +25,7 @@ var (
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,63}$`)
+var attributePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type Limits struct {
 	UploadMaxBytes  int64
@@ -159,6 +160,10 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 		if err != nil {
 			return Workspace{}, err
 		}
+		result.Links, err = s.revisionLinks(ctx, latest.ID)
+		if err != nil {
+			return Workspace{}, err
+		}
 		var review ReviewCase
 		err = s.db.QueryRowContext(ctx, `SELECT id::text,revision_id::text,state,note,created_at,updated_at FROM review_cases WHERE revision_id=$1`, latest.ID).
 			Scan(&review.ID, &review.RevisionID, &review.State, &review.Note, &review.CreatedAt, &review.UpdatedAt)
@@ -289,10 +294,71 @@ func bandBBSResourceIDs(bound string) []string {
 	return ids
 }
 
-func (s *Service) Review(ctx context.Context, revisionID, reviewerID string, approve bool, note string, items []string, grade string) error {
+func (s *Service) Attributes(ctx context.Context, includeDisabled bool) ([]ResourceAttribute, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT attribute.id,attribute.name_zh,attribute.name_en,attribute.coefficient::float8,attribute.enabled,attribute.position,count(binding.revision_id)::integer FROM resource_attributes attribute LEFT JOIN resource_revision_attributes binding ON binding.attribute=attribute.id WHERE ($1 OR attribute.enabled) GROUP BY attribute.id ORDER BY attribute.position,attribute.name_zh,attribute.id`, includeDisabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]ResourceAttribute, 0)
+	for rows.Next() {
+		var item ResourceAttribute
+		if err := rows.Scan(&item.ID, &item.NameZH, &item.NameEN, &item.Coefficient, &item.Enabled, &item.Position, &item.UsageCount); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *Service) UpsertAttribute(ctx context.Context, item ResourceAttribute) error {
+	item.ID = strings.TrimSpace(item.ID)
+	item.NameZH = strings.TrimSpace(item.NameZH)
+	item.NameEN = strings.TrimSpace(item.NameEN)
+	if !attributePattern.MatchString(item.ID) || item.NameZH == "" || item.Coefficient <= 0 || item.Coefficient > 10 {
+		return fmt.Errorf("%w: resource attribute", ErrInvalid)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO resource_attributes(id,name_zh,name_en,coefficient,enabled,position) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET name_zh=excluded.name_zh,name_en=excluded.name_en,coefficient=excluded.coefficient,enabled=excluded.enabled,position=excluded.position,updated_at=now()`, item.ID, item.NameZH, item.NameEN, item.Coefficient, item.Enabled, item.Position)
+	return err
+}
+
+func (s *Service) DisableAttribute(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE resource_attributes SET enabled=false,updated_at=now() WHERE id=$1`, strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Service) attributesExist(ctx context.Context, attributes []string, enabledOnly bool) bool {
+	if len(attributes) == 0 {
+		return true
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resource_attributes WHERE id=ANY($1::text[]) AND ($2=false OR enabled)`, attributes, enabledOnly).Scan(&count)
+	return err == nil && count == len(attributes)
+}
+
+func (s *Service) Review(ctx context.Context, revisionID, reviewerID string, approve bool, note string, items, attributes []string, grade string) error {
 	grade = strings.TrimSpace(grade)
 	if grade != "standard" && grade != "featured" {
 		return fmt.Errorf("%w: curation grade", ErrInvalid)
+	}
+	seenAttributes := make(map[string]bool, len(attributes))
+	confirmedAttributes := make([]string, 0, len(attributes))
+	for _, attribute := range attributes {
+		attribute = strings.TrimSpace(attribute)
+		if attribute != "" && !seenAttributes[attribute] {
+			seenAttributes[attribute] = true
+			confirmedAttributes = append(confirmedAttributes, attribute)
+		}
+	}
+	attributes = confirmedAttributes
+	if approve && (len(attributes) > 32 || !s.attributesExist(ctx, attributes, true)) {
+		return fmt.Errorf("%w: resource attributes", ErrInvalid)
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -318,6 +384,14 @@ func (s *Service) Review(ctx context.Context, revisionID, reviewerID string, app
 	}
 	var restoredByReview bool
 	if approve {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM resource_revision_attributes WHERE revision_id=$1`, revisionID); err != nil {
+			return err
+		}
+		for _, attribute := range attributes {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revision_attributes(revision_id,attribute) VALUES($1,$2)`, revisionID, attribute); err != nil {
+				return err
+			}
+		}
 		if _, err = tx.ExecContext(ctx, `UPDATE resources SET curation_grade=$2,updated_at=now() WHERE id=$1`, resourceID, grade); err != nil {
 			return err
 		}
@@ -454,10 +528,13 @@ COALESCE((SELECT jsonb_agg(attribute ORDER BY attribute) FROM resource_revision_
 r.download_count,r.curation_grade,COALESCE((SELECT sum(v.coins) FROM resource_coin_votes v WHERE v.resource_id=r.id AND v.invalidated_at IS NULL),0)::bigint coins,
 COALESCE(r.collection_id::text,'') collection_id,COALESCE((SELECT revision.name FROM resource_collections collection JOIN resource_collection_revisions revision ON revision.id=collection.current_revision_id WHERE collection.id=r.collection_id),'') collection_name,
 0 resource_count,r.updated_at,
-(CASE WHEN r.curation_grade='featured' THEN 2.0 ELSE 0 END + COALESCE(recent.unique_coiners,0) + 0.35 * GREATEST(COALESCE(recent.coins,0)-COALESCE(recent.unique_coiners,0),0) + (abs(hashtextextended(r.id::text,floor(extract(epoch FROM now())/86400)::bigint)) % 100)::numeric / 100) recommendation_score
+((1.0 + COALESCE(recent.unique_coiners,0) + 0.35 * GREATEST(COALESCE(recent.coins,0)-COALESCE(recent.unique_coiners,0),0)) *
+ CASE WHEN r.curation_grade='featured' THEN 1.5 ELSE 1.0 END *
+ COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_revision_attributes binding JOIN resource_attributes definition ON definition.id=binding.attribute WHERE binding.revision_id=rr.id),1.0) +
+ (abs(hashtextextended(r.id::text,floor(extract(epoch FROM now())/86400)::bigint)) % 100)::numeric / 100) recommendation_score
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id
 LEFT JOIN recent_resource_coins recent ON recent.resource_id=r.id::text
-WHERE r.moderation_state='visible' AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2)
+WHERE r.moderation_state='visible' AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2)
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resource_revision_attributes attribute WHERE attribute.revision_id=rr.id AND attribute.attribute=ANY($4::text[])))
 AND ($1<>'' OR r.collection_id IS NULL OR NOT EXISTS(SELECT 1 FROM resource_collections c WHERE c.id=r.collection_id AND c.current_revision_id IS NOT NULL))
@@ -473,12 +550,13 @@ COALESCE((SELECT sum(child.download_count) FROM resources child WHERE child.coll
 CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 'featured' ELSE 'standard' END,
 COALESCE((SELECT sum(v.coins) FROM resources child JOIN resource_coin_votes v ON v.resource_id=child.id AND v.invalidated_at IS NULL WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)::bigint,
 c.id::text,cr.name,(SELECT count(*) FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)::integer,c.updated_at,
-(CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 2.0 ELSE 0 END +
-COALESCE((SELECT sum(recent.unique_coiners) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
-0.35 * COALESCE((SELECT sum(GREATEST(recent.coins-recent.unique_coiners,0)) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
+((1.0 + COALESCE((SELECT sum(recent.unique_coiners) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
+0.35 * COALESCE((SELECT sum(GREATEST(recent.coins-recent.unique_coiners,0)) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)) *
+CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 1.5 ELSE 1.0 END *
+COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0) +
 (abs(hashtextextended(c.id::text,floor(extract(epoch FROM now())/86400)::bigint)) % 100)::numeric / 100) recommendation_score
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
-WHERE ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
+WHERE ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
 AND EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN revision_artifacts a ON a.revision_id=child.current_revision_id JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN resource_revision_attributes attribute ON attribute.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND attribute.attribute=ANY($4::text[])))
@@ -553,6 +631,10 @@ FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN 
 	if err != nil {
 		return PublicResourceDetail{}, err
 	}
+	links, err := s.revisionLinks(ctx, revisionID)
+	if err != nil {
+		return PublicResourceDetail{}, err
+	}
 	collaborators, source, err := s.ResourceRelationships(ctx, resourceID)
 	if err != nil {
 		return PublicResourceDetail{}, err
@@ -563,7 +645,24 @@ FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN 
 			accepted = append(accepted, collaborator)
 		}
 	}
-	return PublicResourceDetail{PublicResource: summary, Media: media, Artifacts: artifacts, Collaborators: accepted, Source: source}, nil
+	return PublicResourceDetail{PublicResource: summary, Media: media, Artifacts: artifacts, Collaborators: accepted, Source: source, Links: links}, nil
+}
+
+func (s *Service) revisionLinks(ctx context.Context, revisionID string) ([]ResourceLink, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT title,url FROM revision_links WHERE revision_id=$1 ORDER BY position`, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []ResourceLink
+	for rows.Next() {
+		var item ResourceLink
+		if err := rows.Scan(&item.Title, &item.URL); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s *Service) revisionArtifacts(ctx context.Context, revisionID string, publicView bool) ([]Artifact, error) {

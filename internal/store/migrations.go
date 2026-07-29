@@ -208,10 +208,26 @@ CREATE TABLE resource_sources (
  author_name text NOT NULL DEFAULT '', source_url text NOT NULL DEFAULT '', license_name text NOT NULL DEFAULT '',
  authorization_note text NOT NULL DEFAULT '', updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE resource_attributes (
+ id text PRIMARY KEY CHECK (id ~ '^[a-z0-9][a-z0-9_-]{0,63}$'),
+ name_zh text NOT NULL, name_en text NOT NULL DEFAULT '',
+ coefficient numeric(8,4) NOT NULL DEFAULT 1.0000 CHECK (coefficient > 0 AND coefficient <= 10),
+ enabled boolean NOT NULL DEFAULT true, position integer NOT NULL DEFAULT 0,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO resource_attributes(id,name_zh,name_en,position) VALUES
+ ('original','原创','Original',10),('derivative','二创','Derivative',20),
+ ('port','移植','Port',30),('template','模板','Template',40),
+ ('ai_generated','AI 生成','AI generated',50);
 CREATE TABLE resource_revision_attributes (
  revision_id uuid NOT NULL REFERENCES resource_revisions(id) ON DELETE CASCADE,
- attribute text NOT NULL CHECK (attribute IN ('original','derivative','port','template_skin','ai_assisted','ai_generated')),
+ attribute text NOT NULL REFERENCES resource_attributes(id),
  PRIMARY KEY(revision_id,attribute)
+);
+CREATE TABLE revision_links (
+ revision_id uuid NOT NULL REFERENCES resource_revisions(id) ON DELETE CASCADE,
+ position integer NOT NULL DEFAULT 0, title text NOT NULL, url text NOT NULL,
+ PRIMARY KEY(revision_id,position)
 );
 CREATE TABLE revision_media (
  id uuid PRIMARY KEY, revision_id uuid NOT NULL REFERENCES resource_revisions(id) ON DELETE CASCADE,

@@ -101,6 +101,15 @@ func (a *App) handleListResources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"resources": resources, "total": total})
 }
 
+func (a *App) handleResourceAttributes(w http.ResponseWriter, r *http.Request) {
+	attributes, err := a.creator.Attributes(r.Context(), false)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("attributes_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attributes": attributes})
+}
+
 func (a *App) handleResource(w http.ResponseWriter, r *http.Request) {
 	resource, err := a.creator.PublicResource(r.Context(), r.PathValue("id"))
 	if err != nil {

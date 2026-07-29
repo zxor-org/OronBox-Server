@@ -37,6 +37,14 @@ func NewTemplates() *Templates {
 			"dateTime":       dateTime,
 			"sub1":           func(value int) int { return value - 1 },
 			"add1":           func(value int) int { return value + 1 },
+			"containsString": func(values []string, value string) bool {
+				for _, item := range values {
+					if item == value {
+						return true
+					}
+				}
+				return false
+			},
 		}).Parse(templates)),
 	}
 }
@@ -531,6 +539,10 @@ const templates = `
     <dt>Public URL</dt><dd><code>{{.Config.PublicURL}}</code></dd>
     <dt>服务版本</dt><dd>{{.Config.Version}} {{.Config.Commit}}</dd>
   </dl></section>
+  <section class="panel span-2"><div class="section-header"><div><h2>资源内容标签</h2><p>作者可多选，审核员确认；系数 1.00 不改变推荐权重</p></div></div>
+    <div class="stack-list">{{range .ResourceAttributes}}<article class="stack-row"><form method="post" action="/admin/resource-attributes" class="filter-bar embedded"><input type="hidden" name="id" value="{{.ID}}"><label><span>中文名称</span><input name="name_zh" value="{{.NameZH}}" required></label><label><span>英文名称</span><input name="name_en" value="{{.NameEN}}"></label><label><span>系数</span><input name="coefficient" type="number" min="0.0001" max="10" step="0.01" value="{{.Coefficient}}" required></label><label><span>顺序</span><input name="position" type="number" value="{{.Position}}"></label><label><span>启用</span><input name="enabled" type="checkbox" {{if .Enabled}}checked{{end}}></label><button class="outlined-button" type="submit">保存</button></form><form method="post" action="/admin/resource-attributes/{{.ID}}/delete"><button class="outlined-button danger" type="submit" data-confirm="确定停用这个标签吗？历史资源上的标签会保留">删除</button></form></article>{{end}}</div>
+    <form method="post" action="/admin/resource-attributes"><div class="section-header"><div><h3>新建标签</h3></div></div><div class="filter-bar embedded"><label><span>标识</span><input name="id" pattern="[a-z0-9][a-z0-9_-]{0,63}" required placeholder="custom_tag"></label><label><span>中文名称</span><input name="name_zh" required></label><label><span>英文名称</span><input name="name_en"></label><label><span>系数</span><input name="coefficient" type="number" min="0.0001" max="10" step="0.01" value="1.00" required></label><label><span>顺序</span><input name="position" type="number" value="100"></label><input type="hidden" name="enabled" value="on"><button class="filled-button" type="submit">新建标签</button></div></form>
+  </section>
   <section class="panel span-2"><div class="section-header"><div><h2>发布公告</h2><p>公告会在用户进入应用时展示</p></div></div><form method="post" action="/admin/announcements"><label><span>标题</span><input name="title" required maxlength="200"></label><label><span>正文</span><textarea name="body" rows="6" required></textarea></label><div class="actions"><button class="filled-button" type="submit">发布公告</button></div></form></section>
   <section class="panel span-2"><div class="section-header"><div><h2>公告管理</h2><p>公告原始记录不会自动过期，只能在这里手动删除</p></div></div><div class="stack-list">{{range .Announcements}}<article class="stack-row"><div><strong>{{.Title}}</strong><span class="cell-note">{{dateTime .PublishedAt}}</span><p>{{.Body}}</p></div><form method="post" action="/admin/announcements/{{.ID}}/delete"><button class="outlined-button danger" type="submit" data-confirm="确定删除这条公告吗？相关用户通知也会一并删除">删除</button></form></article>{{else}}<p class="muted">尚未发布公告</p>{{end}}</div></section>
 </div>
@@ -580,9 +592,11 @@ const templates = `
 
 {{define "admin_review"}}
 {{template "admin_open" .}}
+{{$attributeDefinitions := .Attributes}}
 <header class="page-header"><div><h1>待审核</h1><p>审核提交到 OronBox 源的新资源和修订</p></div><span class="count-badge">{{len .Items}} 项</span></header>
 {{if .Decided}}<div class="notice success toast-notice" data-toast>审核决定已保存</div>{{end}}
 {{range .Items}}
+{{$reviewItem := .}}
 <article class="review-card">
   <header class="review-summary">
     <div><div class="title-line"><h2>{{.Name}}</h2><span class="status warning">待审核</span></div><p>{{.Summary}}</p><a class="row-action" href="/admin/resources/{{.ResourceID}}">打开完整资源详情</a></div>
@@ -592,7 +606,8 @@ const templates = `
   {{if .Artifacts}}<div class="review-downloads">{{range .Artifacts}}<a class="outlined-button" href="/admin/blobs/{{.SHA256}}?download=1&amp;name={{urlquery .OriginalName}}"><span class="material-symbols-outlined">download</span>{{.OriginalName}}</a>{{end}}</div>{{end}}
   <details class="snapshot"><summary>查看完整提交快照</summary><pre>{{.Snapshot}}</pre></details>
   <form method="post" action="/admin/review/{{.RevisionID}}" class="decision-form">
-    <label>内容标记<select name="curation_grade"><option value="standard">普通</option><option value="featured">精选</option></select></label>
+    <fieldset><legend>内容标签</legend><div class="chip-row">{{range $attributeDefinitions}}<label><input type="checkbox" name="attributes" value="{{.ID}}" {{if containsString $reviewItem.Attributes .ID}}checked{{end}}> {{.NameZH}}</label>{{end}}</div></fieldset>
+    <label>审核评价<select name="curation_grade"><option value="standard">普通 · 1.00</option><option value="featured">精选 · 1.50</option></select></label>
     <label>审核意见<textarea name="note" rows="4" placeholder="审核结论将完整显示给创作者；退回时请直接说明需要修改的内容"></textarea></label>
     <div class="actions"><button class="filled-button" type="submit" name="decision" value="approve">通过审核</button><button class="outlined-button danger" type="submit" name="decision" value="reject">退回修改</button></div>
   </form>

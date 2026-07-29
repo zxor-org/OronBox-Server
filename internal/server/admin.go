@@ -18,6 +18,7 @@ import (
 	"time"
 
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
+	"github.com/zxor-org/OronBox-Server/internal/creator"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 	"github.com/zxor-org/OronBox-Server/internal/web"
@@ -260,9 +261,18 @@ func (a *App) handleAdminClients(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 	announcements := []store.Announcement{}
+	attributes := []creator.ResourceAttribute{}
 	if a.store != nil {
 		var err error
 		announcements, err = a.store.AdminAnnouncements(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if a.creator != nil {
+		var err error
+		attributes, err = a.creator.Attributes(r.Context(), true)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -302,8 +312,42 @@ func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
 		"BandBBSSecretState": map[bool]string{true: "已配置", false: "未配置"}[a.cfg.BandBBS.ClientSecret != ""],
 		"GitHubSecretState":  map[bool]string{true: "已配置", false: "未配置"}[a.cfg.GitHub.ClientSecret != ""],
 		"Announcements":      announcements,
+		"ResourceAttributes": attributes,
 		"Action":             r.URL.Query().Get("action"),
 	})
+}
+
+func (a *App) handleAdminResourceAttribute(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/admin/settings", http.StatusFound)
+		return
+	}
+	coefficient, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("coefficient")), 64)
+	if err != nil {
+		http.Error(w, "invalid coefficient", http.StatusBadRequest)
+		return
+	}
+	position, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("position")))
+	item := creator.ResourceAttribute{
+		ID: strings.TrimSpace(r.FormValue("id")), NameZH: r.FormValue("name_zh"), NameEN: r.FormValue("name_en"),
+		Coefficient: coefficient, Enabled: r.FormValue("enabled") == "on", Position: position,
+	}
+	if err := a.creator.UpsertAttribute(r.Context(), item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "resource_attribute.save", "success", a.clientIP(r), r.UserAgent(), item.ID)
+	http.Redirect(w, r, "/admin/settings?action=attribute_saved", http.StatusFound)
+}
+
+func (a *App) handleAdminDeleteResourceAttribute(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("attribute"))
+	if err := a.creator.DisableAttribute(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "resource_attribute.disable", "success", a.clientIP(r), r.UserAgent(), id)
+	http.Redirect(w, r, "/admin/settings?action=attribute_deleted", http.StatusFound)
 }
 
 func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
@@ -355,6 +399,7 @@ type adminReviewItem struct {
 	Snapshot    string
 	Artifacts   []store.AdminArtifact
 	Media       []store.AdminMedia
+	Attributes  []string
 }
 
 func (a *App) handleAdminReview(w http.ResponseWriter, r *http.Request) {
@@ -393,12 +438,19 @@ func (a *App) handleAdminReview(w http.ResponseWriter, r *http.Request) {
 			Snapshot:    snapshot.String(),
 			Artifacts:   detail.Artifacts,
 			Media:       detail.Media,
+			Attributes:  entry.Attributes,
 		})
 	}
+	attributes, err := a.creator.Attributes(r.Context(), false)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	a.render(w, "admin_review", map[string]any{
-		"Title":   "资源审核",
-		"Items":   items,
-		"Decided": r.URL.Query().Get("decided") != "",
+		"Title":      "资源审核",
+		"Items":      items,
+		"Decided":    r.URL.Query().Get("decided") != "",
+		"Attributes": attributes,
 	})
 }
 
@@ -454,7 +506,7 @@ func (a *App) handleAdminReviewDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	approved := decision == "approve"
 	actor := currentAdmin(r)
-	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, nil, grade); err != nil {
+	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, nil, r.Form["attributes"], grade); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "resource.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

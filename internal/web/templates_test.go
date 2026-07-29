@@ -63,7 +63,7 @@ func TestAdminTemplatesRender(t *testing.T) {
 		"transition_page": TransitionPageData{
 			Title: "授权完成", Heading: "授权完成", Description: "可以返回 OronBox 继续使用",
 			Target: template.URL("oronbox://oauth?ticket=test"),
-			Auto: true, Tone: "success",
+			Auto:   true, Tone: "success",
 		},
 	}
 	for name, data := range cases {

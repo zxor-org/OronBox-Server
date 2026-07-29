@@ -15,6 +15,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -44,11 +45,12 @@ type publishArtifactRef struct {
 }
 
 type publishManifest struct {
-	Version    int      `json:"version"`
-	Kind       string   `json:"kind"`
-	Name       string   `json:"name"`
-	Summary    string   `json:"summary"`
-	Attributes []string `json:"attributes"`
+	Version    int            `json:"version"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name"`
+	Summary    string         `json:"summary"`
+	Attributes []string       `json:"attributes"`
+	Links      []ResourceLink `json:"links"`
 	Media      struct {
 		Icon     *publishMediaRef  `json:"icon"`
 		Cover    *publishMediaRef  `json:"cover"`
@@ -103,22 +105,29 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	if manifest.Version != 1 || !kind.Valid() || manifest.Name == "" || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
 		return Workspace{}, fmt.Errorf("%w: manifest metadata", ErrInvalid)
 	}
-	validAttributes := map[string]bool{"original": true, "derivative": true, "port": true, "template_skin": true, "ai_assisted": true, "ai_generated": true}
 	seenAttributes := make(map[string]bool, len(manifest.Attributes))
-	for _, attribute := range manifest.Attributes {
-		if !validAttributes[attribute] || seenAttributes[attribute] {
+	for index, attribute := range manifest.Attributes {
+		attribute = strings.TrimSpace(attribute)
+		manifest.Attributes[index] = attribute
+		if attribute == "" || seenAttributes[attribute] {
 			return Workspace{}, fmt.Errorf("%w: resource attributes", ErrInvalid)
 		}
 		seenAttributes[attribute] = true
 	}
-	provenanceCount := 0
-	for _, attribute := range []string{"original", "derivative", "port", "template_skin"} {
-		if seenAttributes[attribute] {
-			provenanceCount++
-		}
+	if len(seenAttributes) > 32 || !s.attributesExist(ctx, manifest.Attributes, true) {
+		return Workspace{}, fmt.Errorf("%w: resource attributes", ErrInvalid)
 	}
-	if provenanceCount > 1 || (seenAttributes["ai_assisted"] && seenAttributes["ai_generated"]) {
-		return Workspace{}, fmt.Errorf("%w: conflicting resource attributes", ErrInvalid)
+	if len(manifest.Links) > 16 {
+		return Workspace{}, fmt.Errorf("%w: resource links", ErrInvalid)
+	}
+	for index := range manifest.Links {
+		link := &manifest.Links[index]
+		link.Title = strings.TrimSpace(link.Title)
+		link.URL = strings.TrimSpace(link.URL)
+		parsed, parseErr := url.ParseRequestURI(link.URL)
+		if link.Title == "" || len(link.Title) > 80 || len(link.URL) > 2048 || parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return Workspace{}, fmt.Errorf("%w: resource links", ErrInvalid)
+		}
 	}
 	media, err := s.verifyBundleMedia(files, &manifest)
 	if err != nil {
@@ -197,6 +206,11 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	}
 	for attribute := range seenAttributes {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revision_attributes(revision_id,attribute) VALUES($1,$2)`, revisionID, attribute); err != nil {
+			return Workspace{}, err
+		}
+	}
+	for position, link := range manifest.Links {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO revision_links(revision_id,position,title,url) VALUES($1,$2,$3,$4)`, revisionID, position, link.Title, link.URL); err != nil {
 			return Workspace{}, err
 		}
 	}
