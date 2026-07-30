@@ -221,6 +221,25 @@ func (a *App) handleCreatorPublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, workspace)
 }
 
+func (a *App) handleCreatorDraft(w http.ResponseWriter, r *http.Request) {
+	limit := a.cfg.Limits.UploadMaxBytes + 1
+	bundle, err := io.ReadAll(io.LimitReader(r.Body, limit))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", err.Error()))
+		return
+	}
+	if int64(len(bundle)) > a.cfg.Limits.UploadMaxBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorBody("creator_invalid", "draft bundle exceeds the upload limit"))
+		return
+	}
+	workspace, err := a.creator.SaveDraft(r.Context(), currentUser(r).ID, r.PathValue("resource"), bundle)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workspace)
+}
+
 func (a *App) handleCreatorTakedown(w http.ResponseWriter, r *http.Request) {
 	a.writeCreatorModeration(w, r, "takedown")
 }

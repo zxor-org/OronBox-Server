@@ -20,6 +20,7 @@ func (kind ResourceKind) Valid() bool {
 type RevisionState string
 
 const (
+	RevisionDraft      RevisionState = "draft"
 	RevisionSubmitted  RevisionState = "submitted"
 	RevisionApproved   RevisionState = "approved"
 	RevisionRejected   RevisionState = "rejected"

@@ -147,6 +147,7 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("POST /api/creator/resources", a.requireCreator(a.handleCreatorCreate))
 	mux.Handle("GET /api/creator/resources/{resource}", a.requireCreator(a.handleCreatorWorkspace))
 	mux.Handle("POST /api/creator/resources/{resource}/publish", a.requireCreator(a.handleCreatorPublish))
+	mux.Handle("PUT /api/creator/resources/{resource}/draft", a.requireCreator(a.handleCreatorDraft))
 	mux.Handle("GET /api/creator/resources/{resource}/blobs/{sha256}", a.requireCreator(a.handleCreatorBlob))
 	mux.Handle("POST /api/creator/resources/{resource}/takedown", a.requireCreator(a.handleCreatorTakedown))
 	mux.Handle("POST /api/creator/resources/{resource}/restore", a.requireCreator(a.handleCreatorRestore))

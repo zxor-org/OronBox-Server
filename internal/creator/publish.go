@@ -81,6 +81,14 @@ type verifiedArtifact struct {
 }
 
 func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundle []byte) (Workspace, error) {
+	return s.saveBundle(ctx, ownerID, resourceID, bundle, true)
+}
+
+func (s *Service) SaveDraft(ctx context.Context, ownerID, resourceID string, bundle []byte) (Workspace, error) {
+	return s.saveBundle(ctx, ownerID, resourceID, bundle, false)
+}
+
+func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bundle []byte, submit bool) (Workspace, error) {
 	reader, err := zip.NewReader(bytes.NewReader(bundle), int64(len(bundle)))
 	if err != nil {
 		return Workspace{}, fmt.Errorf("%w: bundle is not a zip archive", ErrInvalid)
@@ -133,11 +141,14 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	if err != nil {
 		return Workspace{}, err
 	}
-	artifacts, err := s.verifyBundleArtifacts(files, kind, manifest.Artifacts)
+	artifacts, err := s.verifyBundleArtifacts(files, kind, manifest.Artifacts, submit)
 	if err != nil {
 		return Workspace{}, err
 	}
 	publications := manifest.Publications
+	if !submit {
+		publications = nil
+	}
 	seen := map[PublicationTarget]bool{}
 	for _, request := range publications {
 		if seen[request.Target] || (request.Target != PublishOronBox && request.Target != PublishBandBBS && request.Target != PublishAstroBox) {
@@ -145,7 +156,7 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 		}
 		seen[request.Target] = true
 	}
-	if !seen[PublishOronBox] {
+	if submit && !seen[PublishOronBox] {
 		publications = append(publications, PublicationRequest{Target: PublishOronBox, Config: map[string]any{}})
 	}
 
@@ -172,7 +183,12 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	if err := s.verifyBundleBindings(ctx, tx, artifacts); err != nil {
 		return Workspace{}, err
 	}
-	if err := s.verifyBundlePublications(ctx, tx, ownerID, &manifest, artifacts, publications); err != nil {
+	if submit {
+		if err := s.verifyBundlePublications(ctx, tx, ownerID, &manifest, artifacts, publications); err != nil {
+			return Workspace{}, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM resource_revisions WHERE resource_id=$1 AND state='draft'`, resourceID); err != nil {
 		return Workspace{}, err
 	}
 	stored := make(map[string]bool)
@@ -201,7 +217,11 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 		return Workspace{}, err
 	}
 	revisionID := uuid.NewString()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary) VALUES($1,$2,$3,$4,$5)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary); err != nil {
+	revisionState := "draft"
+	if submit {
+		revisionState = "submitted"
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,state) VALUES($1,$2,$3,$4,$5,$6)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, revisionState); err != nil {
 		return Workspace{}, err
 	}
 	for attribute := range seenAttributes {
@@ -242,17 +262,23 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 			}
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE resource_revisions SET state='superseded' WHERE resource_id=$1 AND state='submitted' AND id<>$2`, resourceID, revisionID); err != nil {
-		return Workspace{}, err
+	if submit {
+		if _, err = tx.ExecContext(ctx, `UPDATE resource_revisions SET state='superseded' WHERE resource_id=$1 AND state='submitted' AND id<>$2`, resourceID, revisionID); err != nil {
+			return Workspace{}, err
+		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE review_cases c SET state='superseded',updated_at=now() FROM resource_revisions rr WHERE c.revision_id=rr.id AND rr.resource_id=$1 AND rr.id<>$2 AND c.state='pending'`, resourceID, revisionID); err != nil {
-		return Workspace{}, err
+	if submit {
+		if _, err = tx.ExecContext(ctx, `UPDATE review_cases c SET state='superseded',updated_at=now() FROM resource_revisions rr WHERE c.revision_id=rr.id AND rr.resource_id=$1 AND rr.id<>$2 AND c.state='pending'`, resourceID, revisionID); err != nil {
+			return Workspace{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE publications p SET state='cancelled',updated_at=now() FROM resource_revisions rr WHERE p.revision_id=rr.id AND rr.resource_id=$1 AND rr.id<>$2 AND p.state IN ('pending','running')`, resourceID, revisionID); err != nil {
+			return Workspace{}, err
+		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE publications p SET state='cancelled',updated_at=now() FROM resource_revisions rr WHERE p.revision_id=rr.id AND rr.resource_id=$1 AND rr.id<>$2 AND p.state IN ('pending','running')`, resourceID, revisionID); err != nil {
-		return Workspace{}, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id) VALUES($1,$2)`, uuid.NewString(), revisionID); err != nil {
-		return Workspace{}, err
+	if submit {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id) VALUES($1,$2)`, uuid.NewString(), revisionID); err != nil {
+			return Workspace{}, err
+		}
 	}
 	for _, request := range publications {
 		config, err := json.Marshal(request.Config)
@@ -263,10 +289,14 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 			return Workspace{}, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE resources SET updated_at=now() WHERE id=$1`, resourceID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE resources SET draft_name=$2,updated_at=now() WHERE id=$1`, resourceID, manifest.Name); err != nil {
 		return Workspace{}, err
 	}
-	if err = event(ctx, tx, resourceID, ownerID, "revision.published", map[string]any{"revision_id": revisionID, "revision_no": revisionNo}); err != nil {
+	eventName := "revision.drafted"
+	if submit {
+		eventName = "revision.published"
+	}
+	if err = event(ctx, tx, resourceID, ownerID, eventName, map[string]any{"revision_id": revisionID, "revision_no": revisionNo}); err != nil {
 		return Workspace{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -276,7 +306,7 @@ func (s *Service) Publish(ctx context.Context, ownerID, resourceID string, bundl
 	for _, request := range publications {
 		targets = append(targets, string(request.Target))
 	}
-	log(ctx).Info("revision published", "resource_id", resourceID, "owner_id", ownerID, "kind", kind, "revision_id", revisionID, "revision_no", revisionNo, "artifacts", len(artifacts), "targets", strings.Join(targets, ","))
+	log(ctx).Info("revision saved", "resource_id", resourceID, "owner_id", ownerID, "kind", kind, "revision_id", revisionID, "revision_no", revisionNo, "state", revisionState, "artifacts", len(artifacts), "targets", strings.Join(targets, ","))
 	return s.Workspace(ctx, ownerID, resourceID)
 }
 
@@ -351,8 +381,8 @@ func (s *Service) verifyBundleMedia(files map[string]*zip.File, manifest *publis
 	return result, nil
 }
 
-func (s *Service) verifyBundleArtifacts(files map[string]*zip.File, kind ResourceKind, refs []publishArtifactRef) ([]verifiedArtifact, error) {
-	if len(refs) < 1 {
+func (s *Service) verifyBundleArtifacts(files map[string]*zip.File, kind ResourceKind, refs []publishArtifactRef, required bool) ([]verifiedArtifact, error) {
+	if required && len(refs) < 1 {
 		return nil, fmt.Errorf("%w: at least one resource file", ErrInvalid)
 	}
 	result := make([]verifiedArtifact, 0, len(refs))
@@ -378,7 +408,7 @@ func (s *Service) verifyBundleArtifacts(files map[string]*zip.File, kind Resourc
 		if (kind == QuickApp) != (analysis.Kind == resourcecore.QuickApp) {
 			return nil, fmt.Errorf("%w: %s does not match the resource kind", ErrInvalid, ref.File)
 		}
-		if len(ref.DeviceIDs) < 1 {
+		if required && len(ref.DeviceIDs) < 1 {
 			return nil, fmt.Errorf("%w: %s has no bound devices", ErrInvalid, ref.File)
 		}
 		result = append(result, verifiedArtifact{

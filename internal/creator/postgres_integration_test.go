@@ -127,6 +127,34 @@ func TestCreatorLifecycle(t *testing.T) {
 			}},
 		}
 	}
+	draftManifest := map[string]any{
+		"version":   1,
+		"kind":      "watchface",
+		"name":      "Saved draft",
+		"summary":   "Incomplete work",
+		"media":     map[string]any{"previews": []any{}},
+		"artifacts": []any{},
+	}
+	workspace, err = service.SaveDraft(
+		ctx,
+		userID,
+		workspace.Resource.ID,
+		testBundle(t, draftManifest, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspace.Revisions) != 1 || workspace.Revisions[0].State != RevisionDraft || workspace.Review != nil {
+		t.Fatalf("saved draft workspace = %#v review=%#v", workspace.Revisions, workspace.Review)
+	}
+	draftManifest["name"] = "Saved draft again"
+	workspace, err = service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workspace.Revisions) != 1 || workspace.Revisions[0].Name != "Saved draft again" {
+		t.Fatalf("replacement draft workspace = %#v", workspace.Revisions)
+	}
 	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("Test face", 1, nil), files)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("publish without device bindings error = %v, want invalid", err)
 	}
