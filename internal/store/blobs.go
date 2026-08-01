@@ -19,8 +19,9 @@ func (s *Store) Blob(ctx context.Context, sha256 string) (BlobRecord, error) {
 }
 
 // PublicBlob returns a blob only while it is referenced by the currently
-// published revision of a visible resource. Rejected, superseded, suspended
-// and frozen content stays private.
+// published revision of a visible resource, a published blog post or an
+// enabled home banner. Rejected, superseded, suspended and frozen content
+// stays private.
 func (s *Store) PublicBlob(ctx context.Context, sha256 string) (BlobRecord, error) {
 	var blob BlobRecord
 	err := s.db.QueryRowContext(ctx, `
@@ -49,6 +50,17 @@ WHERE blob.sha256=$1
             AND media.blob_sha256=blob.sha256
         )
       )
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM blog_posts post
+    WHERE post.published
+      AND (post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%')
+  )
+  OR EXISTS (
+    SELECT 1
+    FROM home_banners banner
+    WHERE banner.enabled AND banner.cover_sha256=blob.sha256
   )`, sha256).
 		Scan(&blob.SHA256, &blob.Size, &blob.MediaType, &blob.LocalKey, &blob.R2Key, &blob.R2State)
 	return blob, err

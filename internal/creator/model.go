@@ -352,4 +352,5 @@ type PublicQuery struct {
 	Sort       string
 	Devices    []string
 	Attributes []string
+	Featured   bool
 }

@@ -499,28 +499,7 @@ func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 // Pick the highest package version exposed by the revision.
 const highestVersionSQL = `COALESCE((SELECT package_version FROM revision_artifacts WHERE revision_id=rr.id AND package_version<>'' ORDER BY length(package_version) DESC,package_version DESC LIMIT 1),'')`
 
-func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]PublicResource, int, error) {
-	if query.Limit <= 0 || query.Limit > 100 {
-		query.Limit = 50
-	}
-	if query.Offset < 0 {
-		query.Offset = 0
-	}
-	if query.Devices == nil {
-		query.Devices = []string{}
-	}
-	if query.Attributes == nil {
-		query.Attributes = []string{}
-	}
-	order := "recommendation_score DESC, updated_at DESC"
-	if query.Sort == "name" {
-		order = "name ASC"
-	} else if query.Sort == "random" {
-		order = "random()"
-	} else if query.Sort == "time" {
-		order = "updated_at DESC"
-	}
-	const cards = `WITH recent_resource_coins AS (
+const publicCardsSQL = `WITH recent_resource_coins AS (
 SELECT ledger.reference_id resource_id,
 count(DISTINCT ledger.user_id)::numeric unique_coiners,
 COALESCE(sum(-ledger.delta_units / 10),0)::numeric coins
@@ -572,11 +551,34 @@ AND EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND chil
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN revision_artifacts a ON a.revision_id=child.current_revision_id JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN resource_revision_attributes attribute ON attribute.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND attribute.attribute=ANY($4::text[])))
 ) `
+
+func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]PublicResource, int, error) {
+	if query.Limit <= 0 || query.Limit > 100 {
+		query.Limit = 50
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	if query.Devices == nil {
+		query.Devices = []string{}
+	}
+	if query.Attributes == nil {
+		query.Attributes = []string{}
+	}
+	order := "recommendation_score DESC, updated_at DESC"
+	if query.Sort == "name" {
+		order = "name ASC"
+	} else if query.Sort == "random" {
+		order = "random()"
+	} else if query.Sort == "time" {
+		order = "updated_at DESC"
+	}
+	cards := publicCardsSQL
 	var total int
-	if err := s.db.QueryRowContext(ctx, cards+`SELECT count(*) FROM cards`, query.Search, query.Kind, query.Devices, query.Attributes).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, cards+`SELECT count(*) FROM cards WHERE ($5=false OR curation_grade='featured')`, query.Search, query.Kind, query.Devices, query.Attributes, query.Featured).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, cards+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,updated_at FROM cards ORDER BY `+order+` LIMIT $5 OFFSET $6`, query.Search, query.Kind, query.Devices, query.Attributes, query.Limit, query.Offset)
+	rows, err := s.db.QueryContext(ctx, cards+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,updated_at FROM cards WHERE ($7=false OR curation_grade='featured') ORDER BY `+order+` LIMIT $5 OFFSET $6`, query.Search, query.Kind, query.Devices, query.Attributes, query.Limit, query.Offset, query.Featured)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -593,6 +595,50 @@ AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN reso
 		result = append(result, item)
 	}
 	return result, total, rows.Err()
+}
+
+// HomeResourceCard is the compact resource payload rendered on the home
+// feed, with up to three preview images for the wide card layout.
+type HomeResourceCard struct {
+	ID          string   `json:"id"`
+	Slug        string   `json:"slug"`
+	Name        string   `json:"name"`
+	Summary     string   `json:"summary"`
+	Kind        string   `json:"kind"`
+	Owner       string   `json:"owner"`
+	IconSHA256  string   `json:"icon_sha256"`
+	CoverSHA256 string   `json:"cover_sha256"`
+	Previews    []string `json:"previews"`
+}
+
+// HomeResources returns visible resource cards for the given IDs, preserving
+// the caller's order. Missing or hidden resources are skipped.
+func (s *Service) HomeResources(ctx context.Context, ids []string) ([]HomeResourceCard, error) {
+	if len(ids) == 0 {
+		return []HomeResourceCard{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,r.kind,u.username,
+COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
+COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
+COALESCE((SELECT jsonb_agg(blob_sha256 ORDER BY position) FROM (SELECT blob_sha256,position FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 3) p),'[]')
+FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id
+WHERE r.moderation_state='visible' AND r.id=ANY($1::uuid[])
+ORDER BY array_position($1::uuid[],r.id)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]HomeResourceCard, 0, len(ids))
+	for rows.Next() {
+		var item HomeResourceCard
+		var previews []byte
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.IconSHA256, &item.CoverSHA256, &previews); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(previews, &item.Previews)
+		result = append(result, item)
+	}
+	return result, rows.Err()
 }
 
 func (s *Service) PublicResource(ctx context.Context, resourceID string) (PublicResourceDetail, error) {

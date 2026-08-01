@@ -324,6 +324,8 @@ const templates = `
     <a class="nav-link" data-nav-path="/admin/resources" href="/admin/resources"><span class="material-symbols-outlined">inventory_2</span><span>全部资源</span></a>
     <a class="nav-link" data-nav-path="/admin/collections" href="/admin/collections"><span class="material-symbols-outlined">collections_bookmark</span><span>合集审核</span></a>
     <a class="nav-link" data-nav-path="/admin/plugins" href="/admin/plugins"><span class="material-symbols-outlined">extension</span><span>插件管理</span></a>
+    <a class="nav-link" data-nav-path="/admin/home" href="/admin/home"><span class="material-symbols-outlined">home</span><span>首页管理</span></a>
+    <a class="nav-link" data-nav-path="/admin/blog" href="/admin/blog"><span class="material-symbols-outlined">article</span><span>博客</span></a>
     <a class="nav-link" data-nav-path="/admin/coins" href="/admin/coins"><span class="material-symbols-outlined">toll</span><span>硬币管理</span></a>
     <a class="nav-link" data-nav-path="/admin/users" href="/admin/users"><span class="material-symbols-outlined">group</span><span>用户</span></a>
     <a class="nav-link" data-nav-path="/admin/comments" href="/admin/comments"><span class="material-symbols-outlined">forum</span><span>评论审核</span></a>
@@ -828,6 +830,138 @@ const templates = `
 <div class="metric-grid"><article><span>已发行</span><strong>{{.Stats.IssuedUnits}}</strong><small>0.1 枚 / 单位</small></article><article><span>资源投币</span><strong>{{.Stats.SpentUnits}}</strong><small>支出单位</small></article><article><span>创作者奖励</span><strong>{{.Stats.RewardedUnits}}</strong><small>奖励单位</small></article><article><span>冻结账号</span><strong>{{.Stats.FrozenVoters}}</strong><small>活跃投币用户 {{.Stats.ActiveVoters}}</small></article></div>
 <div class="content-grid"><section class="panel"><div class="section-header"><div><h2>账号操作</h2><p>余额使用 0.1 枚为一个单位</p></div></div><form method="post" action="/admin/coins/users" class="reply-form"><label><span>用户 UUID</span><input name="user_id" required></label><label><span>动作</span><select name="action"><option value="adjust">调账</option><option value="freeze">冻结投币</option><option value="unfreeze">解除冻结</option></select></label><label><span>余额变动单位</span><input name="delta_units" type="number" value="0"></label><label><span>原因</span><textarea name="reason" required rows="3"></textarea></label><div class="actions"><button class="filled-button">执行</button></div></form></section><section class="panel"><div class="section-header"><div><h2>作废投币</h2><p>退回投币并回滚可追回的创作者奖励</p></div></div><form method="post" action="/admin/coins/invalidate" class="reply-form"><label><span>资源 UUID</span><input name="resource_id" required></label><label><span>投币用户 UUID</span><input name="user_id" required></label><label><span>原因</span><textarea name="reason" required rows="3"></textarea></label><div class="actions"><button class="outlined-button danger">作废投币</button></div></form></section></div>
 <section class="panel"><div class="section-header"><div><h2>最近 200 条账本记录</h2><p>原始流水不可删除</p></div></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>类型</th><th>变动</th><th>关联</th><th>原因</th></tr></thead><tbody>{{range .Ledger}}<tr><td class="secondary nowrap">{{.CreatedAt}}</td><td>{{.Username}}<span class="cell-note"><code>{{.UserID}}</code></span></td><td><code>{{.Kind}}</code></td><td>{{.DeltaUnits}}</td><td>{{.ReferenceType}} <code>{{.ReferenceID}}</code></td><td>{{.Note}}</td></tr>{{else}}<tr><td class="table-empty" colspan="6">暂无硬币流水</td></tr>{{end}}</tbody></table></div></section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_home"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>首页管理</h1><p>配置首页 Banner 轮播和编辑分区，即时生效</p></div></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>首页配置已更新</div>{{end}}
+<section class="panel"><div class="section-header"><div><h2>Banner 轮播</h2><p>展示在首页顶部，按顺序轮播，停用后不再展示</p></div><span class="count-badge">{{len .Banners}} 项</span></div>
+{{range .Banners}}<article class="review-card"><form method="post" action="/admin/home/banners/{{.ID}}/save" class="decision-form">
+<label><span>类型</span><select name="type"><option value="resource" {{if eqs .Type "resource"}}selected{{end}}>资源</option><option value="blog" {{if eqs .Type "blog"}}selected{{end}}>博客</option><option value="link" {{if eqs .Type "link"}}selected{{end}}>外部链接</option></select></label>
+<label><span>标题</span><input name="title" value="{{.Title}}" required></label>
+<label><span>副标题</span><input name="subtitle" value="{{.Subtitle}}"></label>
+<label><span>封面 SHA-256</span><input name="cover_sha256" value="{{.CoverSHA256}}" placeholder="上传图片后自动填入"></label>
+<label><span>资源 ID</span><input name="resource_id" value="{{.ResourceID}}"></label>
+<label><span>文章 Slug</span><input name="blog_slug" value="{{.BlogSlug}}"></label>
+<label><span>外部链接</span><input name="link_url" value="{{.LinkURL}}"></label>
+<label><span>启用</span><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}} style="width:auto"></label>
+<div class="actions"><button class="filled-button" type="submit">保存</button></div>
+</form><div class="actions" style="display:flex;gap:8px;margin-top:10px">
+<form method="post" action="/admin/home/banners/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="-1">上移</button></form>
+<form method="post" action="/admin/home/banners/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="1">下移</button></form>
+<form method="post" action="/admin/home/banners/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form>
+</div></article>{{else}}<section class="empty-state"><div class="empty-mark">+</div><h2>暂无 Banner</h2><p>在下方创建第一个 Banner</p></section>{{end}}
+<form method="post" action="/admin/home/banners" class="reply-form"><h3>新建 Banner</h3>
+<label><span>类型</span><select name="type"><option value="resource">资源</option><option value="blog">博客</option><option value="link">外部链接</option></select></label>
+<label><span>标题</span><input name="title" required></label>
+<label><span>副标题</span><input name="subtitle"></label>
+<label><span>封面 SHA-256</span><input name="cover_sha256" placeholder="在博客编辑器上传图片获取"></label>
+<label><span>资源 ID</span><input name="resource_id"></label>
+<label><span>文章 Slug</span><input name="blog_slug"></label>
+<label><span>外部链接</span><input name="link_url"></label>
+<label><span>启用</span><input type="checkbox" name="enabled" checked style="width:auto"></label>
+<div class="actions"><button class="filled-button">创建</button></div></form></section>
+{{range .Sections}}<section class="panel"><div class="section-header"><div><h2>{{.Name}}</h2><p>{{.Description}}</p></div><span class="count-badge">{{.ID}}</span></div>
+<form method="post" action="/admin/home/sections/{{.ID}}/save" class="decision-form">
+<label><span>名称</span><input name="name" value="{{.Name}}" required></label>
+<label><span>描述</span><input name="description" value="{{.Description}}"></label>
+<label><span>启用</span><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}} style="width:auto"></label>
+<div class="actions"><button class="filled-button" type="submit">保存分区</button></div>
+</form><div class="actions" style="display:flex;gap:8px;margin-top:10px;margin-bottom:14px">
+<form method="post" action="/admin/home/sections/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="-1">上移</button></form>
+<form method="post" action="/admin/home/sections/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="1">下移</button></form>
+<form method="post" action="/admin/home/sections/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除分区</button></form>
+</div>
+<div class="table-wrap"><table><thead><tr><th>类型</th><th>引用</th><th>操作</th></tr></thead><tbody>{{range index $.Cards .ID}}<tr>
+<td>{{if eqs .Type "resource"}}资源{{else}}博客{{end}}</td>
+<td><code>{{if eqs .Type "resource"}}{{.ResourceID}}{{else}}{{.BlogSlug}}{{end}}</code></td>
+<td><div class="actions" style="display:flex;gap:8px">
+<form method="post" action="/admin/home/cards/{{.ID}}/move" style="display:inline"><input type="hidden" name="section_id" value="{{.SectionID}}"><button class="outlined-button" name="delta" value="-1">上移</button></form>
+<form method="post" action="/admin/home/cards/{{.ID}}/move" style="display:inline"><input type="hidden" name="section_id" value="{{.SectionID}}"><button class="outlined-button" name="delta" value="1">下移</button></form>
+<form method="post" action="/admin/home/cards/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form>
+</div></td>
+</tr>{{else}}<tr><td class="table-empty" colspan="3">暂无卡片</td></tr>{{end}}</tbody></table></div>
+<form method="post" action="/admin/home/cards" class="reply-form"><h3>添加卡片</h3>
+<input type="hidden" name="section_id" value="{{.ID}}">
+<label><span>类型</span><select name="type"><option value="resource">资源</option><option value="blog">博客</option></select></label>
+<label><span>资源 ID</span><input name="resource_id" placeholder="资源类型必填"></label>
+<label><span>文章 Slug</span><input name="blog_slug" placeholder="博客类型必填"></label>
+<div class="actions"><button class="filled-button">添加</button></div></form></section>{{end}}
+<section class="panel"><div class="section-header"><div><h2>新建分区</h2><p>分区 ID 创建后不可修改</p></div></div>
+<form method="post" action="/admin/home/sections" class="reply-form">
+<label><span>分区 ID</span><input name="id" placeholder="小写字母、数字和中划线" required></label>
+<label><span>名称</span><input name="name" required></label>
+<label><span>描述</span><input name="description"></label>
+<label><span>启用</span><input type="checkbox" name="enabled" checked style="width:auto"></label>
+<div class="actions"><button class="filled-button">创建分区</button></div></form></section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_blog"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>博客</h1><p>管理公告、推荐和文档文章，发布后客户端可见</p></div><span class="count-badge">{{len .Posts}} 篇</span></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>文章操作已完成</div>{{end}}
+<section class="panel"><div class="section-header"><div><h2>新建文章</h2><p>Slug 创建后不可修改，创建后进入编辑器补全内容</p></div></div>
+<form method="post" action="/admin/blog" class="reply-form">
+<label><span>Slug</span><input name="slug" placeholder="小写字母、数字和中划线" required></label>
+<label><span>类型</span><select name="type"><option value="announcement">公告</option><option value="recommendation">推荐</option><option value="docs">文档</option></select></label>
+<div class="actions"><button class="filled-button">创建</button></div></form></section>
+<section class="panel"><div class="section-header"><div><h2>全部文章</h2></div></div>
+<div class="table-wrap"><table><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>发布时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{{range .Posts}}<tr>
+<td>{{.Title}}<span class="cell-note"><code>{{.Slug}}</code></span></td>
+<td>{{if eqs .Type "announcement"}}公告{{else if eqs .Type "recommendation"}}推荐{{else}}文档{{end}}</td>
+<td>{{if .Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</td>
+<td class="secondary nowrap">{{if .PublishedAt}}{{dateTime .PublishedAt}}{{else}}—{{end}}</td>
+<td class="secondary nowrap">{{dateTime .UpdatedAt}}</td>
+<td><div class="actions" style="display:flex;gap:8px"><a class="outlined-button" href="/admin/blog/{{.Slug}}">编辑</a><form method="post" action="/admin/blog/{{.Slug}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form></div></td>
+</tr>{{else}}<tr><td class="table-empty" colspan="6">暂无文章</td></tr>{{end}}</tbody></table></div></section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_blog_edit"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>编辑文章</h1><p><code>{{.Post.Slug}}</code></p></div>{{if .Post.Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>文章已保存</div>{{end}}
+<section class="panel"><form method="post" action="/admin/blog/{{.Post.Slug}}" class="decision-form">
+<label><span>类型</span><select name="type"><option value="announcement" {{if eqs .Post.Type "announcement"}}selected{{end}}>公告</option><option value="recommendation" {{if eqs .Post.Type "recommendation"}}selected{{end}}>推荐</option><option value="docs" {{if eqs .Post.Type "docs"}}selected{{end}}>文档</option></select></label>
+<label><span>标题</span><input name="title" value="{{.Post.Title}}" required></label>
+<label><span>副标题</span><input name="subtitle" value="{{.Post.Subtitle}}"></label>
+<label><span>作者</span><input name="author" value="{{.Post.Author}}"></label>
+<label><span>封面 SHA-256</span><span style="display:flex;gap:8px"><input name="cover_sha256" id="cover-field" value="{{.Post.CoverSHA256}}" style="flex:1"><button class="outlined-button" type="button" data-upload-cover>上传</button></span></label>
+<label><span>发布</span><input type="checkbox" name="published" {{if .Post.Published}}checked{{end}} style="width:auto"></label>
+<label style="grid-column:1 / -1"><span>正文(Markdown,使用 ::resource{id=资源ID} 嵌入资源卡)</span><textarea name="body" id="body-field" rows="24">{{.Post.Body}}</textarea></label>
+<div class="actions"><button class="filled-button" type="submit">保存</button><button class="outlined-button" type="button" data-upload-image>插入图片</button></div>
+</form></section>
+<input type="file" id="image-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+<script>
+(function() {
+  var fileInput = document.getElementById('image-file');
+  var mode = 'body';
+  document.querySelector('[data-upload-image]').addEventListener('click', function() { mode = 'body'; fileInput.click(); });
+  document.querySelector('[data-upload-cover]').addEventListener('click', function() { mode = 'cover'; fileInput.click(); });
+  fileInput.addEventListener('change', async function() {
+    if (!fileInput.files.length) return;
+    var body = new FormData();
+    body.append('file', fileInput.files[0]);
+    var response = await fetch('/admin/blobs', {method: 'POST', body: body});
+    fileInput.value = '';
+    if (!response.ok) { alert('图片上传失败'); return; }
+    var sha = (await response.json()).sha256;
+    if (mode === 'cover') {
+      document.getElementById('cover-field').value = sha;
+      return;
+    }
+    var field = document.getElementById('body-field');
+    var insert = '![](/api/blobs/' + sha + ')';
+    var start = field.selectionStart || field.value.length;
+    field.value = field.value.slice(0, start) + insert + field.value.slice(field.selectionEnd || start);
+    field.focus();
+    field.selectionStart = field.selectionEnd = start + insert.length;
+  });
+})();
+</script>
 {{template "admin_close" .}}
 {{end}}
 `

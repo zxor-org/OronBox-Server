@@ -179,6 +179,15 @@ CREATE TABLE plugins (
  icon_sha256 char(64) REFERENCES blobs(sha256),
  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE blog_posts (
+ slug text PRIMARY KEY CHECK (slug ~ '^[a-z0-9][a-z0-9-]{1,63}$'),
+ type text NOT NULL DEFAULT 'announcement' CHECK (type IN ('announcement','recommendation','docs')),
+ title text NOT NULL, subtitle text NOT NULL DEFAULT '', author text NOT NULL DEFAULT '',
+ cover_sha256 char(64) REFERENCES blobs(sha256),
+ body text NOT NULL DEFAULT '',
+ published boolean NOT NULL DEFAULT false, published_at timestamptz,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE resources (
  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id), slug text NOT NULL, draft_name text NOT NULL DEFAULT '',
  platform text NOT NULL DEFAULT 'vela_os' CHECK (platform='vela_os'),
@@ -192,6 +201,32 @@ CREATE TABLE resources (
  UNIQUE(owner_id,slug)
 );
 CREATE INDEX resources_governance_idx ON resources(moderation_state,updated_at DESC);
+CREATE TABLE home_sections (
+ id text PRIMARY KEY CHECK (id ~ '^[a-z0-9][a-z0-9-]{1,31}$'),
+ name text NOT NULL, description text NOT NULL DEFAULT '',
+ position integer NOT NULL DEFAULT 0, enabled boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE home_section_cards (
+ id uuid PRIMARY KEY,
+ section_id text NOT NULL REFERENCES home_sections(id) ON DELETE CASCADE,
+ type text NOT NULL CHECK (type IN ('resource','blog')),
+ resource_id uuid REFERENCES resources(id) ON DELETE CASCADE,
+ blog_slug text REFERENCES blog_posts(slug) ON DELETE CASCADE,
+ position integer NOT NULL DEFAULT 0,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE home_banners (
+ id uuid PRIMARY KEY,
+ type text NOT NULL CHECK (type IN ('resource','blog','link')),
+ title text NOT NULL, subtitle text NOT NULL DEFAULT '',
+ cover_sha256 char(64) REFERENCES blobs(sha256),
+ resource_id uuid REFERENCES resources(id) ON DELETE CASCADE,
+ blog_slug text REFERENCES blog_posts(slug) ON DELETE CASCADE,
+ link_url text NOT NULL DEFAULT '',
+ position integer NOT NULL DEFAULT 0, enabled boolean NOT NULL DEFAULT true,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE resource_revisions (
  id uuid PRIMARY KEY, resource_id uuid NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
  revision_no integer NOT NULL, name text NOT NULL, summary text NOT NULL,
