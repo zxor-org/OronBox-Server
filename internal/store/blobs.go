@@ -54,6 +54,12 @@ WHERE blob.sha256=$1
 	return blob, err
 }
 
+// EnsureBlob registers a locally stored object in the blob catalog.
+func (s *Store) EnsureBlob(ctx context.Context, sha256 string, size int64, mediaType, localKey string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO blobs(sha256,size_bytes,media_type,local_key) VALUES($1,$2,$3,$4) ON CONFLICT(sha256) DO NOTHING`, sha256, size, mediaType, localKey)
+	return err
+}
+
 func (s *Store) SetBlobR2State(ctx context.Context, sha256, state, key string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO blob_replicas(blob_sha256,backend,state,object_key,updated_at) VALUES($1,'r2',$2,$3,now()) ON CONFLICT(blob_sha256,backend) DO UPDATE SET state=excluded.state,object_key=excluded.object_key,updated_at=now()`, sha256, state, key)
 	return err

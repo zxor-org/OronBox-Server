@@ -27,6 +27,10 @@ var (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,63}$`)
 var attributePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
+// maxDraftResources caps how many never-submitted resources one owner may
+// keep; submitted resources (approved or rejected) stop counting.
+const maxDraftResources = 10
+
 type Limits struct {
 	UploadMaxBytes  int64
 	PreviewMaxBytes int64
@@ -64,6 +68,13 @@ func (s *Service) Create(ctx context.Context, ownerID, slug, name string, kind R
 		return Workspace{}, err
 	}
 	defer tx.Rollback()
+	var drafts int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM resources r WHERE r.owner_id=$1 AND NOT EXISTS(SELECT 1 FROM resource_revisions rr WHERE rr.resource_id=r.id AND rr.state<>'draft')`, ownerID).Scan(&drafts); err != nil {
+		return Workspace{}, err
+	}
+	if drafts >= maxDraftResources {
+		return Workspace{}, fmt.Errorf("%w: draft resource limit of %d reached", ErrConflict, maxDraftResources)
+	}
 	resourceID := uuid.NewString()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO resources(id,owner_id,slug,draft_name,kind) VALUES($1,$2,$3,$4,$5)`, resourceID, ownerID, slug, name, kind); err != nil {
 		return Workspace{}, err

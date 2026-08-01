@@ -574,6 +574,125 @@ func (a *App) handleAdminCollectionReviewForm(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/admin/collections?action=reviewed", http.StatusFound)
 }
 
+func (a *App) handleAdminPluginsPage(w http.ResponseWriter, r *http.Request) {
+	plugins, err := a.store.AdminListPlugins(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pending := make([]store.PluginRecord, 0)
+	for _, plugin := range plugins {
+		if plugin.State == "pending" {
+			pending = append(pending, plugin)
+		}
+	}
+	a.render(w, "admin_plugins", map[string]any{"Title": "插件管理", "Plugins": plugins, "Pending": pending, "Action": r.URL.Query().Get("action")})
+}
+
+func (a *App) handleAdminPluginReview(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	pluginID := r.PathValue("plugin")
+	decision := strings.TrimSpace(r.FormValue("decision"))
+	note := strings.TrimSpace(r.FormValue("note"))
+	var state, reason string
+	switch decision {
+	case "approve":
+		state = "listed"
+	case "reject":
+		if note == "" {
+			http.Error(w, "reject reason is required", http.StatusBadRequest)
+			return
+		}
+		state, reason = "rejected", note
+	default:
+		http.Error(w, "unknown decision", http.StatusBadRequest)
+		return
+	}
+	plugin, err := a.store.Plugin(r.Context(), pluginID)
+	if errors.Is(err, store.ErrPluginNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if plugin.State != "pending" {
+		http.Error(w, "plugin is not pending review", http.StatusConflict)
+		return
+	}
+	if _, err := a.store.SetPluginState(r.Context(), pluginID, state, reason); err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "plugin.review", "failure", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" error="+err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "plugin.review", "success", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" decision="+decision+" note="+note)
+	observability.From(r.Context()).With("component", "admin").Info(
+		"admin plugin reviewed",
+		"plugin_id", pluginID,
+		"decision", decision,
+		"admin_user", actor.Username,
+		"reason", note,
+	)
+	http.Redirect(w, r, "/admin/plugins?action=reviewed", http.StatusFound)
+}
+
+func (a *App) handleAdminPluginState(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	pluginID := r.PathValue("plugin")
+	action := strings.TrimSpace(r.FormValue("action"))
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	var state, from string
+	switch action {
+	case "delist":
+		if reason == "" {
+			http.Error(w, "delist reason is required", http.StatusBadRequest)
+			return
+		}
+		state, from = "delisted", "listed"
+	case "restore":
+		state, from, reason = "listed", "delisted", ""
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	plugin, err := a.store.Plugin(r.Context(), pluginID)
+	if errors.Is(err, store.ErrPluginNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if plugin.State != from {
+		http.Error(w, "plugin state does not allow this action", http.StatusConflict)
+		return
+	}
+	if _, err := a.store.SetPluginState(r.Context(), pluginID, state, reason); err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "plugin."+action, "failure", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" error="+err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "plugin."+action, "success", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" reason="+reason)
+	observability.From(r.Context()).With("component", "admin").Info(
+		"admin plugin state changed",
+		"plugin_id", pluginID,
+		"action", action,
+		"admin_user", actor.Username,
+		"reason", reason,
+	)
+	http.Redirect(w, r, "/admin/plugins?action="+action, http.StatusFound)
+}
+
 func (a *App) handleAdminCoinsPage(w http.ResponseWriter, r *http.Request) {
 	stats, err := a.store.AdminCoinStats(r.Context())
 	if err != nil {

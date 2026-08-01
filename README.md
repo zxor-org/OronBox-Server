@@ -14,6 +14,7 @@ The open-source resource server for OronBox, built with Go
 | --- | --- |
 | 米坛 OAuth 登录 / BandBBS OAuth sign-in | ✅ 已完成 / Complete |
 | OronBox 资源浏览与下载 / OronBox resource discovery and downloads | ✅ 已完成 / Complete |
+| OronBox 插件发布与下载 / OronBox plugin publishing and downloads | ✅ 已完成 / Complete |
 | VelaOS 快应用与表盘发布 / VelaOS quick app and watchface publishing | ✅ 已完成 / Complete |
 | 资源修订与审核 / Resource revisions and review | ✅ 已完成 / Complete |
 | 米坛同步发布 / BandBBS publishing | ✅ 已完成 / Complete |

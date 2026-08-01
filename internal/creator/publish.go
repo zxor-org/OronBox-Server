@@ -110,7 +110,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	manifest.Name = strings.TrimSpace(manifest.Name)
 	manifest.Summary = strings.TrimSpace(manifest.Summary)
 	kind := ResourceKind(strings.TrimSpace(manifest.Kind))
-	if manifest.Version != 1 || !kind.Valid() || manifest.Name == "" || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
+	if manifest.Version != 1 || !kind.Valid() || (submit && manifest.Name == "") || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
 		return Workspace{}, fmt.Errorf("%w: manifest metadata", ErrInvalid)
 	}
 	seenAttributes := make(map[string]bool, len(manifest.Attributes))
@@ -137,7 +137,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 			return Workspace{}, fmt.Errorf("%w: resource links", ErrInvalid)
 		}
 	}
-	media, err := s.verifyBundleMedia(files, &manifest)
+	media, err := s.verifyBundleMedia(files, &manifest, submit)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -331,7 +331,7 @@ func readBundleFile(files map[string]*zip.File, name string, limit int64) ([]byt
 	return buffer.Bytes(), nil
 }
 
-func (s *Service) verifyBundleMedia(files map[string]*zip.File, manifest *publishManifest) ([]verifiedMedia, error) {
+func (s *Service) verifyBundleMedia(files map[string]*zip.File, manifest *publishManifest, submit bool) ([]verifiedMedia, error) {
 	type entry struct {
 		role     string
 		position int
@@ -344,7 +344,7 @@ func (s *Service) verifyBundleMedia(files map[string]*zip.File, manifest *publis
 	if manifest.Media.Cover != nil {
 		entries = append(entries, entry{role: "cover", ref: manifest.Media.Cover})
 	}
-	if len(manifest.Media.Previews) < 1 || len(manifest.Media.Previews) > s.limits.PreviewMaxCount {
+	if (submit && len(manifest.Media.Previews) < 1) || len(manifest.Media.Previews) > s.limits.PreviewMaxCount {
 		return nil, fmt.Errorf("%w: preview count", ErrInvalid)
 	}
 	for index := range manifest.Media.Previews {

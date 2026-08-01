@@ -155,6 +155,14 @@ func TestCreatorLifecycle(t *testing.T) {
 	if len(workspace.Revisions) != 1 || workspace.Revisions[0].Name != "Saved draft again" {
 		t.Fatalf("replacement draft workspace = %#v", workspace.Revisions)
 	}
+	draftManifest["name"] = ""
+	workspace, err = service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("", 1, []string{deviceRows[0].ID}), files)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("publish with an empty name error = %v, want invalid", err)
+	}
 	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("Test face", 1, nil), files)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("publish without device bindings error = %v, want invalid", err)
 	}
@@ -391,6 +399,27 @@ func TestCreatorModerationLifecycle(t *testing.T) {
 	workspace = publish()
 	if workspace.Revisions[0].State != RevisionSubmitted {
 		t.Fatalf("revision after unfreeze = %q", workspace.Revisions[0].State)
+	}
+}
+
+func TestCreatorDraftLimit(t *testing.T) {
+	ctx := context.Background()
+	db := testDatabase(t)
+	userID := uuid.NewString()
+	if _, err := db.ExecContext(ctx, `INSERT INTO users(id,bandbbs_user_id,username) VALUES($1,$2,$3)`, userID, time.Now().UnixNano(), "draft-limit-test"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
+	})
+	service := New(db, nil, Limits{UploadMaxBytes: 1 << 20, PreviewMaxBytes: 1 << 20, PreviewMaxCount: 4})
+	for index := 0; index < maxDraftResources; index++ {
+		if _, err := service.Create(ctx, userID, "draft-"+uuid.NewString(), "Draft", Watchface); err != nil {
+			t.Fatalf("create draft %d: %v", index, err)
+		}
+	}
+	if _, err := service.Create(ctx, userID, "draft-"+uuid.NewString(), "Draft", Watchface); !errors.Is(err, ErrConflict) {
+		t.Fatalf("create beyond draft limit error = %v, want conflict", err)
 	}
 }
 

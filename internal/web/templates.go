@@ -56,7 +56,7 @@ func (t *Templates) Render(w http.ResponseWriter, name string, data any) error {
 
 func statusClass(value any) string {
 	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
-	case "active", "approved", "published", "success", "ok", "closed", "committed", "resolved", "visible":
+	case "active", "approved", "published", "success", "ok", "closed", "committed", "resolved", "visible", "listed":
 		return "success"
 	case "pending", "submitted", "reviewing", "receiving", "verifying", "open", "investigating":
 		return "warning"
@@ -64,7 +64,7 @@ func statusClass(value any) string {
 		return "info"
 	case "archived", "superseded", "cancelled", "expired", "used", "dismissed":
 		return "neutral"
-	case "rejected", "failed", "failure", "aborted", "error", "suspended", "frozen":
+	case "rejected", "failed", "failure", "aborted", "error", "suspended", "frozen", "delisted":
 		return "danger"
 	default:
 		return "neutral"
@@ -81,6 +81,7 @@ func statusLabel(value any) string {
 		"open": "待处理", "investigating": "处理中", "replied": "已回复",
 		"resolved": "已解决", "dismissed": "已驳回", "closed": "已关闭",
 		"visible": "正常", "suspended": "已下架", "frozen": "已冻结",
+		"listed": "已上架", "delisted": "已下架",
 		"success": "成功", "failure": "失败", "ok": "正常",
 		"receiving": "接收中", "verifying": "校验中", "committed": "已提交",
 		"expired": "已过期", "used": "已使用", "aborted": "已中止",
@@ -322,6 +323,7 @@ const templates = `
     <a class="nav-link" data-nav-path="/admin/review" href="/admin/review"><span class="material-symbols-outlined">fact_check</span><span>待审核</span></a>
     <a class="nav-link" data-nav-path="/admin/resources" href="/admin/resources"><span class="material-symbols-outlined">inventory_2</span><span>全部资源</span></a>
     <a class="nav-link" data-nav-path="/admin/collections" href="/admin/collections"><span class="material-symbols-outlined">collections_bookmark</span><span>合集审核</span></a>
+    <a class="nav-link" data-nav-path="/admin/plugins" href="/admin/plugins"><span class="material-symbols-outlined">extension</span><span>插件管理</span></a>
     <a class="nav-link" data-nav-path="/admin/coins" href="/admin/coins"><span class="material-symbols-outlined">toll</span><span>硬币管理</span></a>
     <a class="nav-link" data-nav-path="/admin/users" href="/admin/users"><span class="material-symbols-outlined">group</span><span>用户</span></a>
     <a class="nav-link" data-nav-path="/admin/comments" href="/admin/comments"><span class="material-symbols-outlined">forum</span><span>评论审核</span></a>
@@ -797,6 +799,25 @@ const templates = `
 <header class="page-header"><div><h1>合集审核</h1><p>审核合集名称和简介；资源仍按各自审核状态发布</p></div><span class="count-badge">{{len .Items}} 项</span></header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>合集审核结果已保存</div>{{end}}
 {{range .Items}}<article class="review-card"><header class="review-summary"><div><div class="title-line"><h2>{{.PendingRevision.Name}}</h2><span class="status warning">待审核</span></div><p>{{.PendingRevision.Summary}}</p></div><dl class="review-meta"><div><dt>创作者</dt><dd><code>{{.OwnerID}}</code></dd></div><div><dt>类型</dt><dd>{{kindLabel .Kind}}</dd></div><div><dt>资源</dt><dd>{{.ResourceCount}} 项</dd></div><div><dt>Slug</dt><dd><code>{{.Slug}}</code></dd></div></dl></header><form method="post" action="/admin/collections/{{.PendingRevision.ID}}" class="decision-form"><label>审核意见<textarea name="note" rows="4" placeholder="退回时请直接说明需要修改的内容"></textarea></label><div class="actions"><button class="filled-button" name="decision" value="approve">通过审核</button><button class="outlined-button danger" name="decision" value="reject">退回修改</button></div></form></article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>合集审核队列为空</h2><p>当前没有等待处理的合集元数据</p></section>{{end}}
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_plugins"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>插件管理</h1><p>审核新上传的插件，管理已上架插件</p></div><span class="count-badge">{{len .Plugins}} 项</span></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>插件操作已完成</div>{{end}}
+<section class="panel"><div class="section-header"><div><h2>待审核</h2><p>新上传和更新的插件包，通过后才会上架</p></div><span class="count-badge">{{len .Pending}} 项</span></div>
+{{range .Pending}}<article class="review-card"><header class="review-summary"><div><div class="title-line"><h2>{{.Name}}</h2><span class="status warning">待审核</span></div><p>{{.Description}}</p></div><dl class="review-meta"><div><dt>插件 ID</dt><dd><code>{{.ID}}</code></dd></div><div><dt>上传者</dt><dd>{{.UploaderName}} <code>{{.UploaderID}}</code></dd></div><div><dt>版本</dt><dd>{{.Version}}</dd></div><div><dt>运行时</dt><dd><code>{{.Runtime}}</code></dd></div><div><dt>权限</dt><dd>{{range .Permissions}}<code>{{.}}</code> {{else}}无{{end}}</dd></div><div><dt>包体</dt><dd><a href="/admin/blobs/{{.PackageSHA256}}">下载检查</a> · {{.PackageSize}} B</dd></div><div><dt>上传时间</dt><dd>{{dateTime .UpdatedAt}}</dd></div></dl></header><form method="post" action="/admin/plugins/{{.ID}}/review" class="decision-form"><label>审核意见<textarea name="note" rows="3" placeholder="拒绝时必须说明原因"></textarea></label><div class="actions"><button class="filled-button" name="decision" value="approve">通过上架</button><button class="outlined-button danger" name="decision" value="reject">拒绝</button></div></form></article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>审核队列为空</h2><p>当前没有等待审核的插件</p></section>{{end}}
+</section>
+<section class="panel"><div class="section-header"><div><h2>全部插件</h2><p>已上架插件可强制下架，已下架可恢复上架；重新上传的版本会重新进入审核</p></div></div>
+<div class="table-wrap"><table><thead><tr><th>插件</th><th>上传者</th><th>版本</th><th>运行时</th><th>大小</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{{range .Plugins}}<tr>
+<td>{{.Name}}<span class="cell-note"><code>{{.ID}}</code></span></td>
+<td>{{.UploaderName}}<span class="cell-note"><code>{{.UploaderID}}</code></span></td>
+<td>{{.Version}}</td><td><code>{{.Runtime}}</code></td><td class="nowrap">{{.PackageSize}} B</td>
+<td><span class="status {{statusClass .State}}">{{statusLabel .State}}</span>{{if .ModerationReason}}<span class="cell-note">{{.ModerationReason}}</span>{{end}}</td>
+<td class="secondary nowrap">{{dateTime .UpdatedAt}}</td>
+<td>{{if eqs .State "listed"}}<form method="post" action="/admin/plugins/{{.ID}}/state" class="reply-form"><label><span>下架原因</span><input name="reason" required></label><div class="actions"><button class="outlined-button danger" name="action" value="delist">强制下架</button></div></form>{{else if eqs .State "delisted"}}<form method="post" action="/admin/plugins/{{.ID}}/state"><div class="actions"><button class="outlined-button" name="action" value="restore">恢复上架</button></div></form>{{else}}—{{end}}</td>
+</tr>{{else}}<tr><td class="table-empty" colspan="8">暂无插件</td></tr>{{end}}</tbody></table></div></section>
 {{template "admin_close" .}}
 {{end}}
 

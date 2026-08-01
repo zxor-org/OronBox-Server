@@ -61,6 +61,18 @@ BEGIN
  RETURN NEW;
 END $$;
 CREATE TRIGGER feedback_report_result_message AFTER UPDATE OF status ON feedback_tickets FOR EACH ROW EXECUTE FUNCTION notify_report_result();
+CREATE FUNCTION notify_plugin_moderation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.state<>NEW.state AND NEW.state<>'pending' THEN
+  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.uploader_id,'moderation',
+   CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '插件审核已通过' ELSE '插件已恢复上架' END WHEN 'rejected' THEN '插件审核未通过' ELSE '插件已被下架' END,
+   CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '你上传的插件已通过审核并上架' ELSE '你上传的插件已恢复上架' END WHEN 'rejected' THEN '你上传的插件未通过审核' ELSE '你上传的插件已被管理员下架' END||CASE WHEN NEW.moderation_reason='' THEN '' ELSE '：'||NEW.moderation_reason END,
+   NEW.id);
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER plugins_moderation_message AFTER UPDATE OF state ON plugins FOR EACH ROW EXECUTE FUNCTION notify_plugin_moderation();
 `
 
 // Migrate installs the current schema into an empty database.
@@ -154,6 +166,18 @@ CREATE TABLE blob_replicas (
  error_message text NOT NULL DEFAULT '', attempts integer NOT NULL DEFAULT 0,
  next_attempt_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(blob_sha256,backend)
+);
+CREATE TABLE plugins (
+ id text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9]*([.-][a-z0-9][a-z0-9-]*)+$'),
+ uploader_id uuid NOT NULL REFERENCES users(id),
+ name text NOT NULL, version text NOT NULL, author text NOT NULL DEFAULT '',
+ description text NOT NULL DEFAULT '', runtime text NOT NULL CHECK (runtime IN ('js','wasm','hybrid')),
+ permissions jsonb NOT NULL DEFAULT '[]',
+ state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','listed','rejected','delisted')),
+ moderation_reason text NOT NULL DEFAULT '',
+ package_sha256 char(64) NOT NULL REFERENCES blobs(sha256),
+ icon_sha256 char(64) REFERENCES blobs(sha256),
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE resources (
  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id), slug text NOT NULL, draft_name text NOT NULL DEFAULT '',
