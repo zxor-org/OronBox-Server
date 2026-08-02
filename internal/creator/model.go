@@ -160,15 +160,22 @@ type Publication struct {
 	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
+type ExternalBinding struct {
+	Provider    string `json:"provider"`
+	ExternalID  string `json:"external_id"`
+	ExternalURL string `json:"external_url"`
+}
+
 type Workspace struct {
-	Resource        Resource       `json:"resource"`
-	CurrentRevision *Revision      `json:"current_revision,omitempty"`
-	Revisions       []Revision     `json:"revisions"`
-	Artifacts       []Artifact     `json:"artifacts"`
-	Media           []Media        `json:"media"`
-	Links           []ResourceLink `json:"links"`
-	Review          *ReviewCase    `json:"review,omitempty"`
-	Publications    []Publication  `json:"publications"`
+	Resource        Resource          `json:"resource"`
+	CurrentRevision *Revision         `json:"current_revision,omitempty"`
+	Revisions       []Revision        `json:"revisions"`
+	Artifacts       []Artifact        `json:"artifacts"`
+	Media           []Media           `json:"media"`
+	Links           []ResourceLink    `json:"links"`
+	Review          *ReviewCase       `json:"review,omitempty"`
+	Publications    []Publication     `json:"publications"`
+	Bindings        []ExternalBinding `json:"bindings"`
 }
 
 type CollectionRevision struct {

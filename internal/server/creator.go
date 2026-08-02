@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/creator"
@@ -258,11 +259,18 @@ func (a *App) writeCreatorModeration(w http.ResponseWriter, r *http.Request, act
 }
 
 func (a *App) handleCreatorDelete(w http.ResponseWriter, r *http.Request) {
-	if err := a.creator.Delete(r.Context(), currentUser(r).ID, r.PathValue("resource")); err != nil {
+	var deleteExternal []string
+	for _, provider := range strings.Split(r.URL.Query().Get("delete_external"), ",") {
+		if provider = strings.TrimSpace(provider); provider != "" {
+			deleteExternal = append(deleteExternal, provider)
+		}
+	}
+	result, err := a.creator.Delete(r.Context(), currentUser(r).ID, r.PathValue("resource"), deleteExternal)
+	if err != nil {
 		a.writeCreatorError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *App) writeCreatorError(w http.ResponseWriter, err error) {

@@ -44,6 +44,15 @@ type publishArtifactRef struct {
 	DeviceIDs    []string `json:"device_ids"`
 }
 
+// publishBindingRef declares the external identity an imported resource
+// already has on another platform; saveBundle records it so later
+// publications update that identity instead of creating a new one.
+type publishBindingRef struct {
+	Provider    string `json:"provider"`
+	ExternalID  string `json:"external_id"`
+	ExternalURL string `json:"external_url"`
+}
+
 type publishManifest struct {
 	Version    int            `json:"version"`
 	Kind       string         `json:"kind"`
@@ -58,6 +67,7 @@ type publishManifest struct {
 	} `json:"media"`
 	Artifacts    []publishArtifactRef `json:"artifacts"`
 	Publications []PublicationRequest `json:"publications"`
+	Bindings     []publishBindingRef  `json:"bindings"`
 }
 
 type verifiedMedia struct {
@@ -159,6 +169,9 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	if submit && !seen[PublishOronBox] {
 		publications = append(publications, PublicationRequest{Target: PublishOronBox, Config: map[string]any{}})
 	}
+	if err := validateManifestBindings(manifest.Bindings); err != nil {
+		return Workspace{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
@@ -181,6 +194,9 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 		return Workspace{}, fmt.Errorf("%w: manifest kind does not match the resource", ErrInvalid)
 	}
 	if err := s.verifyBundleBindings(ctx, tx, artifacts); err != nil {
+		return Workspace{}, err
+	}
+	if err := s.saveManifestBindings(ctx, tx, resourceID, manifest.Bindings); err != nil {
 		return Workspace{}, err
 	}
 	if submit {
@@ -494,4 +510,78 @@ func verifySHA256(payload []byte, declared string) error {
 		return fmt.Errorf("%w: sha256 mismatch", ErrInvalid)
 	}
 	return nil
+}
+
+func validateManifestBindings(bindings []publishBindingRef) error {
+	if len(bindings) > 8 {
+		return fmt.Errorf("%w: external bindings", ErrInvalid)
+	}
+	seen := map[string]bool{}
+	for index := range bindings {
+		binding := &bindings[index]
+		binding.Provider = strings.TrimSpace(binding.Provider)
+		binding.ExternalID = strings.TrimSpace(binding.ExternalID)
+		binding.ExternalURL = strings.TrimSpace(binding.ExternalURL)
+		if seen[binding.Provider] || (binding.Provider != "bandbbs" && binding.Provider != "astrobox") {
+			return fmt.Errorf("%w: external bindings", ErrInvalid)
+		}
+		seen[binding.Provider] = true
+		switch binding.Provider {
+		case "bandbbs":
+			// BandBBS binds one resource per device category as a JSON map
+			// of category id to resource id.
+			targets := map[string]string{}
+			if err := json.Unmarshal([]byte(binding.ExternalID), &targets); err != nil || len(targets) == 0 || len(targets) > 64 {
+				return fmt.Errorf("%w: BandBBS binding must map category ids to resource ids", ErrInvalid)
+			}
+			for categoryID, resourceID := range targets {
+				if !digitsOnly(categoryID) || !digitsOnly(resourceID) {
+					return fmt.Errorf("%w: BandBBS binding ids", ErrInvalid)
+				}
+			}
+		case "astrobox":
+			if binding.ExternalID == "" || len(binding.ExternalID) > 128 || strings.ContainsAny(binding.ExternalID, ",\r\n\x00") {
+				return fmt.Errorf("%w: AstroBox binding id", ErrInvalid)
+			}
+		}
+		if binding.ExternalURL != "" {
+			parsed, parseErr := url.ParseRequestURI(binding.ExternalURL)
+			if parseErr != nil || len(binding.ExternalURL) > 2048 || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return fmt.Errorf("%w: external binding url", ErrInvalid)
+			}
+		}
+	}
+	return nil
+}
+
+// saveManifestBindings records imported external identities. An identity
+// already bound to another resource is rejected so one external resource can
+// never be claimed by two OronBox resources.
+func (s *Service) saveManifestBindings(ctx context.Context, tx *sql.Tx, resourceID string, bindings []publishBindingRef) error {
+	for _, binding := range bindings {
+		var holder string
+		err := tx.QueryRowContext(ctx, `SELECT resource_id::text FROM external_bindings WHERE provider=$1 AND external_id=$2`, binding.Provider, binding.ExternalID).Scan(&holder)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if holder != "" && holder != resourceID {
+			return fmt.Errorf("%w: external %s identity is already bound to another resource", ErrConflict, binding.Provider)
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,origin) VALUES(gen_random_uuid(),$1,$2,$3,$4,'imported') ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url`, resourceID, binding.Provider, binding.ExternalID, binding.ExternalURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func digitsOnly(value string) bool {
+	if value == "" || len(value) > 20 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -132,6 +132,21 @@ func (c *Coordinator) DeleteBandBBSResources(ctx context.Context, ownerID string
 	return nil
 }
 
+// RemoveAstroBoxItem submits a catalog removal PR for the creator's AstroBox
+// item and returns the PR URL. Used by the creator delete endpoint when the
+// creator explicitly asks to remove the item from the index.
+func (c *Coordinator) RemoveAstroBoxItem(ctx context.Context, ownerID, itemID, name string) (string, error) {
+	token, err := c.githubToken(ctx, ownerID)
+	if err != nil {
+		return "", err
+	}
+	result, err := c.astro.Remove(ctx, token, itemID, name)
+	if err != nil {
+		return "", err
+	}
+	return result.PullRequest, nil
+}
+
 func (c *Coordinator) githubToken(ctx context.Context, userID string) (string, error) {
 	var cipher []byte
 	var scopes []string

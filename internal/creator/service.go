@@ -45,6 +45,10 @@ type Service struct {
 	// BandBBSDelete synchronously deletes the given BandBBS resource ids on
 	// behalf of ownerID. Delete aborts when it reports an error.
 	BandBBSDelete func(ctx context.Context, ownerID string, resourceIDs []string) error
+	// AstroBoxRemove submits an AstroBox catalog removal PR for the given item
+	// id on behalf of ownerID and returns the PR URL, or an empty string when
+	// the item was not listed. Delete aborts when it reports an error.
+	AstroBoxRemove func(ctx context.Context, ownerID, itemID, name string) (string, error)
 }
 
 func New(db *sql.DB, blobs blob.Store, limits Limits) *Service {
@@ -188,6 +192,21 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 			return Workspace{}, err
 		}
 	}
+	bindingRows, err := s.db.QueryContext(ctx, `SELECT provider,external_id,external_url FROM external_bindings WHERE resource_id=$1 ORDER BY provider`, resourceID)
+	if err != nil {
+		return Workspace{}, err
+	}
+	defer bindingRows.Close()
+	for bindingRows.Next() {
+		var binding ExternalBinding
+		if err := bindingRows.Scan(&binding.Provider, &binding.ExternalID, &binding.ExternalURL); err != nil {
+			return Workspace{}, err
+		}
+		result.Bindings = append(result.Bindings, binding)
+	}
+	if err := bindingRows.Err(); err != nil {
+		return Workspace{}, err
+	}
 	return result, nil
 }
 
@@ -253,37 +272,84 @@ func (s *Service) SetModeration(ctx context.Context, ownerID, resourceID, action
 	return s.Workspace(ctx, ownerID, resourceID)
 }
 
-func (s *Service) Delete(ctx context.Context, ownerID, resourceID string) error {
-	var owned bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM resources WHERE id=$1 AND owner_id=$2)`, resourceID, ownerID).Scan(&owned); err != nil {
-		return err
-	}
-	if !owned {
-		return ErrNotFound
-	}
-	var bound string
-	err := s.db.QueryRowContext(ctx, `SELECT external_id FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs'`, resourceID).Scan(&bound)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	ids := bandBBSResourceIDs(bound)
-	if len(ids) > 0 {
-		if s.BandBBSDelete == nil {
-			return fmt.Errorf("BandBBS deletion is not configured")
+type DeleteResult struct {
+	BandBBSDeleted    int    `json:"bandbbs_deleted"`
+	AstroBoxRemovalPR string `json:"astrobox_removal_pr"`
+}
+
+// Delete removes the OronBox resource. External platforms are only touched
+// when explicitly listed in deleteExternal; bindings of a plain draft delete
+// simply cascade away with the resource row.
+func (s *Service) Delete(ctx context.Context, ownerID, resourceID string, deleteExternal []string) (DeleteResult, error) {
+	var result DeleteResult
+	external := map[string]bool{}
+	for _, provider := range deleteExternal {
+		if provider != "bandbbs" && provider != "astrobox" {
+			return result, fmt.Errorf("%w: unknown external provider %q", ErrInvalid, provider)
 		}
-		if err := s.BandBBSDelete(ctx, ownerID, ids); err != nil {
-			return err
-		}
+		external[provider] = true
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID)
+	var name string
+	err := s.db.QueryRowContext(ctx, `SELECT draft_name FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return result, ErrNotFound
+	}
 	if err != nil {
-		return err
+		return result, err
 	}
-	if count, _ := result.RowsAffected(); count != 1 {
-		return ErrConflict
+	bindings := map[string]string{}
+	if len(external) > 0 {
+		rows, err := s.db.QueryContext(ctx, `SELECT provider,external_id FROM external_bindings WHERE resource_id=$1`, resourceID)
+		if err != nil {
+			return result, err
+		}
+		for rows.Next() {
+			var provider, externalID string
+			if err := rows.Scan(&provider, &externalID); err != nil {
+				rows.Close()
+				return result, err
+			}
+			bindings[provider] = externalID
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return result, err
+		}
+		rows.Close()
 	}
-	log(ctx).Info("resource deleted", "resource_id", resourceID, "owner_id", ownerID, "bandbbs_resources", len(ids))
-	return nil
+	if external["bandbbs"] {
+		ids := bandBBSResourceIDs(bindings["bandbbs"])
+		if len(ids) > 0 {
+			if s.BandBBSDelete == nil {
+				return result, fmt.Errorf("BandBBS deletion is not configured")
+			}
+			if err := s.BandBBSDelete(ctx, ownerID, ids); err != nil {
+				return result, err
+			}
+			result.BandBBSDeleted = len(ids)
+		}
+	}
+	if external["astrobox"] {
+		if itemID := bindings["astrobox"]; itemID != "" {
+			if s.AstroBoxRemove == nil {
+				return result, fmt.Errorf("AstroBox removal is not configured")
+			}
+			pr, err := s.AstroBoxRemove(ctx, ownerID, itemID, name)
+			if err != nil {
+				return result, err
+			}
+			result.AstroBoxRemovalPR = pr
+		}
+	}
+	deleted, err := s.db.ExecContext(ctx, `DELETE FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID)
+	if err != nil {
+		return result, err
+	}
+	if count, _ := deleted.RowsAffected(); count != 1 {
+		return result, ErrConflict
+	}
+	log(ctx).Info("resource deleted", "resource_id", resourceID, "owner_id", ownerID, "bandbbs_resources", result.BandBBSDeleted, "astrobox_removal_pr", result.AstroBoxRemovalPR)
+	return result, nil
 }
 
 func bandBBSResourceIDs(bound string) []string {

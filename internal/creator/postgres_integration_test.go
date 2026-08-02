@@ -272,7 +272,7 @@ func TestCreatorLifecycle(t *testing.T) {
 	if err := service.DeleteCollection(ctx, userID, collection.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Delete(ctx, userID, workspace.Resource.ID); err != nil {
+	if _, err := service.Delete(ctx, userID, workspace.Resource.ID, nil); err != nil {
 		t.Fatalf("resource deletion error = %v", err)
 	}
 	if _, err := service.Workspace(ctx, userID, workspace.Resource.ID); !errors.Is(err, ErrNotFound) {

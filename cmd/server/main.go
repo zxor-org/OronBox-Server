@@ -82,6 +82,7 @@ func main() {
 	}
 	coord := coordinator.New(db, s, blobs, r2, secrets, cfg, bandBBSOAuth)
 	creatorService.BandBBSDelete = coord.DeleteBandBBSResources
+	creatorService.AstroBoxRemove = coord.RemoveAstroBoxItem
 	go coord.Run(ctx)
 
 	app := server.New(server.Dependencies{
