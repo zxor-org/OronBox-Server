@@ -231,6 +231,7 @@ CREATE TABLE resource_revisions (
  id uuid PRIMARY KEY, resource_id uuid NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
  revision_no integer NOT NULL, name text NOT NULL, summary text NOT NULL,
  state text NOT NULL DEFAULT 'submitted' CHECK (state IN ('draft','submitted','approved','rejected','superseded')),
+ publication_plan jsonb NOT NULL DEFAULT '[]',
  created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(resource_id,revision_no)
 );
 CREATE INDEX resource_revisions_resource_state_idx ON resource_revisions(resource_id,state,revision_no DESC);

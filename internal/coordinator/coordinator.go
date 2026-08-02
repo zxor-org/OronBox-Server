@@ -342,7 +342,7 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 	if len(publishConfig.Targets) > 0 {
 		externalURL = result.Resources[strconv.Itoa(publishConfig.Targets[0].CategoryID)].URL
 	}
-	if err := c.finish(ctx, item, "published", string(externalID), externalURL, map[string]any{"resources": result.Resources}); err != nil {
+	if err := c.finish(ctx, item, "published", string(externalID), externalURL, map[string]any{"resources": result.Resources}, nil); err != nil {
 		return err
 	}
 	c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", externalURL, "categories", len(result.Resources))
@@ -354,26 +354,62 @@ func (c *Coordinator) publishAstroBox(ctx context.Context, item publication, sna
 	if err != nil {
 		return err
 	}
+	// Imported resources carry their existing AstroBox identity in the
+	// binding; fill any gaps in the publication config from it so the
+	// publication updates that repo instead of creating a duplicate.
+	var publishConfig struct {
+		ItemID   string `json:"item_id"`
+		RepoName string `json:"repo_name"`
+	}
+	if err := json.Unmarshal(item.Config, &publishConfig); err == nil && (strings.TrimSpace(publishConfig.ItemID) == "" || strings.TrimSpace(publishConfig.RepoName) == "") {
+		var boundID, boundMeta string
+		bindErr := c.db.QueryRowContext(ctx, `SELECT external_id,meta::text FROM external_bindings WHERE resource_id=$1 AND provider='astrobox'`, item.ResourceID).Scan(&boundID, &boundMeta)
+		if bindErr == nil {
+			config := map[string]any{}
+			_ = json.Unmarshal(item.Config, &config)
+			meta := map[string]string{}
+			_ = json.Unmarshal([]byte(boundMeta), &meta)
+			if strings.TrimSpace(publishConfig.ItemID) == "" && boundID != "" {
+				config["item_id"] = boundID
+			}
+			if strings.TrimSpace(publishConfig.RepoName) == "" && meta["repo_name"] != "" {
+				config["repo_name"] = meta["repo_name"]
+			}
+			if merged, marshalErr := json.Marshal(config); marshalErr == nil {
+				item.Config = merged
+			}
+		}
+	}
 	result, err := c.astro.Publish(ctx, token, item.OwnerName, snapshot, item.Config)
 	if err != nil {
 		return err
 	}
 	detail := map[string]any{"pull_request_number": result.PullRequestNumber, "repository": result.Repository}
-	var publishConfig struct {
+	var astroConfig struct {
 		ItemID string `json:"item_id"`
 	}
-	if err := json.Unmarshal(item.Config, &publishConfig); err != nil || strings.TrimSpace(publishConfig.ItemID) == "" {
+	if err := json.Unmarshal(item.Config, &astroConfig); err != nil || strings.TrimSpace(astroConfig.ItemID) == "" {
 		return fmt.Errorf("AstroBox item_id is missing")
 	}
-	if err := c.finish(ctx, item, "reviewing", publishConfig.ItemID, result.PullRequest, detail); err != nil {
+	meta := map[string]string{}
+	if name := strings.TrimPrefix(result.Repository, "https://github.com/"); name != result.Repository {
+		if slash := strings.IndexByte(name, '/'); slash > 0 {
+			meta["repo_owner"], meta["repo_name"] = name[:slash], name[slash+1:]
+		}
+	}
+	if err := c.finish(ctx, item, "reviewing", astroConfig.ItemID, result.PullRequest, detail, meta); err != nil {
 		return err
 	}
-	c.log.Info("publication submitted for review", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_id", publishConfig.ItemID, "external_url", result.PullRequest)
+	c.log.Info("publication submitted for review", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_id", astroConfig.ItemID, "external_url", result.PullRequest)
 	return nil
 }
 
-func (c *Coordinator) finish(ctx context.Context, item publication, state, externalID, externalURL string, detail map[string]any) error {
+func (c *Coordinator) finish(ctx context.Context, item publication, state, externalID, externalURL string, detail map[string]any, meta map[string]string) error {
 	raw, _ := json.Marshal(detail)
+	metaRaw := []byte("{}")
+	if len(meta) > 0 {
+		metaRaw, _ = json.Marshal(meta)
+	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -382,7 +418,7 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 	if _, err = tx.ExecContext(ctx, `UPDATE publications SET state=$2,external_id=$3,external_url=$4,error_message='',status_detail=$5,updated_at=now() WHERE id=$1`, item.ID, state, externalID, externalURL, raw); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url) VALUES(gen_random_uuid(),$1,$2,$3,$4) ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url WHERE external_bindings.external_id=excluded.external_id`, item.ResourceID, item.Target, externalID, externalURL)
+	result, err := tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,meta) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5) ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url,meta=external_bindings.meta||excluded.meta WHERE external_bindings.external_id=excluded.external_id`, item.ResourceID, item.Target, externalID, externalURL, metaRaw)
 	if err != nil {
 		return err
 	}

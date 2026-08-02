@@ -90,7 +90,10 @@ type Revision struct {
 	Summary    string        `json:"summary"`
 	Attributes []string      `json:"attributes,omitempty"`
 	State      RevisionState `json:"state"`
-	CreatedAt  time.Time     `json:"created_at"`
+	// PublicationPlan is the saved publish intent (target+config list); it is
+	// data for the editor, never a dispatchable job.
+	PublicationPlan []PublicationRequest `json:"publication_plan"`
+	CreatedAt       time.Time            `json:"created_at"`
 }
 
 type ResourceLink struct {
@@ -161,9 +164,10 @@ type Publication struct {
 }
 
 type ExternalBinding struct {
-	Provider    string `json:"provider"`
-	ExternalID  string `json:"external_id"`
-	ExternalURL string `json:"external_url"`
+	Provider    string            `json:"provider"`
+	ExternalID  string            `json:"external_id"`
+	ExternalURL string            `json:"external_url"`
+	Meta        map[string]string `json:"meta,omitempty"`
 }
 
 type Workspace struct {

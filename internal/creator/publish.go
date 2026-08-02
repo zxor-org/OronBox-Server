@@ -51,6 +51,9 @@ type publishBindingRef struct {
 	Provider    string `json:"provider"`
 	ExternalID  string `json:"external_id"`
 	ExternalURL string `json:"external_url"`
+	// Meta carries provider-specific extras, e.g. the AstroBox repo owner/name
+	// the external identity lives in, used to update it in place later.
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 type publishManifest struct {
@@ -156,15 +159,21 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 		return Workspace{}, err
 	}
 	publications := manifest.Publications
-	if !submit {
-		publications = nil
-	}
 	seen := map[PublicationTarget]bool{}
 	for _, request := range publications {
 		if seen[request.Target] || (request.Target != PublishOronBox && request.Target != PublishBandBBS && request.Target != PublishAstroBox) {
 			return Workspace{}, fmt.Errorf("%w: publication target", ErrInvalid)
 		}
 		seen[request.Target] = true
+	}
+	// The publish intent is stored on the revision for both draft and submit;
+	// dispatchable publication rows are only created on submit.
+	plan, err := json.Marshal(manifest.Publications)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("%w: publication target", ErrInvalid)
+	}
+	if !submit {
+		publications = nil
 	}
 	if submit && !seen[PublishOronBox] {
 		publications = append(publications, PublicationRequest{Target: PublishOronBox, Config: map[string]any{}})
@@ -237,7 +246,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	if submit {
 		revisionState = "submitted"
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,state) VALUES($1,$2,$3,$4,$5,$6)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, revisionState); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,state,publication_plan) VALUES($1,$2,$3,$4,$5,$6,$7)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, revisionState, plan); err != nil {
 		return Workspace{}, err
 	}
 	for attribute := range seenAttributes {
@@ -550,6 +559,14 @@ func validateManifestBindings(bindings []publishBindingRef) error {
 				return fmt.Errorf("%w: external binding url", ErrInvalid)
 			}
 		}
+		if len(binding.Meta) > 8 {
+			return fmt.Errorf("%w: external binding meta", ErrInvalid)
+		}
+		for key, value := range binding.Meta {
+			if len(key) > 64 || len(value) > 256 || strings.ContainsAny(key, "\r\n\x00") || strings.ContainsAny(value, "\r\n\x00") {
+				return fmt.Errorf("%w: external binding meta", ErrInvalid)
+			}
+		}
 	}
 	return nil
 }
@@ -567,7 +584,14 @@ func (s *Service) saveManifestBindings(ctx context.Context, tx *sql.Tx, resource
 		if holder != "" && holder != resourceID {
 			return fmt.Errorf("%w: external %s identity is already bound to another resource", ErrConflict, binding.Provider)
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,origin) VALUES(gen_random_uuid(),$1,$2,$3,$4,'imported') ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url`, resourceID, binding.Provider, binding.ExternalID, binding.ExternalURL); err != nil {
+		meta := []byte("{}")
+		if len(binding.Meta) > 0 {
+			meta, err = json.Marshal(binding.Meta)
+			if err != nil {
+				return fmt.Errorf("%w: external binding meta", ErrInvalid)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,meta,origin) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,'imported') ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url,meta=excluded.meta`, resourceID, binding.Provider, binding.ExternalID, binding.ExternalURL, meta); err != nil {
 			return err
 		}
 	}

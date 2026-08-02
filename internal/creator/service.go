@@ -133,16 +133,19 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 	if err != nil {
 		return Workspace{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,resource_id::text,revision_no,name,summary,state,created_at FROM resource_revisions WHERE resource_id=$1 ORDER BY revision_no DESC`, resourceID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,resource_id::text,revision_no,name,summary,state,publication_plan,created_at FROM resource_revisions WHERE resource_id=$1 ORDER BY revision_no DESC`, resourceID)
 	if err != nil {
 		return Workspace{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var revision Revision
-		if err := rows.Scan(&revision.ID, &revision.ResourceID, &revision.Number, &revision.Name, &revision.Summary, &revision.State, &revision.CreatedAt); err != nil {
+		var plan []byte
+		if err := rows.Scan(&revision.ID, &revision.ResourceID, &revision.Number, &revision.Name, &revision.Summary, &revision.State, &plan, &revision.CreatedAt); err != nil {
 			return Workspace{}, err
 		}
+		revision.PublicationPlan = []PublicationRequest{}
+		_ = json.Unmarshal(plan, &revision.PublicationPlan)
 		attributeRows, err := s.db.QueryContext(ctx, `SELECT attribute FROM resource_revision_attributes WHERE revision_id=$1 ORDER BY attribute`, revision.ID)
 		if err != nil {
 			return Workspace{}, err
@@ -192,16 +195,18 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 			return Workspace{}, err
 		}
 	}
-	bindingRows, err := s.db.QueryContext(ctx, `SELECT provider,external_id,external_url FROM external_bindings WHERE resource_id=$1 ORDER BY provider`, resourceID)
+	bindingRows, err := s.db.QueryContext(ctx, `SELECT provider,external_id,external_url,meta FROM external_bindings WHERE resource_id=$1 ORDER BY provider`, resourceID)
 	if err != nil {
 		return Workspace{}, err
 	}
 	defer bindingRows.Close()
 	for bindingRows.Next() {
 		var binding ExternalBinding
-		if err := bindingRows.Scan(&binding.Provider, &binding.ExternalID, &binding.ExternalURL); err != nil {
+		var meta []byte
+		if err := bindingRows.Scan(&binding.Provider, &binding.ExternalID, &binding.ExternalURL, &meta); err != nil {
 			return Workspace{}, err
 		}
+		_ = json.Unmarshal(meta, &binding.Meta)
 		result.Bindings = append(result.Bindings, binding)
 	}
 	if err := bindingRows.Err(); err != nil {
