@@ -324,20 +324,35 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 	_ = json.Unmarshal(item.Config, &publishConfig)
 	var bound string
 	_ = c.db.QueryRowContext(ctx, `SELECT external_id FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs'`, item.ResourceID).Scan(&bound)
-	existing := map[string]string{}
-	if json.Unmarshal([]byte(bound), &existing) != nil {
-		// Legacy rows bound a single resource id; only a single-target
-		// publication can safely reuse it.
-		existing = map[string]string{}
-		if bound != "" && len(publishConfig.Targets) == 1 {
-			existing[strconv.Itoa(publishConfig.Targets[0].CategoryID)] = bound
+	targetIDs := make([]int, 0, len(publishConfig.Targets))
+	for _, target := range publishConfig.Targets {
+		targetIDs = append(targetIDs, target.CategoryID)
+	}
+	existing, err := parseBandBBSBinding(bound, targetIDs)
+	if err != nil {
+		return err
+	}
+	if bound != "" {
+		normalized, marshalErr := json.Marshal(existing)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if string(normalized) != bound {
+			if _, err := c.db.ExecContext(ctx, `UPDATE external_bindings SET external_id=$2 WHERE resource_id=$1 AND provider='bandbbs'`, item.ResourceID, normalized); err != nil {
+				return err
+			}
+			bound = string(normalized)
 		}
 	}
 	result, err := c.band.Publish(ctx, token, existing, snapshot, item.Config)
 	if err != nil {
 		return err
 	}
-	externalID, _ := json.Marshal(result.Resources)
+	canonical := make(map[string]string, len(result.Resources))
+	for categoryID, resource := range result.Resources {
+		canonical[categoryID] = resource.ResourceID
+	}
+	externalID, _ := json.Marshal(canonical)
 	externalURL := ""
 	if len(publishConfig.Targets) > 0 {
 		externalURL = result.Resources[strconv.Itoa(publishConfig.Targets[0].CategoryID)].URL
@@ -347,6 +362,36 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 	}
 	c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", externalURL, "categories", len(result.Resources))
 	return nil
+}
+
+func parseBandBBSBinding(raw string, targetCategoryIDs []int) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	canonical := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &canonical); err == nil {
+		return canonical, nil
+	}
+	var historical map[string]struct {
+		ResourceID string `json:"resource_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &historical); err == nil {
+		result := make(map[string]string, len(historical))
+		for categoryID, resource := range historical {
+			if strings.TrimSpace(resource.ResourceID) == "" {
+				return nil, fmt.Errorf("invalid BandBBS binding for category %s", categoryID)
+			}
+			result[categoryID] = resource.ResourceID
+		}
+		return result, nil
+	}
+	if len(targetCategoryIDs) == 1 {
+		if _, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			return map[string]string{strconv.Itoa(targetCategoryIDs[0]): raw}, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid BandBBS binding; refusing to create duplicate resources")
 }
 
 func (c *Coordinator) publishAstroBox(ctx context.Context, item publication, snapshot []byte) error {
