@@ -84,8 +84,19 @@ func (a *App) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
 		}
 		cards[section.ID] = items
 	}
+	posts, err := a.store.ListBlogPosts(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Page: 1, PerPage: 100, Sort: "updated_desc"})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	a.render(w, "admin_home", map[string]any{
-		"Title": "首页管理", "Banners": banners, "Sections": sections, "Cards": cards,
+		"Title": "首页编排", "Banners": banners, "Sections": sections, "Cards": cards,
+		"Posts": posts, "Resources": resources.Items,
 		"Action": r.URL.Query().Get("action"),
 	})
 }
@@ -353,7 +364,7 @@ func (a *App) handleAdminBlogList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_blog", map[string]any{"Title": "博客", "Posts": posts, "Action": r.URL.Query().Get("action")})
+	a.render(w, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": posts, "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
@@ -438,13 +449,23 @@ func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "封面必须是合法的 SHA-256", http.StatusBadRequest)
 		return
 	}
+	published := post.Published
+	switch r.FormValue("publication_action") {
+	case "publish":
+		published = true
+	case "unpublish":
+		published = false
+	case "save", "":
+	default:
+		http.Error(w, "未知的文章操作", http.StatusBadRequest)
+		return
+	}
 	actor := currentAdmin(r)
 	if err := a.store.UpsertBlogPost(r.Context(), post); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "blog.save", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	published := r.FormValue("published") == "on"
 	if published != post.Published {
 		if err := a.store.SetBlogPostPublished(r.Context(), slug, published); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

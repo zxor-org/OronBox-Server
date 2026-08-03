@@ -324,8 +324,8 @@ const templates = `
     <a class="nav-link" data-nav-path="/admin/resources" href="/admin/resources"><span class="material-symbols-outlined">inventory_2</span><span>全部资源</span></a>
     <a class="nav-link" data-nav-path="/admin/collections" href="/admin/collections"><span class="material-symbols-outlined">collections_bookmark</span><span>合集审核</span></a>
     <a class="nav-link" data-nav-path="/admin/plugins" href="/admin/plugins"><span class="material-symbols-outlined">extension</span><span>插件管理</span></a>
-    <a class="nav-link" data-nav-path="/admin/home" href="/admin/home"><span class="material-symbols-outlined">home</span><span>首页管理</span></a>
-    <a class="nav-link" data-nav-path="/admin/blog" href="/admin/blog"><span class="material-symbols-outlined">article</span><span>博客</span></a>
+    <a class="nav-link" data-nav-path="/admin/home" href="/admin/home"><span class="material-symbols-outlined">home</span><span>首页编排</span></a>
+    <a class="nav-link" data-nav-path="/admin/blog" href="/admin/blog"><span class="material-symbols-outlined">article</span><span>Blog 管理</span></a>
     <a class="nav-link" data-nav-path="/admin/coins" href="/admin/coins"><span class="material-symbols-outlined">toll</span><span>硬币管理</span></a>
     <a class="nav-link" data-nav-path="/admin/users" href="/admin/users"><span class="material-symbols-outlined">group</span><span>用户</span></a>
     <a class="nav-link" data-nav-path="/admin/comments" href="/admin/comments"><span class="material-symbols-outlined">forum</span><span>评论审核</span></a>
@@ -837,105 +837,36 @@ const templates = `
 
 {{define "admin_home"}}
 {{template "admin_open" .}}
-<header class="page-header"><div><h1>首页管理</h1><p>配置首页 Banner 轮播和编辑分区，即时生效</p></div></header>
+<header class="page-header"><div><h1>首页编排</h1><p>按客户端首页的展示顺序管理内容，保存后立即生效</p></div><div class="header-actions"><a class="outlined-button" href="/admin/blog">管理文章</a><a class="filled-button" href="/api/home" target="_blank" rel="noopener">查看数据</a></div></header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>首页配置已更新</div>{{end}}
-<section class="panel"><div class="section-header"><div><h2>Banner 轮播</h2><p>展示在首页顶部，按顺序轮播，停用后不再展示</p></div><span class="count-badge">{{len .Banners}} 项</span></div>
-{{range .Banners}}<article class="review-card"><form method="post" action="/admin/home/banners/{{.ID}}/save" class="decision-form">
-<label><span>类型</span><select name="type"><option value="resource" {{if eqs .Type "resource"}}selected{{end}}>资源</option><option value="blog" {{if eqs .Type "blog"}}selected{{end}}>博客</option><option value="link" {{if eqs .Type "link"}}selected{{end}}>外部链接</option></select></label>
-<label><span>标题</span><input name="title" value="{{.Title}}" required></label>
-<label><span>副标题</span><input name="subtitle" value="{{.Subtitle}}"></label>
-<label><span>封面 SHA-256</span><input name="cover_sha256" value="{{.CoverSHA256}}" placeholder="上传图片后自动填入"></label>
-<label><span>资源 ID</span><input name="resource_id" value="{{.ResourceID}}"></label>
-<label><span>文章 Slug</span><input name="blog_slug" value="{{.BlogSlug}}"></label>
-<label><span>外部链接</span><input name="link_url" value="{{.LinkURL}}"></label>
-<label><span>启用</span><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}} style="width:auto"></label>
-<div class="actions"><button class="filled-button" type="submit">保存</button></div>
-</form><div class="actions" style="display:flex;gap:8px;margin-top:10px">
-<form method="post" action="/admin/home/banners/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="-1">上移</button></form>
-<form method="post" action="/admin/home/banners/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="1">下移</button></form>
-<form method="post" action="/admin/home/banners/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form>
-</div></article>{{else}}<section class="empty-state"><div class="empty-mark">+</div><h2>暂无 Banner</h2><p>在下方创建第一个 Banner</p></section>{{end}}
-<form method="post" action="/admin/home/banners" class="reply-form"><h3>新建 Banner</h3>
-<label><span>类型</span><select name="type"><option value="resource">资源</option><option value="blog">博客</option><option value="link">外部链接</option></select></label>
-<label><span>标题</span><input name="title" required></label>
-<label><span>副标题</span><input name="subtitle"></label>
-<label><span>封面 SHA-256</span><input name="cover_sha256" placeholder="在博客编辑器上传图片获取"></label>
-<label><span>资源 ID</span><input name="resource_id"></label>
-<label><span>文章 Slug</span><input name="blog_slug"></label>
-<label><span>外部链接</span><input name="link_url"></label>
-<label><span>启用</span><input type="checkbox" name="enabled" checked style="width:auto"></label>
-<div class="actions"><button class="filled-button">创建</button></div></form></section>
-{{range .Sections}}<section class="panel"><div class="section-header"><div><h2>{{.Name}}</h2><p>{{.Description}}</p></div><span class="count-badge">{{.ID}}</span></div>
-<form method="post" action="/admin/home/sections/{{.ID}}/save" class="decision-form">
-<label><span>名称</span><input name="name" value="{{.Name}}" required></label>
-<label><span>描述</span><input name="description" value="{{.Description}}"></label>
-<label><span>启用</span><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}} style="width:auto"></label>
-<div class="actions"><button class="filled-button" type="submit">保存分区</button></div>
-</form><div class="actions" style="display:flex;gap:8px;margin-top:10px;margin-bottom:14px">
-<form method="post" action="/admin/home/sections/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="-1">上移</button></form>
-<form method="post" action="/admin/home/sections/{{.ID}}/move" style="display:inline"><button class="outlined-button" name="delta" value="1">下移</button></form>
-<form method="post" action="/admin/home/sections/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除分区</button></form>
-</div>
-<div class="table-wrap"><table><thead><tr><th>类型</th><th>引用</th><th>操作</th></tr></thead><tbody>{{range index $.Cards .ID}}<tr>
-<td>{{if eqs .Type "resource"}}资源{{else}}博客{{end}}</td>
-<td><code>{{if eqs .Type "resource"}}{{.ResourceID}}{{else}}{{.BlogSlug}}{{end}}</code></td>
-<td><div class="actions" style="display:flex;gap:8px">
-<form method="post" action="/admin/home/cards/{{.ID}}/move" style="display:inline"><input type="hidden" name="section_id" value="{{.SectionID}}"><button class="outlined-button" name="delta" value="-1">上移</button></form>
-<form method="post" action="/admin/home/cards/{{.ID}}/move" style="display:inline"><input type="hidden" name="section_id" value="{{.SectionID}}"><button class="outlined-button" name="delta" value="1">下移</button></form>
-<form method="post" action="/admin/home/cards/{{.ID}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form>
-</div></td>
-</tr>{{else}}<tr><td class="table-empty" colspan="3">暂无卡片</td></tr>{{end}}</tbody></table></div>
-<form method="post" action="/admin/home/cards" class="reply-form"><h3>添加卡片</h3>
-<input type="hidden" name="section_id" value="{{.ID}}">
-<label><span>类型</span><select name="type"><option value="resource">资源</option><option value="blog">博客</option></select></label>
-<label><span>资源 ID</span><input name="resource_id" placeholder="资源类型必填"></label>
-<label><span>文章 Slug</span><input name="blog_slug" placeholder="博客类型必填"></label>
-<div class="actions"><button class="filled-button">添加</button></div></form></section>{{end}}
-<section class="panel"><div class="section-header"><div><h2>新建分区</h2><p>分区 ID 创建后不可修改</p></div></div>
-<form method="post" action="/admin/home/sections" class="reply-form">
-<label><span>分区 ID</span><input name="id" placeholder="小写字母、数字和中划线" required></label>
-<label><span>名称</span><input name="name" required></label>
-<label><span>描述</span><input name="description"></label>
-<label><span>启用</span><input type="checkbox" name="enabled" checked style="width:auto"></label>
-<div class="actions"><button class="filled-button">创建分区</button></div></form></section>
+<div class="home-composer">
+<section class="panel composer-section"><div class="section-header"><div><h2>Banner</h2><p>客户端首页顶部轮播</p></div><span class="count-badge">{{len .Banners}} 项</span></div>
+<div class="composer-list">{{range .Banners}}<article class="composer-item"><div class="composer-cover">{{if .CoverSHA256}}<img src="/api/blobs/{{.CoverSHA256}}" alt="">{{else}}<span class="material-symbols-outlined">panorama</span>{{end}}</div><div class="composer-copy"><div class="title-line"><h3>{{.Title}}</h3>{{if .Enabled}}<span class="status success">展示中</span>{{else}}<span class="status neutral">已停用</span>{{end}}</div><p>{{.Subtitle}}</p><span class="cell-note">{{if eqs .Type "resource"}}资源 · {{.ResourceID}}{{else if eqs .Type "blog"}}文章 · {{.BlogSlug}}{{else}}外部链接 · {{.LinkURL}}{{end}}</span></div><div class="composer-actions"><form method="post" action="/admin/home/banners/{{.ID}}/move"><button class="icon-button" name="delta" value="-1" title="上移"><span class="material-symbols-outlined">arrow_upward</span></button><button class="icon-button" name="delta" value="1" title="下移"><span class="material-symbols-outlined">arrow_downward</span></button></form><details class="composer-editor"><summary class="outlined-button">编辑</summary><form method="post" action="/admin/home/banners/{{.ID}}/save" class="composer-form" data-target-form><label>标题<input name="title" value="{{.Title}}" required></label><label>副标题<input name="subtitle" value="{{.Subtitle}}"></label><label>点击后打开<select name="type" data-target-type><option value="resource" {{if eqs .Type "resource"}}selected{{end}}>OronBox 资源</option><option value="blog" {{if eqs .Type "blog"}}selected{{end}}>Blog 文章</option><option value="link" {{if eqs .Type "link"}}selected{{end}}>外部链接</option></select></label><label data-target="resource">目标资源<select name="resource_id"><option value="{{.ResourceID}}">{{if .ResourceID}}{{.ResourceID}}{{else}}选择资源{{end}}</option>{{range $.Resources}}<option value="{{.ID}}">{{.Name}} · {{.Slug}}</option>{{end}}</select></label><label data-target="blog">目标文章<select name="blog_slug"><option value="{{.BlogSlug}}">{{if .BlogSlug}}{{.BlogSlug}}{{else}}选择文章{{end}}</option>{{range $.Posts}}<option value="{{.Slug}}">{{.Title}}</option>{{end}}</select></label><label data-target="link">外部链接<input name="link_url" value="{{.LinkURL}}" type="url"></label><label>封面<input name="cover_sha256" value="{{.CoverSHA256}}" placeholder="上传图片后自动填写" data-cover-field></label><label class="toggle-label"><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}>在首页展示</label><div class="actions"><button class="outlined-button" type="button" data-upload-cover>上传封面</button><button class="filled-button">保存</button></div></form></details><form method="post" action="/admin/home/banners/{{.ID}}/delete"><button class="icon-button danger" data-confirm="确定删除这个 Banner 吗"><span class="material-symbols-outlined">delete</span></button></form></div></article>{{else}}<div class="composer-empty">还没有 Banner</div>{{end}}</div>
+<details class="composer-add"><summary class="outlined-button">+ 添加 Banner</summary><form method="post" action="/admin/home/banners" class="composer-form" data-target-form><label>标题<input name="title" required></label><label>副标题<input name="subtitle"></label><label>点击后打开<select name="type" data-target-type><option value="resource">OronBox 资源</option><option value="blog">Blog 文章</option><option value="link">外部链接</option></select></label><label data-target="resource">目标资源<select name="resource_id"><option value="">选择资源</option>{{range .Resources}}<option value="{{.ID}}">{{.Name}} · {{.Slug}}</option>{{end}}</select></label><label data-target="blog">目标文章<select name="blog_slug"><option value="">选择文章</option>{{range .Posts}}<option value="{{.Slug}}">{{.Title}}</option>{{end}}</select></label><label data-target="link">外部链接<input name="link_url" type="url"></label><label>封面<input name="cover_sha256" placeholder="上传图片后自动填写" data-cover-field></label><label class="toggle-label"><input type="checkbox" name="enabled" checked>在首页展示</label><div class="actions"><button class="outlined-button" type="button" data-upload-cover>上传封面</button><button class="filled-button">创建 Banner</button></div></form></details></section>
+<section class="panel composer-section builtin-section"><div><span class="section-kicker">内置分区</span><h2>最新动态</h2><p>自动展示所有已发布文章，不需要重复加入首页分区</p></div><a class="outlined-button" href="/admin/blog">管理文章</a></section>
+{{range .Sections}}<section class="panel composer-section"><div class="section-header"><div><span class="section-kicker">自定义分区</span><h2>{{.Name}}</h2><p>{{.Description}}</p></div>{{if .Enabled}}<span class="status success">展示中</span>{{else}}<span class="status neutral">已停用</span>{{end}}</div><div class="composer-list compact">{{range index $.Cards .ID}}<article class="composer-item"><span class="material-symbols-outlined composer-kind">{{if eqs .Type "resource"}}deployed_code{{else}}article{{end}}</span><div class="composer-copy"><strong>{{if eqs .Type "resource"}}资源{{else}}文章{{end}}</strong><span class="cell-note">{{if eqs .Type "resource"}}{{.ResourceID}}{{else}}{{.BlogSlug}}{{end}}</span></div><div class="composer-actions"><form method="post" action="/admin/home/cards/{{.ID}}/move"><input type="hidden" name="section_id" value="{{.SectionID}}"><button class="icon-button" name="delta" value="-1"><span class="material-symbols-outlined">arrow_upward</span></button><button class="icon-button" name="delta" value="1"><span class="material-symbols-outlined">arrow_downward</span></button></form><form method="post" action="/admin/home/cards/{{.ID}}/delete"><button class="icon-button danger"><span class="material-symbols-outlined">close</span></button></form></div></article>{{else}}<div class="composer-empty">这个分区还没有内容</div>{{end}}</div><div class="composer-footer"><details class="composer-add"><summary class="outlined-button">+ 添加内容</summary><form method="post" action="/admin/home/cards" class="composer-form" data-target-form><input type="hidden" name="section_id" value="{{.ID}}"><label>内容类型<select name="type" data-target-type><option value="resource">资源</option><option value="blog">文章</option></select></label><label data-target="resource">选择资源<select name="resource_id"><option value="">选择资源</option>{{range $.Resources}}<option value="{{.ID}}">{{.Name}} · {{.Slug}}</option>{{end}}</select></label><label data-target="blog">选择文章<select name="blog_slug"><option value="">选择文章</option>{{range $.Posts}}<option value="{{.Slug}}">{{.Title}}</option>{{end}}</select></label><div class="actions"><button class="filled-button">添加</button></div></form></details><details class="composer-editor"><summary class="outlined-button">设置分区</summary><form method="post" action="/admin/home/sections/{{.ID}}/save" class="composer-form"><label>名称<input name="name" value="{{.Name}}" required></label><label>描述<input name="description" value="{{.Description}}"></label><label class="toggle-label"><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}>在首页展示</label><div class="actions"><button class="filled-button">保存设置</button></div></form></details><form method="post" action="/admin/home/sections/{{.ID}}/move"><button class="icon-button" name="delta" value="-1"><span class="material-symbols-outlined">arrow_upward</span></button><button class="icon-button" name="delta" value="1"><span class="material-symbols-outlined">arrow_downward</span></button></form><form method="post" action="/admin/home/sections/{{.ID}}/delete"><button class="icon-button danger" data-confirm="确定删除这个首页分区吗"><span class="material-symbols-outlined">delete</span></button></form></div></section>{{end}}
+<details class="panel composer-create"><summary><span class="material-symbols-outlined">add</span>新建首页分区</summary><form method="post" action="/admin/home/sections" class="composer-form"><label>分区名称<input name="name" required></label><label>分区标识<input name="id" placeholder="例如 editor-picks" required></label><label>简短说明<input name="description"></label><label class="toggle-label"><input type="checkbox" name="enabled" checked>创建后展示</label><div class="actions"><button class="filled-button">创建分区</button></div></form></details></div>
+<input type="file" id="home-cover-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+<script>document.querySelectorAll('[data-target-form]').forEach(function(form){var select=form.querySelector('[data-target-type]');function sync(){form.querySelectorAll('[data-target]').forEach(function(field){field.hidden=field.dataset.target!==select.value;});}select.addEventListener('change',sync);sync();});(function(){var input=document.getElementById('home-cover-file');var target=null;document.querySelectorAll('[data-upload-cover]').forEach(function(button){button.addEventListener('click',function(){target=button.closest('form').querySelector('[data-cover-field]');input.click();});});input.addEventListener('change',async function(){if(!input.files.length||!target)return;var body=new FormData();body.append('file',input.files[0]);var response=await fetch('/admin/blobs',{method:'POST',body:body});input.value='';if(!response.ok){alert('图片上传失败');return;}target.value=(await response.json()).sha256;});})();</script>
 {{template "admin_close" .}}
 {{end}}
 
 {{define "admin_blog"}}
 {{template "admin_open" .}}
-<header class="page-header"><div><h1>博客</h1><p>管理公告、推荐和文档文章，发布后客户端可见</p></div><span class="count-badge">{{len .Posts}} 篇</span></header>
+<header class="page-header"><div><h1>Blog 管理</h1><p>撰写、发布和维护客户端文章</p></div><div class="header-actions"><a class="outlined-button" href="/admin/home">首页编排</a><button class="filled-button" type="button" data-open-create>+ 新建文章</button></div></header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>文章操作已完成</div>{{end}}
-<section class="panel"><div class="section-header"><div><h2>新建文章</h2><p>Slug 创建后不可修改，创建后进入编辑器补全内容</p></div></div>
-<form method="post" action="/admin/blog" class="reply-form">
-<label><span>Slug</span><input name="slug" placeholder="小写字母、数字和中划线" required></label>
-<label><span>类型</span><select name="type"><option value="announcement">公告</option><option value="recommendation">推荐</option><option value="docs">文档</option></select></label>
-<div class="actions"><button class="filled-button">创建</button></div></form></section>
-<section class="panel"><div class="section-header"><div><h2>全部文章</h2></div></div>
-<div class="table-wrap"><table><thead><tr><th>标题</th><th>类型</th><th>状态</th><th>发布时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{{range .Posts}}<tr>
-<td>{{.Title}}<span class="cell-note"><code>{{.Slug}}</code></span></td>
-<td>{{if eqs .Type "announcement"}}公告{{else if eqs .Type "recommendation"}}推荐{{else}}文档{{end}}</td>
-<td>{{if .Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</td>
-<td class="secondary nowrap">{{if .PublishedAt}}{{dateTime .PublishedAt}}{{else}}—{{end}}</td>
-<td class="secondary nowrap">{{dateTime .UpdatedAt}}</td>
-<td><div class="actions" style="display:flex;gap:8px"><a class="outlined-button" href="/admin/blog/{{.Slug}}">编辑</a><form method="post" action="/admin/blog/{{.Slug}}/delete" style="display:inline"><button class="outlined-button danger">删除</button></form></div></td>
-</tr>{{else}}<tr><td class="table-empty" colspan="6">暂无文章</td></tr>{{end}}</tbody></table></div></section>
+<div class="blog-toolbar"><span class="count-badge">{{len .Posts}} 篇文章</span><span class="muted">已发布文章会自动出现在客户端“最新动态”</span></div>
+<section class="blog-list">{{range .Posts}}<article class="blog-list-card">{{if .CoverSHA256}}<img src="/api/blobs/{{.CoverSHA256}}" alt="">{{else}}<div class="blog-cover-placeholder"><span class="material-symbols-outlined">article</span></div>{{end}}<div class="blog-list-copy"><div class="title-line"><h2>{{.Title}}</h2>{{if .Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</div><p>{{if .Subtitle}}{{.Subtitle}}{{else}}暂无摘要{{end}}</p><div class="blog-meta"><span>{{if eqs .Type "announcement"}}公告{{else if eqs .Type "recommendation"}}推荐{{else}}文档{{end}}</span><span>{{if .Author}}{{.Author}}{{else}}未填写作者{{end}}</span><span>更新于 {{dateTime .UpdatedAt}}</span></div></div><div class="blog-list-actions"><a class="filled-button" href="/admin/blog/{{.Slug}}">{{if .Published}}编辑{{else}}继续编辑{{end}}</a><form method="post" action="/admin/blog/{{.Slug}}/delete"><button class="icon-button danger" data-confirm="确定删除这篇文章吗"><span class="material-symbols-outlined">delete</span></button></form></div></article>{{else}}<section class="empty-state"><div class="empty-mark">+</div><h2>还没有文章</h2><p>创建第一篇公告、推荐或文档</p></section>{{end}}</section>
+<dialog class="admin-dialog" data-create-dialog><form method="post" action="/admin/blog" class="composer-form"><div class="section-header"><div><h2>新建文章</h2><p>创建后进入完整编辑器</p></div><button class="icon-button" type="button" data-close-create><span class="material-symbols-outlined">close</span></button></div><label>文章标识<input name="slug" placeholder="例如 2026-08-update" required></label><label>文章类型<select name="type"><option value="announcement">公告</option><option value="recommendation">推荐</option><option value="docs">文档</option></select></label><div class="actions"><button class="outlined-button" type="button" data-close-create>取消</button><button class="filled-button">创建并编辑</button></div></form></dialog>
+<script>(function(){var dialog=document.querySelector('[data-create-dialog]');document.querySelector('[data-open-create]').addEventListener('click',function(){dialog.showModal();});document.querySelectorAll('[data-close-create]').forEach(function(button){button.addEventListener('click',function(){dialog.close();});});})();</script>
 {{template "admin_close" .}}
 {{end}}
 
 {{define "admin_blog_edit"}}
 {{template "admin_open" .}}
-<header class="page-header"><div><h1>编辑文章</h1><p><code>{{.Post.Slug}}</code></p></div>{{if .Post.Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</header>
+<header class="page-header"><div><a class="back-link" href="/admin/blog">← 全部文章</a><h1>{{.Post.Title}}</h1><p><code>{{.Post.Slug}}</code></p></div>{{if .Post.Published}}<span class="status success">已发布</span>{{else}}<span class="status warning">草稿</span>{{end}}</header>
 {{if .Action}}<div class="notice success toast-notice" data-toast>文章已保存</div>{{end}}
-<section class="panel"><form method="post" action="/admin/blog/{{.Post.Slug}}" class="decision-form">
-<label><span>类型</span><select name="type"><option value="announcement" {{if eqs .Post.Type "announcement"}}selected{{end}}>公告</option><option value="recommendation" {{if eqs .Post.Type "recommendation"}}selected{{end}}>推荐</option><option value="docs" {{if eqs .Post.Type "docs"}}selected{{end}}>文档</option></select></label>
-<label><span>标题</span><input name="title" value="{{.Post.Title}}" required></label>
-<label><span>副标题</span><input name="subtitle" value="{{.Post.Subtitle}}"></label>
-<label><span>作者</span><input name="author" value="{{.Post.Author}}"></label>
-<label><span>封面 SHA-256</span><span style="display:flex;gap:8px"><input name="cover_sha256" id="cover-field" value="{{.Post.CoverSHA256}}" style="flex:1"><button class="outlined-button" type="button" data-upload-cover>上传</button></span></label>
-<label><span>发布</span><input type="checkbox" name="published" {{if .Post.Published}}checked{{end}} style="width:auto"></label>
-<label style="grid-column:1 / -1"><span>正文(Markdown,使用 ::resource{id=资源ID} 嵌入资源卡)</span><textarea name="body" id="body-field" rows="24">{{.Post.Body}}</textarea></label>
-<div class="actions"><button class="filled-button" type="submit">保存</button><button class="outlined-button" type="button" data-upload-image>插入图片</button></div>
-</form></section>
+<form method="post" action="/admin/blog/{{.Post.Slug}}" class="blog-editor"><section class="panel blog-fields"><label>标题<input name="title" value="{{.Post.Title}}" required></label><label>摘要<textarea name="subtitle" rows="3">{{.Post.Subtitle}}</textarea></label><div class="blog-field-grid"><label>类型<select name="type"><option value="announcement" {{if eqs .Post.Type "announcement"}}selected{{end}}>公告</option><option value="recommendation" {{if eqs .Post.Type "recommendation"}}selected{{end}}>推荐</option><option value="docs" {{if eqs .Post.Type "docs"}}selected{{end}}>文档</option></select></label><label>作者<input name="author" value="{{.Post.Author}}"></label></div><div class="cover-field"><div class="composer-cover large">{{if .Post.CoverSHA256}}<img src="/api/blobs/{{.Post.CoverSHA256}}" alt="当前封面">{{else}}<span class="material-symbols-outlined">panorama</span>{{end}}</div><div><strong>文章封面</strong><p class="muted">建议使用 16:9 图片</p><input name="cover_sha256" id="cover-field" value="{{.Post.CoverSHA256}}" hidden><button class="outlined-button" type="button" data-upload-cover>{{if .Post.CoverSHA256}}替换封面{{else}}上传封面{{end}}</button></div></div></section><section class="panel blog-writing"><div class="writing-toolbar"><strong>正文</strong><button class="outlined-button" type="button" data-upload-image>插入图片</button></div><div class="writing-grid"><label>Markdown<textarea name="body" id="body-field" rows="30">{{.Post.Body}}</textarea></label><div class="writing-preview"><span>内容预览</span><article id="body-preview"></article></div></div></section><footer class="blog-editor-actions"><span class="muted">{{if .Post.Published}}保存后立即更新客户端内容{{else}}草稿仅管理员可见{{end}}</span><div>{{if .Post.Published}}<button class="outlined-button danger" type="submit" name="publication_action" value="unpublish">下线文章</button><button class="filled-button" type="submit" name="publication_action" value="save">保存更改</button>{{else}}<button class="outlined-button" type="submit" name="publication_action" value="save">保存草稿</button><button class="filled-button" type="submit" name="publication_action" value="publish">发布文章</button>{{end}}</div></footer></form>
 <input type="file" id="image-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
 <script>
 (function() {
@@ -962,6 +893,11 @@ const templates = `
     field.focus();
     field.selectionStart = field.selectionEnd = start + insert.length;
   });
+  var bodyField = document.getElementById('body-field');
+  var preview = document.getElementById('body-preview');
+  function renderPreview() { preview.textContent = bodyField.value || '正文预览会显示在这里'; }
+  bodyField.addEventListener('input', renderPreview);
+  renderPreview();
 })();
 </script>
 {{template "admin_close" .}}

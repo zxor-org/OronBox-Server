@@ -170,6 +170,54 @@ func TestAdminReviewUsesCompactDedicatedDecisionLayout(t *testing.T) {
 	}
 }
 
+func TestAdminHomeUsesComposerInsteadOfRawDatabaseForms(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	err := NewTemplates().Render(recorder, "admin_home", map[string]any{
+		"Title": "首页编排", "Banners": []store.HomeBanner{},
+		"Sections": []store.HomeSection{}, "Cards": map[string][]store.HomeSectionCard{},
+		"Posts": []store.BlogPost{}, "Resources": []store.AdminResourceItem{},
+	})
+	if err != nil {
+		t.Fatalf("render home composer: %v", err)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{"首页编排", "最新动态", `class="home-composer"`, `data-target-form`, "+ 添加 Banner"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("home composer is missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "封面 SHA-256") || strings.Contains(body, "资源类型必填") {
+		t.Error("home composer exposes raw storage fields")
+	}
+}
+
+func TestAdminBlogUsesContentListAndWritingWorkspace(t *testing.T) {
+	t.Parallel()
+	templates := NewTemplates()
+	list := httptest.NewRecorder()
+	if err := templates.Render(list, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": []store.BlogPost{}}); err != nil {
+		t.Fatalf("render blog list: %v", err)
+	}
+	if !strings.Contains(list.Body.String(), `class="blog-list"`) || !strings.Contains(list.Body.String(), `data-create-dialog`) {
+		t.Error("blog list is missing the content-oriented layout")
+	}
+
+	editor := httptest.NewRecorder()
+	if err := templates.Render(editor, "admin_blog_edit", map[string]any{"Title": "编辑文章", "Post": store.BlogPost{Slug: "hello", Title: "Hello"}}); err != nil {
+		t.Fatalf("render blog editor: %v", err)
+	}
+	body := editor.Body.String()
+	for _, expected := range []string{`class="blog-editor"`, `class="writing-grid"`, "上传封面", "保存草稿", "发布文章"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("blog editor is missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "封面 SHA-256") {
+		t.Error("blog editor exposes the cover digest as a primary field")
+	}
+}
+
 func TestAdminResourcesExposeGovernanceFiltersAndPreserveThemAcrossPages(t *testing.T) {
 	t.Parallel()
 	templates := NewTemplates()
