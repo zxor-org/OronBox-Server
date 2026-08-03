@@ -140,6 +140,36 @@ func TestAdminResourceDetailExposesProtectedMediaAndArtifactActions(t *testing.T
 	}
 }
 
+func TestAdminReviewUsesCompactDedicatedDecisionLayout(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	err := NewTemplates().Render(recorder, "admin_review", map[string]any{
+		"Title": "资源审核",
+		"Items": []map[string]any{{
+			"ResourceID": "resource-id", "RevisionID": "revision-id",
+			"Name": "NeoMusic", "Attributes": []string{"original"},
+		}},
+		"Attributes": []map[string]any{{"ID": "original", "NameZH": "原创"}},
+	})
+	if err != nil {
+		t.Fatalf("render review: %v", err)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`class="decision-form review-decision-form"`,
+		`class="review-controls"`,
+		`class="review-tags"`,
+		`class="review-note"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("review page is missing %q", expected)
+		}
+	}
+	if !strings.Contains(CSS, `input[type="checkbox"]`) {
+		t.Error("admin CSS is missing the checkbox size reset")
+	}
+}
+
 func TestAdminResourcesExposeGovernanceFiltersAndPreserveThemAcrossPages(t *testing.T) {
 	t.Parallel()
 	templates := NewTemplates()

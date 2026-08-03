@@ -45,7 +45,7 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string) ([]byte, 
 			artifactRows.Close()
 			return nil, err
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT COALESCE(NULLIF(d.astrobox_id,''),d.codename),d.name FROM revision_artifact_devices b JOIN devices d ON d.id=b.device_id WHERE b.artifact_id=$1 ORDER BY COALESCE(NULLIF(d.astrobox_id,''),d.codename)`, id)
+		rows, err := c.db.QueryContext(ctx, `SELECT COALESCE(NULLIF(d.astrobox_id,''),d.codename),d.display_name FROM revision_artifact_devices b JOIN devices d ON d.id=b.device_id WHERE b.artifact_id=$1 ORDER BY COALESCE(NULLIF(d.astrobox_id,''),d.codename)`, id)
 		if err != nil {
 			artifactRows.Close()
 			return nil, err

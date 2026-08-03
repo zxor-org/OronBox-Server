@@ -470,6 +470,14 @@ input, select, textarea {
 input, select { min-height: 44px; }
 textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
 input:focus, select:focus, textarea:focus { border: 2px solid var(--primary); padding: 7px 11px; }
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  accent-color: var(--primary);
+}
+input[type="checkbox"]:focus { padding: 0; }
 .filter-reset { align-self: center; padding: 10px 4px; }
 
 .filled-button, .outlined-button, .full-button {
@@ -563,6 +571,24 @@ input:focus, select:focus, textarea:focus { border: 2px solid var(--primary); pa
   font-weight: 500;
 }
 .decision-form .actions { grid-column: 1 / -1; }
+.review-decision-form { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.review-controls { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 16px; align-items: start; }
+.review-tags { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--outline-variant); border-radius: 8px; }
+.review-tags legend { padding: 0 6px; color: var(--on-surface-variant); font-size: 12px; font-weight: 500; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-row label { width: auto; display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--outline-variant); border-radius: 18px; color: var(--on-surface); font-size: 13px; cursor: pointer; }
+.chip-row label:has(input:checked) { border-color: var(--primary); background: var(--secondary-container); color: var(--on-secondary-container); }
+.review-grade { align-self: start; }
+.review-note textarea { min-height: 120px; }
+.review-decision-form .actions { grid-column: auto; }
+.binding-list { display: grid; gap: 10px; }
+.binding-card { padding: 14px; border-radius: 10px; background: var(--surface-low); }
+.binding-card > strong { display: block; font-size: 15px; }
+.binding-repository { display: block; margin-top: 3px; color: var(--on-surface-variant); font-size: 12px; overflow-wrap: anywhere; }
+.binding-card dl { display: grid; gap: 6px; margin: 12px 0; }
+.binding-card dl div { display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 10px; align-items: baseline; }
+.binding-card dt { color: var(--outline); font-size: 11px; }
+.binding-card dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 
 .ticket-list { display: grid; gap: 12px; }
 .ticket-card { margin: 0; }
@@ -785,6 +811,7 @@ input:focus, select:focus, textarea:focus { border: 2px solid var(--primary); pa
   .decision-form, .report-form { grid-template-columns: 1fr; }
   .decision-form .actions { grid-column: auto; }
   .review-meta, .target-box { grid-template-columns: 1fr; }
+  .review-controls { grid-template-columns: 1fr; }
   .settings { grid-template-columns: 1fr; gap: 3px; }
   .settings dd { margin-bottom: 7px; }
   .ticket-card > header { flex-direction: column; }

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,8 +105,14 @@ type AdminExternalBinding struct {
 	Provider    string
 	ExternalID  string
 	ExternalURL string
-	Origin      string
+	Repository  string
+	Entries     []AdminExternalBindingEntry
 	CreatedAt   time.Time
+}
+
+type AdminExternalBindingEntry struct {
+	Label string
+	Value string
 }
 
 type AdminResourceEvent struct {
@@ -375,16 +383,18 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 			return AdminResourceDetail{}, err
 		}
 	}
-	bindingRows, err := s.db.QueryContext(ctx, `SELECT provider,external_id,external_url,origin,created_at FROM external_bindings WHERE resource_id=$1 ORDER BY provider`, id)
+	bindingRows, err := s.db.QueryContext(ctx, `SELECT provider,external_id,external_url,meta,created_at FROM external_bindings WHERE resource_id=$1 ORDER BY provider`, id)
 	if err != nil {
 		return AdminResourceDetail{}, err
 	}
 	for bindingRows.Next() {
 		var binding AdminExternalBinding
-		if err := bindingRows.Scan(&binding.Provider, &binding.ExternalID, &binding.ExternalURL, &binding.Origin, &binding.CreatedAt); err != nil {
+		var meta []byte
+		if err := bindingRows.Scan(&binding.Provider, &binding.ExternalID, &binding.ExternalURL, &meta, &binding.CreatedAt); err != nil {
 			bindingRows.Close()
 			return AdminResourceDetail{}, err
 		}
+		binding.present(meta)
 		detail.Bindings = append(detail.Bindings, binding)
 	}
 	if err := bindingRows.Close(); err != nil {
@@ -413,6 +423,38 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 	}
 	detail.Snapshot = string(snapshot)
 	return detail, nil
+}
+
+func (binding *AdminExternalBinding) present(rawMeta []byte) {
+	if binding.Provider == "bandbbs" {
+		ids := map[string]string{}
+		if json.Unmarshal([]byte(binding.ExternalID), &ids) == nil {
+			keys := make([]string, 0, len(ids))
+			for categoryID := range ids {
+				keys = append(keys, categoryID)
+			}
+			sort.Slice(keys, func(i, j int) bool {
+				left, leftErr := strconv.Atoi(keys[i])
+				right, rightErr := strconv.Atoi(keys[j])
+				if leftErr == nil && rightErr == nil {
+					return left < right
+				}
+				return keys[i] < keys[j]
+			})
+			for _, categoryID := range keys {
+				binding.Entries = append(binding.Entries, AdminExternalBindingEntry{
+					Label: "分区 " + categoryID,
+					Value: "资源 " + ids[categoryID],
+				})
+			}
+		}
+		return
+	}
+	binding.Entries = append(binding.Entries, AdminExternalBindingEntry{Label: "资源 ID", Value: binding.ExternalID})
+	meta := map[string]string{}
+	if json.Unmarshal(rawMeta, &meta) == nil {
+		binding.Repository = strings.Trim(strings.TrimSpace(meta["repo_owner"])+"/"+strings.TrimSpace(meta["repo_name"]), "/")
+	}
 }
 
 func (s *Store) adminArtifacts(ctx context.Context, query, snapshotID string) ([]AdminArtifact, error) {
