@@ -113,6 +113,7 @@ type AdminExternalBinding struct {
 type AdminExternalBindingEntry struct {
 	Label string
 	Value string
+	URL   string
 }
 
 type AdminResourceEvent struct {
@@ -427,7 +428,7 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 
 func (binding *AdminExternalBinding) present(rawMeta []byte) {
 	if binding.Provider == "bandbbs" {
-		ids := map[string]string{}
+		ids := map[string]any{}
 		if json.Unmarshal([]byte(binding.ExternalID), &ids) == nil {
 			keys := make([]string, 0, len(ids))
 			for categoryID := range ids {
@@ -442,9 +443,22 @@ func (binding *AdminExternalBinding) present(rawMeta []byte) {
 				return keys[i] < keys[j]
 			})
 			for _, categoryID := range keys {
+				resourceID := ""
+				resourceURL := ""
+				switch value := ids[categoryID].(type) {
+				case string:
+					resourceID = value
+				case map[string]any:
+					resourceID, _ = value["resource_id"].(string)
+					resourceURL, _ = value["url"].(string)
+				}
+				if resourceURL == "" && resourceID != "" {
+					resourceURL = "https://www.bandbbs.cn/resources/" + resourceID + "/"
+				}
 				binding.Entries = append(binding.Entries, AdminExternalBindingEntry{
 					Label: "分区 " + categoryID,
-					Value: "资源 " + ids[categoryID],
+					Value: "资源 " + resourceID,
+					URL:   resourceURL,
 				})
 			}
 		}

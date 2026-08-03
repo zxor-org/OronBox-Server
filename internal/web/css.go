@@ -581,14 +581,11 @@ input[type="checkbox"]:focus { padding: 0; }
 .review-grade { align-self: start; }
 .review-note textarea { min-height: 120px; }
 .review-decision-form .actions { grid-column: auto; }
-.binding-list { display: grid; gap: 10px; }
-.binding-card { padding: 14px; border-radius: 10px; background: var(--surface-low); }
-.binding-card > strong { display: block; font-size: 15px; }
-.binding-repository { display: block; margin-top: 3px; color: var(--on-surface-variant); font-size: 12px; overflow-wrap: anywhere; }
-.binding-card dl { display: grid; gap: 6px; margin: 12px 0; }
-.binding-card dl div { display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 10px; align-items: baseline; }
-.binding-card dt { color: var(--outline); font-size: 11px; }
-.binding-card dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.binding-row { align-items: start; }
+.binding-details { display: grid; gap: 8px; }
+.binding-details > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.binding-details span { min-width: 0; display: grid; gap: 2px; }
+.binding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 .ticket-list { display: grid; gap: 12px; }
 .ticket-card { margin: 0; }

@@ -11,6 +11,9 @@ func TestAdminExternalBindingPresentation(t *testing.T) {
 	if len(band.Entries) != 2 || band.Entries[0].Label != "分区 101" || band.Entries[0].Value != "资源 4325" {
 		t.Fatalf("BandBBS entries = %#v", band.Entries)
 	}
+	if band.Entries[0].URL != "https://www.bandbbs.cn/resources/4325/" {
+		t.Fatalf("BandBBS entry URL = %q", band.Entries[0].URL)
+	}
 
 	astro := AdminExternalBinding{Provider: "astrobox", ExternalID: "moe.orpu.neomusic"}
 	astro.present([]byte(`{"repo_owner":"OrPudding","repo_name":"NeoMusic-AstroBox-Resource","imported":"true"}`))

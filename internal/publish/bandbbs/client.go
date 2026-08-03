@@ -136,7 +136,7 @@ func (c *Client) Publish(ctx context.Context, token string, existing map[string]
 		if err != nil {
 			return Result{}, fmt.Errorf("upload version attachment for package %s: %w", target.PackageID, err)
 		}
-		form := url.Values{"resource_category_id": {category}, "title": {snap.Revision.Name}, "tag_line": {snap.Revision.Summary}, "description": {description}, "resource_type": {"download_local"}, "version_attachment_key": {versionKey}}
+		form := url.Values{"resource_category_id": {category}, "title": {snap.Revision.Name}, "tag_line": {truncateRunes(strings.TrimSpace(snap.Revision.Summary), 100)}, "description": {description}, "resource_type": {"download_local"}, "version_attachment_key": {versionKey}}
 		if target.PrefixID > 0 {
 			form.Set("prefix_id", strconv.Itoa(target.PrefixID))
 		}
@@ -162,6 +162,14 @@ func (c *Client) Publish(ctx context.Context, token string, existing map[string]
 		result.Resources[category] = CategoryResult{ResourceID: strconv.Itoa(response.Resource.ID), URL: response.Resource.ViewURL}
 	}
 	return result, nil
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func (c *Client) DeleteResource(ctx context.Context, token, resourceID string) error {

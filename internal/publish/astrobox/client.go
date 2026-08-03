@@ -508,12 +508,33 @@ func (c *Client) ensureFork(ctx context.Context, token string) (repo, error) {
 	fork := repo{Owner: response.Owner.Login, Name: response.Name, Branch: response.DefaultBranch}
 	for i := 0; i < 12; i++ {
 		if _, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch); err == nil {
-			_, _ = c.request(ctx, token, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/merge-upstream", c.api, fork.Owner, fork.Name), map[string]string{"branch": fork.Branch}, nil)
+			if err := c.syncFork(ctx, token, fork); err != nil {
+				return repo{}, err
+			}
 			return fork, nil
 		}
 		time.Sleep(1500 * time.Millisecond)
 	}
 	return repo{}, fmt.Errorf("AstroBox catalog fork did not become ready")
+}
+
+func (c *Client) syncFork(ctx context.Context, token string, fork repo) error {
+	upstreamSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
+	if err != nil {
+		return fmt.Errorf("read AstroBox upstream branch: %w", err)
+	}
+	status, mergeErr := c.request(ctx, token, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/merge-upstream", c.api, fork.Owner, fork.Name), map[string]string{"branch": fork.Branch}, nil)
+	if mergeErr != nil && status != http.StatusConflict {
+		return fmt.Errorf("sync AstroBox catalog fork: %w", mergeErr)
+	}
+	forkSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+	if err != nil {
+		return fmt.Errorf("verify AstroBox catalog fork: %w", err)
+	}
+	if forkSHA != upstreamSHA {
+		return fmt.Errorf("AstroBox catalog fork is stale after synchronization")
+	}
+	return nil
 }
 func (c *Client) refSHA(ctx context.Context, token, owner, repoName, branch string) (string, error) {
 	var response struct {
