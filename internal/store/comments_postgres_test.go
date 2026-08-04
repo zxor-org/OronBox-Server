@@ -116,8 +116,13 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("unexpected thread: %#v", items)
+	if len(items) != 4 {
+		t.Fatalf("unexpected visible comments: %#v", items)
+	}
+	for _, item := range items {
+		if item.ID == top.ID || item.ID == reply.ID || item.ID == hiddenReply.ID {
+			t.Fatalf("deleted thread remained visible: %#v", items)
+		}
 	}
 	var replyMessages int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1 AND kind='comment_reply' AND ref=$2`, userID, reply.ID).Scan(&replyMessages); err != nil {

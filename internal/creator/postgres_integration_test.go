@@ -262,8 +262,16 @@ func TestCreatorLifecycle(t *testing.T) {
 		t.Fatalf("collection public card = %#v, total=%d", public, total)
 	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
-	if err != nil || total != 1 || len(public) != 1 || public[0].ID != collection.ID {
+	if err != nil || total != 2 || len(public) != 2 {
 		t.Fatalf("author-search collection = %#v, total=%d, error=%v", public, total, err)
+	}
+	seenCollection, seenResource := false, false
+	for _, item := range public {
+		seenCollection = seenCollection || item.CardType == "collection" && item.ID == collection.ID
+		seenResource = seenResource || item.CardType == "resource" && item.ID == workspace.Resource.ID
+	}
+	if !seenCollection || !seenResource {
+		t.Fatalf("author-search collection cards = %#v", public)
 	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Attributes: []string{"original"}})
 	if err != nil || total != 1 || len(public) != 1 {

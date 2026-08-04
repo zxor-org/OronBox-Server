@@ -2,11 +2,21 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17-alpine
@@ -28,4 +38,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
+      - name: Download dependencies
+        run: go mod download
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -count=1 -shuffle=off ./...
