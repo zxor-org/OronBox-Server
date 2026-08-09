@@ -31,36 +31,38 @@ FROM blobs blob
 LEFT JOIN blob_replicas replica
   ON replica.blob_sha256=blob.sha256 AND replica.backend='r2'
 WHERE blob.sha256=$1
-  AND EXISTS (
-    SELECT 1
-    FROM resources resource
-    WHERE resource.moderation_state='visible'
-      AND resource.current_revision_id IS NOT NULL
-      AND (
-        EXISTS (
-          SELECT 1
-          FROM revision_artifacts artifact
-          WHERE artifact.revision_id=resource.current_revision_id
-            AND artifact.blob_sha256=blob.sha256
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM resources resource
+      WHERE resource.moderation_state='visible'
+        AND resource.current_revision_id IS NOT NULL
+        AND (
+          EXISTS (
+            SELECT 1
+            FROM revision_artifacts artifact
+            WHERE artifact.revision_id=resource.current_revision_id
+              AND artifact.blob_sha256=blob.sha256
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM revision_media media
+            WHERE media.revision_id=resource.current_revision_id
+              AND media.blob_sha256=blob.sha256
+          )
         )
-        OR EXISTS (
-          SELECT 1
-          FROM revision_media media
-          WHERE media.revision_id=resource.current_revision_id
-            AND media.blob_sha256=blob.sha256
-        )
-      )
-  )
-  OR EXISTS (
-    SELECT 1
-    FROM blog_posts post
-    WHERE post.published
-      AND (post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%')
-  )
-  OR EXISTS (
-    SELECT 1
-    FROM home_banners banner
-    WHERE banner.enabled AND banner.cover_sha256=blob.sha256
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM blog_posts post
+      WHERE post.published
+        AND (post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%')
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM home_banners banner
+      WHERE banner.enabled AND banner.cover_sha256=blob.sha256
+    )
   )`, sha256).
 		Scan(&blob.SHA256, &blob.Size, &blob.MediaType, &blob.LocalKey, &blob.R2Key, &blob.R2State)
 	return blob, err
