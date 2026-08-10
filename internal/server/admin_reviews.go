@@ -24,7 +24,21 @@ func (a *App) handleAdminReviewDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	a.render(w, "admin_review_detail", map[string]any{"Title": detail.Current.Name, "Detail": detail, "Attributes": attributes, "Saved": r.URL.Query().Get("saved") != ""})
+	devices, err := a.store.AdminDevices(r.Context(), store.AdminDeviceQuery{Platform: "vela_os", State: "enabled", Page: 1, PerPage: 100})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	collections, err := a.store.AdminCollections(r.Context(), store.AdminCollectionQuery{Owner: detail.Review.OwnerID, Kind: detail.Review.ResourceKind, Page: 1, PerPage: 100})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	a.render(w, "admin_review_detail", map[string]any{
+		"Title": detail.Current.Name, "Detail": detail, "Attributes": attributes,
+		"Devices": devices.Items, "Collections": collections.Items,
+		"Saved": r.URL.Query().Get("saved") != "", "Action": r.URL.Query().Get("action"),
+	})
 }
 
 func adminReviewReturn(r *http.Request) string {

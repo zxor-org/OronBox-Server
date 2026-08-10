@@ -96,6 +96,10 @@ func (a *App) handleAdminResourceGovernanceSave(w http.ResponseWriter, r *http.R
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "resource.governance.save", "success", a.clientIP(r), r.UserAgent(), "revision="+r.PathValue("revision"))
+	if reviewID := strings.TrimSpace(r.FormValue("return_review")); reviewID != "" {
+		http.Redirect(w, r, "/admin/review/"+reviewID+"?action=governance_saved", http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/admin/resources/"+r.PathValue("resource")+"/draft?action=governance_saved", http.StatusFound)
 }
 
@@ -147,6 +151,10 @@ func (a *App) handleAdminResourceDraftSave(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "resource.draft.save", "success", a.clientIP(r), r.UserAgent(), "revision="+revisionID)
+	if reviewID := strings.TrimSpace(r.FormValue("return_review")); reviewID != "" {
+		http.Redirect(w, r, "/admin/review/"+reviewID+"?action=revision_saved", http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/admin/resources/"+r.PathValue("resource")+"/draft?action=saved", http.StatusFound)
 }
 

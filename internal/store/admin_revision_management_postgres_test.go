@@ -150,7 +150,32 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	if err := s.AdminSubmitRevisionDraft(ctx, resourceID, draftID, actor); err != nil {
 		t.Fatal(err)
 	}
+	secondDetail, err := s.AdminResourceRevision(ctx, resourceID, draftID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM review_cases WHERE revision_id=$1 AND state='pending'`, draftID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("rollback did not enter review: count=%d err=%v", count, err)
+	}
+	// A pending review is the only submitted state in which the review
+	// workbench may correct metadata and assets in place.
+	_, err = s.AdminSaveRevisionDraft(ctx, resourceID, store.AdminRevisionDraftInput{
+		DraftRevisionID: draftID, BaseRevisionID: baseID, Name: "Reviewer corrected",
+		Summary: "checked in review", PaidType: "free", PublicationPlan: []byte(`[]`),
+	}, actor)
+	if err != nil {
+		t.Fatalf("correct pending review: %v", err)
+	}
+	if err := s.AdminMoveRevisionMedia(ctx, resourceID, draftID, secondDetail.Media[0].ID, 1); err != nil {
+		t.Fatalf("edit pending review media: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE review_cases SET state='approved' WHERE revision_id=$1`, draftID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AdminSaveRevisionDraft(ctx, resourceID, store.AdminRevisionDraftInput{
+		DraftRevisionID: draftID, BaseRevisionID: baseID, Name: "Too late",
+		PaidType: "free", PublicationPlan: []byte(`[]`),
+	}, actor); !errors.Is(err, store.ErrAdminResourceConflict) {
+		t.Fatalf("decided review remained mutable: %v", err)
 	}
 }

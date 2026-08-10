@@ -142,5 +142,9 @@ func (a *App) adminRevisionAssetResult(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "resource."+action, "success", a.clientIP(r), r.UserAgent(), detail)
+	if reviewID := strings.TrimSpace(r.FormValue("return_review")); reviewID != "" {
+		http.Redirect(w, r, "/admin/review/"+reviewID+"?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
+		return
+	}
 	http.Redirect(w, r, "/admin/resources/"+r.PathValue("resource")+"/draft?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
 }

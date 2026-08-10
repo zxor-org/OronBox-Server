@@ -327,10 +327,15 @@ func TestAdminReviewUsesDedicatedDetailDecisionLayout(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	err := NewTemplates().Render(recorder, "admin_review_detail", map[string]any{
 		"Title": "资源审核", "Detail": store.AdminReviewDetail{
-			Review:  store.AdminReviewItem{ID: "review-id", State: "pending", ResourceID: "resource-id", Items: []string{"preview checked"}},
-			Current: store.AdminReviewRevisionSnapshot{ID: "revision-id", Name: "NeoMusic", Attributes: []string{"original"}},
+			Review: store.AdminReviewItem{ID: "review-id", State: "pending", ResourceID: "resource-id", Items: []string{"preview checked"}},
+			Current: store.AdminReviewRevisionSnapshot{ID: "revision-id", Name: "NeoMusic", Attributes: []string{"original"},
+				PublicationPlan: []any{map[string]any{"target": "bandbbs", "config": map[string]any{"agreement": true, "targets": []any{map[string]any{"category_id": 100, "prefix_id": 82, "package_id": "app.neo"}}}}},
+				Media:           []store.AdminMedia{{ID: "media-id", SHA256: "preview-sha", Role: "preview", Width: 320, Height: 320}},
+				Artifacts:       []store.AdminArtifact{{ID: "artifact-id", SHA256: "artifact-sha", OriginalName: "neo.rpk", PackageID: "app.neo", Version: "1.0", DeviceBindings: []store.AdminArtifactDevice{{ID: "device-id", DisplayName: "Band 9"}}}},
+			},
 		},
 		"Attributes": []map[string]any{{"ID": "original", "NameZH": "原创"}},
+		"Devices":    []store.AdminDeviceItem{{ID: "device-id", DisplayName: "Band 9", Codename: "mili"}},
 	})
 	if err != nil {
 		t.Fatalf("render review: %v", err)
@@ -339,15 +344,24 @@ func TestAdminReviewUsesDedicatedDetailDecisionLayout(t *testing.T) {
 	for _, expected := range []string{
 		`action="/admin/review/revision-id"`,
 		`action="/admin/review/review-id/checklist"`,
-		`仅保存清单`,
+		`保存检查进度`,
 		`preview checked`,
-		`class="decision-form"`,
-		`边审核边编辑`,
+		`class="review-decision-form"`,
+		`提交内容修正`,
+		`src="/admin/blobs/preview-sha"`,
+		`href="/admin/blobs/artifact-sha?download=1&amp;name=neo.rpk"`,
+		`保存设备绑定`,
+		`米坛`,
+		`分类 100`,
+		`前缀 82`,
 		`name="curation_grade"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("review page is missing %q", expected)
 		}
+	}
+	if strings.Contains(body, "边审核边编辑") {
+		t.Error("review must not send the reviewer to a separate editor")
 	}
 	if !strings.Contains(CSS, `input[type="checkbox"]`) {
 		t.Error("admin CSS is missing the checkbox size reset")
@@ -371,7 +385,9 @@ func TestAdminReviewListHasSafeBulkControlsAndKeepsReturnURL(t *testing.T) {
 			t.Errorf("review list is missing %q", expected)
 		}
 	}
-	if strings.Contains(body, "approve_safe") || strings.Contains(body, "安全通过所选") { t.Error("review list must not expose bulk approval") }
+	if strings.Contains(body, "approve_safe") || strings.Contains(body, "安全通过所选") {
+		t.Error("review list must not expose bulk approval")
+	}
 }
 
 func TestAdminHomeUsesComposerInsteadOfRawDatabaseForms(t *testing.T) {

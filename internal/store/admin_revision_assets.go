@@ -31,9 +31,9 @@ type AdminArtifactInput struct {
 
 func lockAdminDraft(ctx context.Context, tx *sql.Tx, resourceID, revisionID string) error {
 	var ok bool
-	err := tx.QueryRowContext(ctx, `SELECT true FROM resource_revisions WHERE id=$1 AND resource_id=$2 AND state='draft' AND created_via='admin' FOR UPDATE`, revisionID, resourceID).Scan(&ok)
+	err := tx.QueryRowContext(ctx, `SELECT true FROM resource_revisions revision WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending'))) FOR UPDATE`, revisionID, resourceID).Scan(&ok)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: editable admin draft was not found", ErrAdminResourceConflict)
+		return fmt.Errorf("%w: editable draft or pending review was not found", ErrAdminResourceConflict)
 	}
 	return err
 }

@@ -121,12 +121,12 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 		if _, err := uuid.Parse(revisionID); err != nil {
 			return "", ErrAdminResourceNotFound
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions SET name=$3,summary=$4,paid_type=$5,publication_plan=$6,created_by=$7 WHERE id=$1 AND resource_id=$2 AND state='draft' AND created_via='admin'`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID)
+		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions revision SET name=$3,summary=$4,paid_type=$5,publication_plan=$6,created_by=$7 WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending')))`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID)
 		if err != nil {
 			return "", err
 		}
 		if rows, _ := result.RowsAffected(); rows != 1 {
-			return "", fmt.Errorf("%w: admin draft was not found", ErrAdminResourceConflict)
+			return "", fmt.Errorf("%w: editable admin draft or pending review was not found", ErrAdminResourceConflict)
 		}
 	} else {
 		if _, err := uuid.Parse(input.BaseRevisionID); err != nil {
