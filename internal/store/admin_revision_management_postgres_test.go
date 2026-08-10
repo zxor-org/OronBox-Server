@@ -43,7 +43,7 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	}
 
 	ownerID, adminID, collaboratorID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	resourceID, baseID, currentID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	resourceID, baseID, currentID, creatorDraftID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	deviceID, artifactID := uuid.NewString(), uuid.NewString()
 	sha := strings.Repeat("a", 64)
 	if _, err := db.ExecContext(ctx, `INSERT INTO users(id,bandbbs_user_id,username) VALUES($1,910001,'owner'),($2,910002,'admin'),($3,910003,'collaborator')`, ownerID, adminID, collaboratorID); err != nil {
@@ -53,6 +53,9 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,governance_source,governance_collection_position) VALUES($1,$3,1,'Historical','old','paid','approved','[{"target":"oronbox","config":{}}]','{"author_name":"Old Author"}',7),($2,$3,2,'Current','new','free','approved','[]','{}',0)`, baseID, currentID, resourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,created_by,created_via,base_revision_id) VALUES($1,$2,3,'Creator draft','pending','free','draft','[]',$3,'creator',$4)`, creatorDraftID, resourceID, ownerID, currentID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE resources SET current_revision_id=$2 WHERE id=$1`, resourceID, currentID); err != nil {

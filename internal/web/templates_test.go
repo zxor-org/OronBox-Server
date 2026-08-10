@@ -142,6 +142,37 @@ func TestAdminRevisionEditorExposesManagementRevisionFields(t *testing.T) {
 	}
 }
 
+func TestAdminRevisionEditorExposesAssetsForPendingReview(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	detail := store.AdminRevisionDetail{
+		Resource: store.AdminResourceItem{ID: "resource-id", Name: "Resource"},
+		Revision: store.AdminRevision{
+			ID: "revision-id", Number: 2, Name: "Resource", PaidType: "free",
+			State: "submitted", ReviewState: "pending", PublicationPlan: []byte("[]"),
+		},
+		Media:     []store.AdminMedia{{ID: "media-id", SHA256: strings.Repeat("a", 64), Role: "icon", Width: 1, Height: 1}},
+		Artifacts: []store.AdminArtifact{{ID: "artifact-id", OriginalName: "resource.rpk", DeviceBindings: []store.AdminArtifactDevice{{ID: "device-id", DisplayName: "Device", Codename: "device"}}}},
+	}
+	if err := NewTemplates().Render(recorder, "admin_revision_editor", map[string]any{
+		"Title": "编辑资源", "Detail": detail, "Attributes": []any{}, "Devices": []store.AdminDeviceItem{{ID: "device-id", DisplayName: "Device", Codename: "device"}},
+		"CanEditAssets": true, "IsPendingReview": true,
+	}); err != nil {
+		t.Fatalf("render pending review editor: %v", err)
+	}
+	body := recorder.Body.String()
+	for _, expected := range []string{
+		`/draft/revision-id/media`, `/draft/revision-id/artifacts`, `待审核修订 #2`, `保存审核修正`, `name="draft_revision_id" value="revision-id"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("pending review editor is missing %q", expected)
+		}
+	}
+	if strings.Contains(body, "先保存管理草稿后即可编辑媒体") {
+		t.Error("pending review editor still hides asset editing")
+	}
+}
+
 func TestAdminAuditDetailProvidesReverseLinksAndStructuredData(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
@@ -602,7 +633,7 @@ func TestAdminRevisionManagementActionsRender(t *testing.T) {
 	detail.Revision = revision
 	detail.Media = []store.AdminMedia{{ID: "media-id", Role: "preview", Position: 0, SHA256: strings.Repeat("a", 64), Width: 10, Height: 10}}
 	recorder = httptest.NewRecorder()
-	if err := templates.Render(recorder, "admin_revision_editor", map[string]any{"Title": "Draft", "Detail": detail, "IsDraft": true}); err != nil {
+	if err := templates.Render(recorder, "admin_revision_editor", map[string]any{"Title": "Draft", "Detail": detail, "IsDraft": true, "CanEditAssets": true}); err != nil {
 		t.Fatal(err)
 	}
 	body := recorder.Body.String()

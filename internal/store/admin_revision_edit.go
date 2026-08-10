@@ -139,7 +139,7 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 			return "", err
 		}
 		var draftID string
-		err := tx.QueryRowContext(ctx, `SELECT id::text FROM resource_revisions WHERE resource_id=$1 AND state='draft' ORDER BY revision_no DESC LIMIT 1`, resourceID).Scan(&draftID)
+		err := tx.QueryRowContext(ctx, `SELECT id::text FROM resource_revisions WHERE resource_id=$1 AND state='draft' AND created_via='admin' ORDER BY revision_no DESC LIMIT 1`, resourceID).Scan(&draftID)
 		if err == nil {
 			return "", fmt.Errorf("%w: draft %s already exists", ErrAdminResourceConflict, draftID)
 		}

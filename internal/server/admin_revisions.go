@@ -33,12 +33,17 @@ func (a *App) handleAdminResourceDraft(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	revisionID := strings.TrimSpace(r.URL.Query().Get("base"))
+	requestedRevisionID := strings.TrimSpace(r.URL.Query().Get("base"))
+	adminDraftID := ""
 	for _, revision := range resource.Revisions {
-		if revision.State == "draft" {
-			revisionID = revision.ID
+		if revision.State == "draft" && revision.CreatedVia == "admin" {
+			adminDraftID = revision.ID
 			break
 		}
+	}
+	revisionID := requestedRevisionID
+	if revisionID == "" {
+		revisionID = adminDraftID
 	}
 	if revisionID == "" && len(resource.Revisions) > 0 {
 		revisionID = resource.Revisions[0].ID
@@ -48,9 +53,44 @@ func (a *App) handleAdminResourceDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail, err := a.store.AdminResourceRevision(r.Context(), resource.Resource.ID, revisionID)
+	if errors.Is(err, store.ErrAdminResourceNotFound) {
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	isAdminDraft := detail.Revision.State == "draft" && detail.Revision.CreatedVia == "admin"
+	isPendingReview := detail.Revision.State == "submitted" && detail.Revision.ReviewState == "pending"
+	if !isAdminDraft && !isPendingReview {
+		if adminDraftID != "" {
+			detail, err = a.store.AdminResourceRevision(r.Context(), resource.Resource.ID, adminDraftID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			isAdminDraft = true
+		} else {
+			actor := currentAdmin(r)
+			draftID, draftErr := a.store.AdminSaveRevisionDraft(r.Context(), resource.Resource.ID, store.AdminRevisionDraftInput{
+				BaseRevisionID:  detail.Revision.ID,
+				Name:            detail.Revision.Name,
+				Summary:         detail.Revision.Summary,
+				PaidType:        detail.Revision.PaidType,
+				Attributes:      detail.Revision.Attributes,
+				Links:           detail.Links,
+				PublicationPlan: append(json.RawMessage(nil), detail.Revision.PublicationPlan...),
+			}, actor)
+			if draftErr != nil {
+				_ = a.store.RecordAudit(r.Context(), actor, "resource.draft.create", "failure", a.clientIP(r), r.UserAgent(), draftErr.Error())
+				http.Error(w, draftErr.Error(), http.StatusConflict)
+				return
+			}
+			_ = a.store.RecordAudit(r.Context(), actor, "resource.draft.create", "success", a.clientIP(r), r.UserAgent(), "revision="+draftID+" base="+detail.Revision.ID)
+			http.Redirect(w, r, "/admin/resources/"+resource.Resource.ID+"/draft?action=draft_created", http.StatusSeeOther)
+			return
+		}
 	}
 	attributes, err := a.creator.Attributes(r.Context(), true)
 	if err != nil {
@@ -74,7 +114,9 @@ func (a *App) handleAdminResourceDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, "admin_revision_editor", map[string]any{
 		"Title": "编辑 " + detail.Revision.Name, "Detail": detail, "Attributes": attributes,
-		"Devices": devices.Items, "Governance": governance, "Collections": collections.Items, "IsDraft": detail.Revision.State == "draft", "Action": r.URL.Query().Get("action"),
+		"Devices": devices.Items, "Governance": governance, "Collections": collections.Items,
+		"IsDraft": isAdminDraft, "CanEditAssets": isAdminDraft || isPendingReview,
+		"IsPendingReview": isPendingReview, "Action": r.URL.Query().Get("action"),
 	})
 }
 
