@@ -21,6 +21,7 @@ var (
 
 type AdminResourceQuery struct {
 	ResourceID        string
+	Device            string
 	Search            string
 	Owner             string
 	Kind              string
@@ -35,14 +36,17 @@ type AdminResourceQuery struct {
 }
 
 type AdminPublication struct {
-	ID           string    `json:"id"`
-	Target       string    `json:"target"`
-	State        string    `json:"state"`
-	ExternalID   string    `json:"external_id"`
-	ExternalURL  string    `json:"external_url"`
-	ErrorMessage string    `json:"error_message"`
-	Attempts     int       `json:"attempts"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            string         `json:"id"`
+	Target        string         `json:"target"`
+	State         string         `json:"state"`
+	Config        map[string]any `json:"config"`
+	StatusDetail  map[string]any `json:"status_detail"`
+	ExternalID    string         `json:"external_id"`
+	ExternalURL   string         `json:"external_url"`
+	ErrorMessage  string         `json:"error_message"`
+	Attempts      int            `json:"attempts"`
+	NextAttemptAt time.Time      `json:"next_attempt_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type AdminResourceItem struct {
@@ -88,7 +92,13 @@ type AdminRevision struct {
 	Number          int
 	Name            string
 	Summary         string
+	PaidType        string
+	Attributes      []string
+	PublicationPlan []byte
 	State           string
+	CreatedBy       string
+	CreatedVia      string
+	BaseRevisionID  string
 	ReviewID        string
 	ReviewState     string
 	ReviewNote      string
@@ -135,29 +145,55 @@ type AdminResourceDetail struct {
 	Snapshot     string
 }
 
+type AdminLink struct {
+	Position int
+	Title    string
+	URL      string
+}
+
+type AdminRevisionDetail struct {
+	Resource  AdminResourceItem
+	Revision  AdminRevision
+	Artifacts []AdminArtifact
+	Media     []AdminMedia
+	Links     []AdminLink
+}
+
 type AdminArtifact struct {
-	ID            string
-	SHA256        string
-	OriginalName  string
-	PackageFormat string
-	PackageID     string
-	Version       string
-	Devices       []string
+	ID             string
+	SHA256         string
+	OriginalName   string
+	PackageFormat  string
+	PackageID      string
+	Version        string
+	SizeBytes      int64
+	Analysis       map[string]any
+	Devices        []string
+	DeviceBindings []AdminArtifactDevice
+}
+
+type AdminArtifactDevice struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Codename    string `json:"codename"`
+	Platform    string `json:"platform"`
 }
 
 type AdminMedia struct {
-	ID       string
-	SHA256   string
-	Role     string
-	Position int
-	Width    int
-	Height   int
+	ID        string
+	SHA256    string
+	Role      string
+	Position  int
+	Width     int
+	Height    int
+	SizeBytes int64
 }
 
 func (query AdminResourceQuery) normalized() AdminResourceQuery {
 	query.Search = strings.TrimSpace(query.Search)
 	query.Owner = strings.TrimSpace(query.Owner)
 	query.ResourceID = strings.TrimSpace(query.ResourceID)
+	query.Device = strings.TrimSpace(query.Device)
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -212,6 +248,15 @@ func (s *Store) AdminResources(ctx context.Context, raw AdminResourceQuery) (Adm
 	}
 	if query.Kind != "" {
 		add(`r.kind=?`, query.Kind)
+	}
+	if query.Device != "" {
+		add(`EXISTS(
+ SELECT 1 FROM resource_revisions device_revision
+ JOIN revision_artifacts device_artifact ON device_artifact.revision_id=device_revision.id
+ JOIN revision_artifact_devices device_binding ON device_binding.artifact_id=device_artifact.id
+ JOIN devices filter_device ON filter_device.id=device_binding.device_id
+ WHERE device_revision.resource_id=r.id AND (filter_device.id::text=? OR filter_device.codename=?)
+)`, query.Device)
 	}
 	if query.Moderation != "" {
 		add(`r.moderation_state=?`, query.Moderation)
@@ -325,15 +370,19 @@ func (s *Store) AdminResource(ctx context.Context, id string) (AdminResourceDeta
 		return AdminResourceDetail{}, ErrAdminResourceNotFound
 	}
 	detail := AdminResourceDetail{Resource: summary, Revisions: []AdminRevision{}, Bindings: []AdminExternalBinding{}, Events: []AdminResourceEvent{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT revision.id::text,revision.revision_no,revision.name,revision.summary,revision.state,
+	rows, err := s.db.QueryContext(ctx, `SELECT revision.id::text,revision.revision_no,revision.name,revision.summary,revision.paid_type,
+ COALESCE((SELECT jsonb_agg(attribute ORDER BY attribute) FROM resource_revision_attributes WHERE revision_id=revision.id),'[]'::jsonb),revision.publication_plan,revision.state,
+ COALESCE(revision.created_by::text,''),revision.created_via,COALESCE(revision.base_revision_id::text,''),
  COALESCE(review.id::text,''),COALESCE(review.state,''),COALESCE(review.note,''),COALESCE(review.items,'[]'::jsonb),
  COALESCE(reviewer.username,''),
  (SELECT count(*) FROM revision_artifacts WHERE revision_id=revision.id),
  (SELECT count(*) FROM revision_media WHERE revision_id=revision.id),
  COALESCE((SELECT jsonb_agg(jsonb_build_object(
-   'id',publication.id::text,'target',publication.target,'state',publication.state,
+	'id',publication.id::text,'target',publication.target,'state',publication.state,
+	'config',publication.config,'status_detail',publication.status_detail,
    'external_id',publication.external_id,'external_url',publication.external_url,
-   'error_message',publication.error_message,'attempts',publication.attempts,'updated_at',publication.updated_at
+	'error_message',publication.error_message,'attempts',publication.attempts,
+	'next_attempt_at',publication.next_attempt_at,'updated_at',publication.updated_at
  ) ORDER BY publication.target) FROM publications publication WHERE publication.revision_id=revision.id),'[]'::jsonb),
  revision.created_at,review.updated_at
 FROM resource_revisions revision
@@ -345,12 +394,13 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 	}
 	for rows.Next() {
 		var revision AdminRevision
-		var reviewItems, publications []byte
+		var attributes, reviewItems, publications []byte
 		var reviewUpdated sql.NullTime
-		if err := rows.Scan(&revision.ID, &revision.Number, &revision.Name, &revision.Summary, &revision.State, &revision.ReviewID, &revision.ReviewState, &revision.ReviewNote, &reviewItems, &revision.Reviewer, &revision.ArtifactCount, &revision.MediaCount, &publications, &revision.CreatedAt, &reviewUpdated); err != nil {
+		if err := rows.Scan(&revision.ID, &revision.Number, &revision.Name, &revision.Summary, &revision.PaidType, &attributes, &revision.PublicationPlan, &revision.State, &revision.CreatedBy, &revision.CreatedVia, &revision.BaseRevisionID, &revision.ReviewID, &revision.ReviewState, &revision.ReviewNote, &reviewItems, &revision.Reviewer, &revision.ArtifactCount, &revision.MediaCount, &publications, &revision.CreatedAt, &reviewUpdated); err != nil {
 			rows.Close()
 			return AdminResourceDetail{}, err
 		}
+		_ = json.Unmarshal(attributes, &revision.Attributes)
 		_ = json.Unmarshal(reviewItems, &revision.ReviewItems)
 		if err := json.Unmarshal(publications, &revision.Publications); err != nil {
 			rows.Close()
@@ -369,10 +419,8 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 		latest := detail.Revisions[0]
 		detail.Publications = append(detail.Publications, latest.Publications...)
 		snapshotID = latest.ID
-		artifactQuery = `SELECT artifact.id::text,artifact.blob_sha256,artifact.original_name,artifact.package_format,artifact.package_id,artifact.package_version,
- COALESCE((SELECT jsonb_agg(device.codename ORDER BY device.codename) FROM revision_artifact_devices binding JOIN devices device ON device.id=binding.device_id WHERE binding.artifact_id=artifact.id),'[]'::jsonb)
-			FROM revision_artifacts artifact WHERE artifact.revision_id=$1 ORDER BY artifact.created_at`
-		mediaQuery = `SELECT id::text,blob_sha256,role,position,width,height FROM revision_media WHERE revision_id=$1 ORDER BY role,position`
+		artifactQuery = adminRevisionArtifactsSQL
+		mediaQuery = adminRevisionMediaSQL
 	}
 	if snapshotID != "" {
 		detail.Artifacts, err = s.adminArtifacts(ctx, artifactQuery, snapshotID)
@@ -426,6 +474,53 @@ WHERE revision.resource_id=$1 ORDER BY revision.revision_no DESC`, id)
 	return detail, nil
 }
 
+func (s *Store) AdminResourceRevision(ctx context.Context, resourceID, revisionID string) (AdminRevisionDetail, error) {
+	if _, err := uuid.Parse(resourceID); err != nil {
+		return AdminRevisionDetail{}, ErrAdminResourceNotFound
+	}
+	if _, err := uuid.Parse(revisionID); err != nil {
+		return AdminRevisionDetail{}, ErrAdminResourceNotFound
+	}
+	resource, err := s.AdminResource(ctx, resourceID)
+	if err != nil {
+		return AdminRevisionDetail{}, err
+	}
+	detail := AdminRevisionDetail{Resource: resource.Resource, Artifacts: []AdminArtifact{}, Media: []AdminMedia{}, Links: []AdminLink{}}
+	for _, revision := range resource.Revisions {
+		if revision.ID == revisionID {
+			detail.Revision = revision
+			break
+		}
+	}
+	if detail.Revision.ID == "" {
+		return AdminRevisionDetail{}, ErrAdminResourceNotFound
+	}
+	detail.Artifacts, err = s.adminArtifacts(ctx, adminRevisionArtifactsSQL, revisionID)
+	if err != nil {
+		return AdminRevisionDetail{}, err
+	}
+	detail.Media, err = s.adminMedia(ctx, adminRevisionMediaSQL, revisionID)
+	if err != nil {
+		return AdminRevisionDetail{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT position,title,url FROM revision_links WHERE revision_id=$1 ORDER BY position`, revisionID)
+	if err != nil {
+		return AdminRevisionDetail{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var link AdminLink
+		if err := rows.Scan(&link.Position, &link.Title, &link.URL); err != nil {
+			return AdminRevisionDetail{}, err
+		}
+		detail.Links = append(detail.Links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return AdminRevisionDetail{}, err
+	}
+	return detail, nil
+}
+
 func (binding *AdminExternalBinding) present(rawMeta []byte) {
 	if binding.Provider == "bandbbs" {
 		ids := map[string]any{}
@@ -471,6 +566,14 @@ func (binding *AdminExternalBinding) present(rawMeta []byte) {
 	}
 }
 
+const adminRevisionArtifactsSQL = `SELECT artifact.id::text,artifact.blob_sha256,artifact.original_name,artifact.package_format,artifact.package_id,artifact.package_version,
+ blob.size_bytes,artifact.analysis,
+ COALESCE((SELECT jsonb_agg(device.display_name ORDER BY device.display_name) FROM revision_artifact_devices binding JOIN devices device ON device.id=binding.device_id WHERE binding.artifact_id=artifact.id),'[]'::jsonb),
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('id',device.id::text,'display_name',device.display_name,'codename',device.codename,'platform',device.platform) ORDER BY device.display_name) FROM revision_artifact_devices binding JOIN devices device ON device.id=binding.device_id WHERE binding.artifact_id=artifact.id),'[]'::jsonb)
+FROM revision_artifacts artifact JOIN blobs blob ON blob.sha256=artifact.blob_sha256 WHERE artifact.revision_id=$1 ORDER BY artifact.created_at`
+
+const adminRevisionMediaSQL = `SELECT media.id::text,media.blob_sha256,media.role,media.position,media.width,media.height,blob.size_bytes FROM revision_media media JOIN blobs blob ON blob.sha256=media.blob_sha256 WHERE media.revision_id=$1 ORDER BY media.role,media.position`
+
 func (s *Store) adminArtifacts(ctx context.Context, query, snapshotID string) ([]AdminArtifact, error) {
 	rows, err := s.db.QueryContext(ctx, query, snapshotID)
 	if err != nil {
@@ -480,11 +583,13 @@ func (s *Store) adminArtifacts(ctx context.Context, query, snapshotID string) ([
 	artifacts := []AdminArtifact{}
 	for rows.Next() {
 		var artifact AdminArtifact
-		var devices []byte
-		if err := rows.Scan(&artifact.ID, &artifact.SHA256, &artifact.OriginalName, &artifact.PackageFormat, &artifact.PackageID, &artifact.Version, &devices); err != nil {
+		var analysis, devices, deviceBindings []byte
+		if err := rows.Scan(&artifact.ID, &artifact.SHA256, &artifact.OriginalName, &artifact.PackageFormat, &artifact.PackageID, &artifact.Version, &artifact.SizeBytes, &analysis, &devices, &deviceBindings); err != nil {
 			return nil, err
 		}
+		_ = json.Unmarshal(analysis, &artifact.Analysis)
 		_ = json.Unmarshal(devices, &artifact.Devices)
+		_ = json.Unmarshal(deviceBindings, &artifact.DeviceBindings)
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, rows.Err()
@@ -499,7 +604,7 @@ func (s *Store) adminMedia(ctx context.Context, query, snapshotID string) ([]Adm
 	media := []AdminMedia{}
 	for rows.Next() {
 		var item AdminMedia
-		if err := rows.Scan(&item.ID, &item.SHA256, &item.Role, &item.Position, &item.Width, &item.Height); err != nil {
+		if err := rows.Scan(&item.ID, &item.SHA256, &item.Role, &item.Position, &item.Width, &item.Height, &item.SizeBytes); err != nil {
 			return nil, err
 		}
 		media = append(media, item)
@@ -580,7 +685,7 @@ func (s *Store) AdminManageResource(ctx context.Context, id, action, reason stri
 		if _, err := tx.ExecContext(ctx, `UPDATE resources SET moderation_state=$2,moderation_by='admin',moderation_reason=$3,moderation_at=now(),updated_at=now() WHERE id=$1`, id, result.ModerationState, reason); err != nil {
 			return AdminResourceActionResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE publications publication SET state='cancelled',error_message='cancelled by resource moderation',updated_at=now() FROM resource_revisions revision WHERE publication.revision_id=revision.id AND revision.resource_id=$1 AND publication.state IN ('pending','running')`, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE publications publication SET state='cancelled',error_message='cancelled by resource moderation',updated_at=now() FROM resource_revisions revision WHERE publication.revision_id=revision.id AND revision.resource_id=$1 AND publication.state='pending'`, id); err != nil {
 			return AdminResourceActionResult{}, err
 		}
 	}

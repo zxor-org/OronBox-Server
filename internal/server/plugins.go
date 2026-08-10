@@ -63,8 +63,15 @@ func pluginJSON(plugin store.PluginRecord, viewerID string) map[string]any {
 	if viewerID != "" && plugin.UploaderID == viewerID {
 		value["owned"] = true
 		value["state"] = plugin.State
+		if plugin.PendingVersionID != "" {
+			value["state"] = plugin.PendingState
+			value["pendingVersionId"] = plugin.PendingVersionID
+		}
 		if plugin.ModerationReason != "" {
 			value["moderationReason"] = plugin.ModerationReason
+		}
+		if plugin.PendingReason != "" {
+			value["moderationReason"] = plugin.PendingReason
 		}
 	}
 	return value

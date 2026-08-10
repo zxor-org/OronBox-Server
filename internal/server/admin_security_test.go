@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,19 @@ func TestAdminOAuthReturnIsLimitedToDashboardGET(t *testing.T) {
 				t.Fatalf("isAdminOAuthReturn() = %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAdminFeedbackReturnURLStaysInsideMatchingList(t *testing.T) {
+	t.Parallel()
+	if got := adminFeedbackReturnURL("/admin/reports?status=open&page=3", true); got != "/admin/reports?status=open&page=3" {
+		t.Fatalf("report return URL = %q", got)
+	}
+	if got := adminFeedbackReturnURL("https://example.com/admin/reports", true); got != "/admin/reports" {
+		t.Fatalf("external return URL = %q", got)
+	}
+	if got := adminFeedbackReturnURL("/admin/feedback?kind=feedback", true); got != "/admin/reports" {
+		t.Fatalf("cross-list return URL = %q", got)
 	}
 }
 
@@ -190,6 +204,25 @@ func TestReviewItemsDropsBlankLinesAndNormalizesCRLF(t *testing.T) {
 	for index := range want {
 		if got[index] != want[index] {
 			t.Fatalf("reviewItems()[%d] = %q, want %q", index, got[index], want[index])
+		}
+	}
+}
+
+func TestAdminReviewReturnOnlyAllowsReviewList(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ value, want string }{
+		{"/admin/review?q=music&page=3", "/admin/review?q=music&page=3"},
+		{"https://evil.example/admin/review", "/admin/review"},
+		{"/admin/users", "/admin/review"},
+		{"//evil.example/admin/review", "/admin/review"},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/admin/review/bulk", strings.NewReader("return_to="+url.QueryEscape(test.value)))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := adminReviewReturn(r); got != test.want {
+			t.Errorf("adminReviewReturn(%q) = %q, want %q", test.value, got, test.want)
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
 	"github.com/zxor-org/OronBox-Server/internal/moderation"
 	"github.com/zxor-org/OronBox-Server/internal/store"
+	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 const defaultModerationPrompt = `你是 OronBox 社区评论审核器。审核分类仅限 porn、politics、abuse、spam、illegal。明确违规返回 block，无法确定返回 review，正常内容返回 pass。只返回 JSON 对象，格式为 {"action":"pass|review|block","categories":[],"reason":"简短理由"}。`
@@ -118,11 +119,12 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAdminComments(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
+	page := positiveInt(r.URL.Query().Get("page"), 1)
+	perPage := positiveInt(r.URL.Query().Get("per_page"), 25)
+	if perPage > 100 {
+		perPage = 100
 	}
-	items, total, err := a.store.AdminCommentQueue(r.Context(), page, 25)
+	result, err := a.store.AdminComments(r.Context(), store.AdminCommentQuery{Search: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"), Resource: r.URL.Query().Get("resource"), User: r.URL.Query().Get("user"), Sort: r.URL.Query().Get("sort"), Page: page, PerPage: perPage})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -132,7 +134,10 @@ func (a *App) handleAdminComments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_comments", map[string]any{"Title": "评论审核", "Items": items, "Total": total, "Page": page, "Prompt": prompt})
+	a.render(w, "admin_comments", map[string]any{
+		"Title": "评论管理", "Items": result.Items, "Total": result.Total, "Page": result.Page, "PerPage": result.PerPage, "Query": result.Query,
+		"Pager": web.NewPagination("/admin/comments", r.URL.Query(), result.Page, result.PerPage, result.Total), "Prompt": prompt,
+	})
 }
 
 func (a *App) handleAdminCommentDecision(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +189,10 @@ func (a *App) handleAdminModerationTest(w http.ResponseWriter, r *http.Request) 
 	if page < 1 {
 		page = 1
 	}
-	items, total, listErr := a.store.AdminCommentQueue(r.Context(), page, 25)
+	commentPage, listErr := a.store.AdminComments(r.Context(), store.AdminCommentQuery{Page: page, PerPage: 25})
 	if listErr != nil {
 		http.Error(w, listErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_comments", map[string]any{"Title": "评论审核", "Items": items, "Total": total, "Page": page, "Prompt": prompt, "TestText": text, "TestResult": result})
+	a.render(w, "admin_comments", map[string]any{"Title": "评论管理", "Items": commentPage.Items, "Total": commentPage.Total, "Page": page, "Prompt": prompt, "TestText": text, "TestResult": result})
 }

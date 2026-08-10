@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -28,6 +29,110 @@ type AdminCoinEntry struct {
 	ReferenceID   string `json:"reference_id"`
 	Note          string `json:"note"`
 	CreatedAt     string `json:"created_at"`
+}
+
+type AdminCoinQuery struct {
+	Search, User, Kind, ReferenceType, Sort string
+	From, To                                *time.Time
+	Page, PerPage                           int
+}
+
+type AdminCoinPage struct {
+	Items                            []AdminCoinEntry
+	Total, Page, PerPage, TotalPages int
+	Query                            AdminCoinQuery
+}
+
+func (q AdminCoinQuery) normalized() AdminCoinQuery {
+	q.Search, q.User, q.Kind = strings.TrimSpace(q.Search), strings.TrimSpace(q.User), strings.TrimSpace(q.Kind)
+	q.ReferenceType = strings.TrimSpace(q.ReferenceType)
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PerPage < 1 {
+		q.PerPage = 25
+	}
+	if q.PerPage > 100 {
+		q.PerPage = 100
+	}
+	if q.From != nil && q.To != nil && q.From.After(*q.To) {
+		q.From, q.To = q.To, q.From
+	}
+	switch q.Sort {
+	case "oldest", "delta_desc", "delta_asc":
+	default:
+		q.Sort = "newest"
+	}
+	return q
+}
+
+func adminCoinOrder(sort string) string {
+	switch sort {
+	case "oldest":
+		return "l.created_at ASC,l.id ASC"
+	case "delta_desc":
+		return "l.delta_units DESC,l.created_at DESC"
+	case "delta_asc":
+		return "l.delta_units ASC,l.created_at DESC"
+	default:
+		return "l.created_at DESC,l.id DESC"
+	}
+}
+
+func (s *Store) AdminCoinLedgerPage(ctx context.Context, raw AdminCoinQuery) (AdminCoinPage, error) {
+	q := raw.normalized()
+	const filter = `($1='' OR concat_ws(' ',u.username,u.id::text,l.note,l.kind,l.reference_type,l.reference_id,l.id::text) ILIKE '%'||$1||'%') AND ($2='' OR u.id::text=$2 OR u.username ILIKE '%'||$2||'%') AND ($3='' OR l.kind=$3) AND ($4='' OR l.reference_type=$4) AND ($5::timestamptz IS NULL OR l.created_at >= $5) AND ($6::timestamptz IS NULL OR l.created_at <= $6)`
+	page := AdminCoinPage{Items: []AdminCoinEntry{}, Page: q.Page, PerPage: q.PerPage, Query: q}
+	args := []any{q.Search, q.User, q.Kind, q.ReferenceType, q.From, q.To}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM coin_ledger l JOIN users u ON u.id=l.user_id WHERE `+filter, args...).Scan(&page.Total); err != nil {
+		return AdminCoinPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT l.id::text,l.user_id::text,u.username,l.delta_units,l.kind,l.reference_type,l.reference_id,l.note,l.created_at::text FROM coin_ledger l JOIN users u ON u.id=l.user_id WHERE %s ORDER BY %s LIMIT $7 OFFSET $8`, filter, adminCoinOrder(q.Sort)), append(args, q.PerPage, (q.Page-1)*q.PerPage)...)
+	if err != nil {
+		return AdminCoinPage{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item AdminCoinEntry
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Username, &item.DeltaUnits, &item.Kind, &item.ReferenceType, &item.ReferenceID, &item.Note, &item.CreatedAt); err != nil {
+			return AdminCoinPage{}, err
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return AdminCoinPage{}, err
+	}
+	if page.Total > 0 {
+		page.TotalPages = (page.Total + page.PerPage - 1) / page.PerPage
+	}
+	return page, nil
+}
+
+type AdminCoinUserOption struct {
+	ID, Username string
+	BalanceUnits int64
+	Frozen       bool
+}
+
+func (s *Store) AdminCoinUserOptions(ctx context.Context, search string, limit int) ([]AdminCoinUserOption, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	search = strings.TrimSpace(search)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id::text,u.username,COALESCE(a.balance_units,0),a.voting_frozen_at IS NOT NULL FROM users u LEFT JOIN user_coin_accounts a ON a.user_id=u.id WHERE $1='' OR u.username ILIKE '%'||$1||'%' OR u.id::text=$1 ORDER BY u.username LIMIT $2`, search, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminCoinUserOption{}
+	for rows.Next() {
+		var item AdminCoinUserOption
+		if err := rows.Scan(&item.ID, &item.Username, &item.BalanceUnits, &item.Frozen); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) AdminCoinStats(ctx context.Context) (AdminCoinStats, error) {

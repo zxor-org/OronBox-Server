@@ -36,7 +36,7 @@ func (s *Store) PublishAppRelease(ctx context.Context, release AppRelease, actor
 
 func (s *Store) LatestAppRelease(ctx context.Context, channel, platform, arch string) (AppRelease, error) {
 	var item AppRelease
-	err := scanAppRelease(s.db.QueryRowContext(ctx, `SELECT id::text,version,channel,platform,arch,minimum_version,notes_zh,notes_en,download_url,published_at FROM app_releases WHERE channel=$1 AND platform IN ($2,'all') AND arch IN ($3,'all') ORDER BY published_at DESC,(platform=$2) DESC,(arch=$3) DESC LIMIT 1`, channel, platform, arch), &item)
+	err := scanAppRelease(s.db.QueryRowContext(ctx, `SELECT id::text,version,channel,platform,arch,minimum_version,notes_zh,notes_en,download_url,published_at FROM app_releases WHERE enabled AND revoked_at IS NULL AND channel=$1 AND platform IN ($2,'all') AND arch IN ($3,'all') ORDER BY published_at DESC,(platform=$2) DESC,(arch=$3) DESC LIMIT 1`, channel, platform, arch), &item)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, ErrReleaseNotFound
 	}

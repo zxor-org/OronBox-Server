@@ -33,7 +33,7 @@ func (s *Service) CreateCollection(ctx context.Context, ownerID, slug, name, sum
 	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collections(id,owner_id,slug,kind) VALUES($1,$2,$3,$4)`, collectionID, ownerID, slug, kind); err != nil {
 		return Collection{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary) VALUES($1,$2,1,$3,$4)`, revisionID, collectionID, name, summary); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary,created_by) VALUES($1,$2,1,$3,$4,$5)`, revisionID, collectionID, name, summary, ownerID); err != nil {
 		return Collection{}, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -55,8 +55,10 @@ func (s *Service) UpdateCollectionMetadata(ctx context.Context, ownerID, collect
 	}
 	defer tx.Rollback()
 	var next int
-	var lockedID string
-	if err = tx.QueryRowContext(ctx, `SELECT id::text FROM resource_collections WHERE id=$1 AND owner_id=$2 FOR UPDATE`, collectionID, ownerID).Scan(&lockedID); errors.Is(err, sql.ErrNoRows) {
+	var lockedID, baseID, pendingID string
+	var enabled bool
+	var representativeID sql.NullString
+	if err = tx.QueryRowContext(ctx, `SELECT collection.id::text,COALESCE(collection.current_revision_id::text,''),COALESCE(pending.id::text,''),COALESCE(pending.enabled,collection.enabled),COALESCE(pending.representative_resource_id,collection.representative_resource_id)::text FROM resource_collections collection LEFT JOIN LATERAL (SELECT id,enabled,representative_resource_id FROM resource_collection_revisions WHERE collection_id=collection.id AND state='pending' ORDER BY revision_no DESC LIMIT 1) pending ON true WHERE collection.id=$1 AND collection.owner_id=$2 FOR UPDATE OF collection`, collectionID, ownerID).Scan(&lockedID, &baseID, &pendingID, &enabled, &representativeID); errors.Is(err, sql.ErrNoRows) {
 		return Collection{}, ErrNotFound
 	} else if err != nil {
 		return Collection{}, err
@@ -67,7 +69,11 @@ func (s *Service) UpdateCollectionMetadata(ctx context.Context, ownerID, collect
 	if _, err = tx.ExecContext(ctx, `UPDATE resource_collection_revisions SET state='superseded',updated_at=now() WHERE collection_id=$1 AND state='pending'`, collectionID); err != nil {
 		return Collection{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary) VALUES($1,$2,$3,$4,$5)`, uuid.NewString(), collectionID, next, name, summary); err != nil {
+	revisionID := uuid.NewString()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary,enabled,representative_resource_id,created_by,base_revision_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,'')::uuid)`, revisionID, collectionID, next, name, summary, enabled, representativeID, ownerID, baseID); err != nil {
+		return Collection{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collection_revision_members(id,revision_id,resource_id,resource_slug,resource_name,position) SELECT md5(random()::text||clock_timestamp()::text||snapshot.id::text)::uuid,$2,snapshot.resource_id,snapshot.resource_slug,snapshot.resource_name,snapshot.position FROM resource_collection_revision_members snapshot WHERE snapshot.revision_id=NULLIF($3,'')::uuid UNION ALL SELECT md5(random()::text||clock_timestamp()::text||resource.id::text)::uuid,$2,resource.id,resource.slug,COALESCE(current.name,resource.draft_name),row_number() OVER (ORDER BY resource.collection_position,resource.created_at,resource.id)-1 FROM resources resource LEFT JOIN resource_revisions current ON current.id=resource.current_revision_id WHERE resource.collection_id=$1 AND $3=''`, collectionID, revisionID, pendingID); err != nil {
 		return Collection{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET updated_at=now() WHERE id=$1`, collectionID); err != nil {
@@ -82,7 +88,7 @@ func (s *Service) UpdateCollectionMetadata(ctx context.Context, ownerID, collect
 func scanCollection(scanner interface{ Scan(...any) error }) (Collection, error) {
 	var item Collection
 	var currentID, representativeID sql.NullString
-	err := scanner.Scan(&item.ID, &item.OwnerID, &item.Slug, &item.Platform, &item.Kind, &currentID, &representativeID, &item.ResourceCount, &item.TotalCoins, &item.CreatedAt, &item.UpdatedAt)
+	err := scanner.Scan(&item.ID, &item.OwnerID, &item.Slug, &item.Platform, &item.Kind, &currentID, &representativeID, &item.Enabled, &item.ResourceCount, &item.TotalCoins, &item.CreatedAt, &item.UpdatedAt)
 	if currentID.Valid {
 		item.CurrentRevisionID = currentID.String
 	}
@@ -92,7 +98,7 @@ func scanCollection(scanner interface{ Scan(...any) error }) (Collection, error)
 	return item, err
 }
 
-const collectionSelect = `SELECT c.id::text,c.owner_id::text,c.slug,c.platform,c.kind,c.current_revision_id::text,c.representative_resource_id::text,
+const collectionSelect = `SELECT c.id::text,c.owner_id::text,c.slug,c.platform,c.kind,c.current_revision_id::text,c.representative_resource_id::text,c.enabled,
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id),
 COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.created_at,c.updated_at`
 
@@ -127,8 +133,25 @@ func (s *Service) Collection(ctx context.Context, ownerID, collectionID string) 
 
 func (s *Service) collectionRevision(ctx context.Context, revisionID string) (CollectionRevision, error) {
 	var item CollectionRevision
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,collection_id::text,revision_no,name,summary,state,review_note,created_at,updated_at FROM resource_collection_revisions WHERE id=$1`, revisionID).
-		Scan(&item.ID, &item.CollectionID, &item.Number, &item.Name, &item.Summary, &item.State, &item.ReviewNote, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,collection_id::text,revision_no,name,summary,state,review_note,enabled,COALESCE(representative_resource_id::text,''),created_via,COALESCE(base_revision_id::text,''),created_at,updated_at FROM resource_collection_revisions WHERE id=$1`, revisionID).
+		Scan(&item.ID, &item.CollectionID, &item.Number, &item.Name, &item.Summary, &item.State, &item.ReviewNote, &item.Enabled, &item.RepresentativeResourceID, &item.CreatedVia, &item.BaseRevisionID, &item.CreatedAt, &item.UpdatedAt)
+	if err == nil {
+		rows, rowsErr := s.db.QueryContext(ctx, `SELECT COALESCE(resource_id::text,'') FROM resource_collection_revision_members WHERE revision_id=$1 ORDER BY position`, revisionID)
+		if rowsErr != nil {
+			return item, rowsErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if scanErr := rows.Scan(&id); scanErr != nil {
+				return item, scanErr
+			}
+			if id != "" {
+				item.ResourceIDs = append(item.ResourceIDs, id)
+			}
+		}
+		err = rows.Err()
+	}
 	return item, err
 }
 
@@ -163,35 +186,26 @@ func (s *Service) SetCollectionResources(ctx context.Context, ownerID, collectio
 		return err
 	}
 	defer tx.Rollback()
-	var kind string
-	if err = tx.QueryRowContext(ctx, `SELECT kind FROM resource_collections WHERE id=$1 AND owner_id=$2 FOR UPDATE`, collectionID, ownerID).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
+	var kind, baseID, name, summary string
+	var enabled bool
+	if err = tx.QueryRowContext(ctx, `SELECT collection.kind,COALESCE(collection.current_revision_id::text,''),collection.enabled,COALESCE(pending.name,current.name,collection.slug),COALESCE(pending.summary,current.summary,'') FROM resource_collections collection LEFT JOIN resource_collection_revisions current ON current.id=collection.current_revision_id LEFT JOIN LATERAL (SELECT name,summary FROM resource_collection_revisions WHERE collection_id=collection.id AND state='pending' ORDER BY revision_no DESC LIMIT 1) pending ON true WHERE collection.id=$1 AND collection.owner_id=$2 FOR UPDATE OF collection`, collectionID, ownerID).Scan(&kind, &baseID, &enabled, &name, &summary); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
 	seen := make(map[string]bool, len(resourceIDs))
-	if len(resourceIDs) > 0 {
-		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections previous SET representative_resource_id=(
-SELECT remaining.id FROM resources remaining WHERE remaining.collection_id=previous.id AND NOT(remaining.id=ANY($2::uuid[])) ORDER BY remaining.collection_position,remaining.created_at LIMIT 1
-),updated_at=now() WHERE previous.owner_id=$3 AND previous.id<>$1 AND previous.representative_resource_id=ANY($2::uuid[])`, collectionID, resourceIDs, ownerID); err != nil {
-			return err
-		}
-	}
-	for position, resourceID := range resourceIDs {
+	for _, resourceID := range resourceIDs {
 		if seen[resourceID] {
 			return fmt.Errorf("%w: duplicate collection resource", ErrInvalid)
 		}
 		seen[resourceID] = true
-		result, err := tx.ExecContext(ctx, `UPDATE resources SET collection_id=$1,collection_position=$2,updated_at=now() WHERE id=$3 AND owner_id=$4 AND kind=$5`, collectionID, position, resourceID, ownerID, kind)
-		if err != nil {
+		var valid bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM resources WHERE id=$1 AND owner_id=$2 AND kind=$3 AND (collection_id IS NULL OR collection_id=$4))`, resourceID, ownerID, kind, collectionID).Scan(&valid); err != nil {
 			return err
 		}
-		if count, _ := result.RowsAffected(); count != 1 {
+		if !valid {
 			return fmt.Errorf("%w: collection resource", ErrInvalid)
 		}
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE resources SET collection_id=NULL,collection_position=0,updated_at=now() WHERE collection_id=$1 AND NOT(id=ANY($2::uuid[]))`, collectionID, resourceIDs); err != nil {
-		return err
 	}
 	if representativeID == "" && len(resourceIDs) > 0 {
 		representativeID = resourceIDs[0]
@@ -199,21 +213,59 @@ SELECT remaining.id FROM resources remaining WHERE remaining.collection_id=previ
 	if representativeID != "" && !seen[representativeID] {
 		return fmt.Errorf("%w: representative must belong to collection", ErrInvalid)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET representative_resource_id=NULLIF($2,'')::uuid,updated_at=now() WHERE id=$1`, collectionID, representativeID); err != nil {
+	var next int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(revision_no),0)+1 FROM resource_collection_revisions WHERE collection_id=$1`, collectionID).Scan(&next); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collection_revisions SET state='superseded',updated_at=now() WHERE collection_id=$1 AND state='pending'`, collectionID); err != nil {
+		return err
+	}
+	revisionID := uuid.NewString()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary,enabled,representative_resource_id,created_by,base_revision_id) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::uuid,$8,NULLIF($9,'')::uuid)`, revisionID, collectionID, next, name, summary, enabled, representativeID, ownerID, baseID); err != nil {
+		return err
+	}
+	for position, resourceID := range resourceIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_collection_revision_members(id,revision_id,resource_id,resource_slug,resource_name,position) SELECT $1,$2,resource.id,resource.slug,COALESCE(current.name,resource.draft_name),$4 FROM resources resource LEFT JOIN resource_revisions current ON current.id=resource.current_revision_id WHERE resource.id=$3`, uuid.NewString(), revisionID, resourceID, position); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collections SET updated_at=now() WHERE id=$1`, collectionID); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (s *Service) DeleteCollection(ctx context.Context, ownerID, collectionID string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM resource_collections WHERE id=$1 AND owner_id=$2`, collectionID, ownerID)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count != 1 {
+	defer tx.Rollback()
+	var baseID, pendingID, name, summary string
+	var representative sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(collection.current_revision_id::text,''),COALESCE(pending.id::text,''),COALESCE(pending.name,current.name,collection.slug),COALESCE(pending.summary,current.summary,''),COALESCE(pending.representative_resource_id,collection.representative_resource_id)::text FROM resource_collections collection LEFT JOIN resource_collection_revisions current ON current.id=collection.current_revision_id LEFT JOIN LATERAL (SELECT id,name,summary,representative_resource_id FROM resource_collection_revisions WHERE collection_id=collection.id AND state='pending' ORDER BY revision_no DESC LIMIT 1) pending ON true WHERE collection.id=$1 AND collection.owner_id=$2 FOR UPDATE OF collection`, collectionID, ownerID).Scan(&baseID, &pendingID, &name, &summary, &representative); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	} else if err != nil {
+		return err
 	}
-	return nil
+	var next int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(revision_no),0)+1 FROM resource_collection_revisions WHERE collection_id=$1`, collectionID).Scan(&next); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collection_revisions SET state='superseded',updated_at=now() WHERE collection_id=$1 AND state='pending'`, collectionID); err != nil {
+		return err
+	}
+	revisionID := uuid.NewString()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resource_collection_revisions(id,collection_id,revision_no,name,summary,enabled,representative_resource_id,created_by,base_revision_id) VALUES($1,$2,$3,$4,$5,false,$6,$7,NULLIF($8,'')::uuid)`, revisionID, collectionID, next, name, summary, representative, ownerID, baseID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resource_collection_revision_members(id,revision_id,resource_id,resource_slug,resource_name,position) SELECT md5(random()::text||clock_timestamp()::text||snapshot.id::text)::uuid,$2::uuid,snapshot.resource_id,snapshot.resource_slug,snapshot.resource_name,snapshot.position FROM resource_collection_revision_members snapshot WHERE snapshot.revision_id=NULLIF($3,'')::uuid UNION ALL SELECT md5(random()::text||clock_timestamp()::text||resource.id::text)::uuid,$2::uuid,resource.id,resource.slug,COALESCE(current.name,resource.draft_name),row_number() OVER (ORDER BY resource.collection_position,resource.created_at,resource.id)-1 FROM resources resource LEFT JOIN resource_revisions current ON current.id=resource.current_revision_id WHERE resource.collection_id=$1 AND $3=''`, collectionID, revisionID, pendingID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collections SET updated_at=now() WHERE id=$1`, collectionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Service) ReviewCollection(ctx context.Context, revisionID, reviewerID string, approve bool, note string) error {
@@ -238,7 +290,26 @@ func (s *Service) ReviewCollection(ctx context.Context, revisionID, reviewerID s
 		if _, err = tx.ExecContext(ctx, `UPDATE resource_collection_revisions SET state='superseded',updated_at=now() WHERE collection_id=$1 AND state='approved' AND id<>$2`, collectionID, revisionID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET current_revision_id=$2,updated_at=now() WHERE id=$1`, collectionID, revisionID); err != nil {
+		var representativeID sql.NullString
+		var enabled bool
+		if err := tx.QueryRowContext(ctx, `SELECT representative_resource_id::text,enabled FROM resource_collection_revisions WHERE id=$1`, revisionID).Scan(&representativeID, &enabled); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE resources resource SET collection_id=NULL,collection_position=0,updated_at=now() WHERE resource.collection_id=$1 AND NOT EXISTS(SELECT 1 FROM resource_collection_revision_members snapshot WHERE snapshot.revision_id=$2 AND snapshot.resource_id=resource.id)`, collectionID, revisionID); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE resources resource SET collection_id=$1,collection_position=snapshot.position,updated_at=now() FROM resource_collection_revision_members snapshot JOIN resource_collections collection ON collection.id=$1 WHERE snapshot.revision_id=$2 AND snapshot.resource_id=resource.id AND resource.owner_id=collection.owner_id AND resource.kind=collection.kind AND (resource.collection_id IS NULL OR resource.collection_id=$1)`, collectionID, revisionID)
+		if err != nil {
+			return err
+		}
+		var expected int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM resource_collection_revision_members WHERE revision_id=$1`, revisionID).Scan(&expected); err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); int(changed) != expected {
+			return fmt.Errorf("%w: collection membership changed since submission", ErrConflict)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET current_revision_id=$2,enabled=$3,representative_resource_id=$4,updated_at=now() WHERE id=$1`, collectionID, revisionID, enabled, representativeID); err != nil {
 			return err
 		}
 	}
@@ -276,7 +347,7 @@ func (s *Service) PublicCollections(ctx context.Context, kind string) ([]PublicC
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL),
 COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
-WHERE ($1='' OR c.kind=$1) AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)
+WHERE c.enabled AND ($1='' OR c.kind=$1) AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)
 ORDER BY c.updated_at DESC`, kind)
 	if err != nil {
 		return nil, err
@@ -303,7 +374,7 @@ func (s *Service) PublicCollection(ctx context.Context, collectionID string) (Pu
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL),
 COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
-WHERE c.id=$1 AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)`, collectionID).
+WHERE c.id=$1 AND c.enabled AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)`, collectionID).
 		Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.RepresentativeResourceID, &item.ResourceCount, &item.CoinCount, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublicCollection{}, ErrNotFound

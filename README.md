@@ -51,6 +51,8 @@ gofmt -w .
 go test ./...
 ```
 
+管理后台的角色边界、资源审核、发布控制、维护操作与上线验证流程见 [后台运维手册](docs/admin.md)。
+
 ## 许可证 / License
 
 OronBox Server 采用 [GNU Affero General Public License v3.0](LICENSE) 许可证

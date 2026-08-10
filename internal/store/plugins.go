@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type PluginRecord struct {
@@ -25,12 +27,15 @@ type PluginRecord struct {
 	PackageSize      int64
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	PendingVersionID string
+	PendingState     string
+	PendingReason    string
 }
 
 var ErrPluginNotFound = errors.New("plugin not found")
 
-const pluginColumns = `p.id,p.uploader_id,COALESCE(u.username,''),p.name,p.version,p.author,p.description,p.runtime,p.permissions,p.state,p.moderation_reason,p.package_sha256,COALESCE(p.icon_sha256,''),COALESCE(b.size_bytes,0),p.created_at,p.updated_at`
-const pluginTables = ` FROM plugins p LEFT JOIN users u ON u.id=p.uploader_id LEFT JOIN blobs b ON b.sha256=p.package_sha256`
+const pluginColumns = `p.id,p.uploader_id,COALESCE(u.username,''),p.name,p.version,p.author,p.description,p.runtime,p.permissions,p.state,p.moderation_reason,p.package_sha256,COALESCE(p.icon_sha256,''),COALESCE(b.size_bytes,0),p.created_at,p.updated_at,COALESCE(p.pending_version_id::text,''),COALESCE(pv.state,''),COALESCE(pv.moderation_reason,'')`
+const pluginTables = ` FROM plugins p LEFT JOIN users u ON u.id=p.uploader_id LEFT JOIN blobs b ON b.sha256=p.package_sha256 LEFT JOIN plugin_versions pv ON pv.id=p.pending_version_id`
 
 func scanPlugin(row interface{ Scan(...any) error }) (PluginRecord, error) {
 	var plugin PluginRecord
@@ -41,6 +46,7 @@ func scanPlugin(row interface{ Scan(...any) error }) (PluginRecord, error) {
 		&permissions, &plugin.State, &plugin.ModerationReason,
 		&plugin.PackageSHA256, &plugin.IconSHA256,
 		&plugin.PackageSize, &plugin.CreatedAt, &plugin.UpdatedAt,
+		&plugin.PendingVersionID, &plugin.PendingState, &plugin.PendingReason,
 	)
 	if err != nil {
 		return PluginRecord{}, err
@@ -109,16 +115,50 @@ func (s *Store) Plugin(ctx context.Context, id string) (PluginRecord, error) {
 // SetPluginState moves a plugin through the moderation states and returns the
 // updated record.
 func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (PluginRecord, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE plugins SET state=$2, moderation_reason=$3, updated_at=now() WHERE id=$1`, id, state, reason)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return PluginRecord{}, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return PluginRecord{}, err
-	}
-	if affected == 0 {
+	defer tx.Rollback()
+	var pendingID, currentID string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(pending_version_id::text,''),COALESCE(current_version_id::text,'') FROM plugins WHERE id=$1 FOR UPDATE`, id).Scan(&pendingID, &currentID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return PluginRecord{}, ErrPluginNotFound
+	}
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	if pendingID != "" && (state == "listed" || state == "rejected") {
+		versionState := state
+		if _, err = tx.ExecContext(ctx, `UPDATE plugin_versions SET state=$2,moderation_reason=$3,updated_at=now() WHERE id=$1 AND state='pending'`, pendingID, versionState, reason); err != nil {
+			return PluginRecord{}, err
+		}
+		if state == "listed" {
+			if _, err = tx.ExecContext(ctx, `UPDATE plugin_versions SET state='superseded',updated_at=now() WHERE plugin_id=$1 AND state='listed' AND id<>$2`, id, pendingID); err != nil {
+				return PluginRecord{}, err
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE plugins plugin SET name=version.name,version=version.version,author=version.author,description=version.description,runtime=version.runtime,permissions=version.permissions,package_sha256=version.package_sha256,icon_sha256=version.icon_sha256,state='listed',moderation_reason='',current_version_id=version.id,pending_version_id=NULL,updated_at=now() FROM plugin_versions version WHERE plugin.id=$1 AND version.id=$2`, id, pendingID)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE plugins SET pending_version_id=NULL,state=CASE WHEN $3='' THEN 'rejected' ELSE state END,moderation_reason=$2,updated_at=now() WHERE id=$1`, id, reason, currentID)
+		}
+		if err == nil {
+			title, body := "插件审核已通过", "你上传的插件更新已通过审核并上架"
+			if state == "rejected" {
+				title, body = "插件审核未通过", "你上传的插件更新未通过审核"
+				if reason != "" {
+					body += "：" + reason
+				}
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body,ref) SELECT $2,uploader_id,'moderation',$3,$4,id FROM plugins WHERE id=$1`, id, uuid.NewString(), title, body)
+		}
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE plugins SET state=$2,moderation_reason=$3,updated_at=now() WHERE id=$1`, id, state, reason)
+	}
+	if err != nil {
+		return PluginRecord{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return PluginRecord{}, err
 	}
 	return s.Plugin(ctx, id)
 }
@@ -128,28 +168,56 @@ func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (P
 // someone else and nothing was written. Every uploaded package returns to
 // pending review regardless of the previous state.
 func (s *Store) UpsertPlugin(ctx context.Context, plugin PluginRecord) (bool, error) {
-	var owner string
-	err := s.db.QueryRowContext(ctx, `SELECT uploader_id FROM plugins WHERE id=$1`, plugin.ID).Scan(&owner)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
 		return false, err
 	}
-	if err == nil && owner != plugin.UploaderID {
+	defer tx.Rollback()
+	var owner, currentID, pendingID string
+	lookupErr := tx.QueryRowContext(ctx, `SELECT uploader_id::text,COALESCE(current_version_id::text,''),COALESCE(pending_version_id::text,'') FROM plugins WHERE id=$1 FOR UPDATE`, plugin.ID).Scan(&owner, &currentID, &pendingID)
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+		return false, lookupErr
+	}
+	if lookupErr == nil && owner != plugin.UploaderID {
 		return false, nil
 	}
 	permissions, err := json.Marshal(plugin.Permissions)
 	if err != nil {
 		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO plugins(id,uploader_id,name,version,author,description,runtime,permissions,package_sha256,icon_sha256)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''))
-ON CONFLICT(id) DO UPDATE SET
- name=excluded.name,version=excluded.version,author=excluded.author,description=excluded.description,
- runtime=excluded.runtime,permissions=excluded.permissions,package_sha256=excluded.package_sha256,
- icon_sha256=excluded.icon_sha256,state='pending',moderation_reason='',updated_at=now()`,
-		plugin.ID, plugin.UploaderID, plugin.Name, plugin.Version, plugin.Author,
-		plugin.Description, plugin.Runtime, permissions, plugin.PackageSHA256, plugin.IconSHA256)
-	return true, err
+	if errors.Is(lookupErr, sql.ErrNoRows) {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO plugins(id,uploader_id,name,version,author,description,runtime,permissions,package_sha256,icon_sha256,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULLIF($10,''),'pending')`, plugin.ID, plugin.UploaderID, plugin.Name, plugin.Version, plugin.Author, plugin.Description, plugin.Runtime, permissions, plugin.PackageSHA256, plugin.IconSHA256); err != nil {
+			return false, err
+		}
+		currentID = ""
+	} else if lookupErr != nil {
+		return false, lookupErr
+	}
+	if pendingID != "" {
+		if _, err = tx.ExecContext(ctx, `UPDATE plugin_versions SET state='superseded',updated_at=now() WHERE id=$1 AND state='pending'`, pendingID); err != nil {
+			return false, err
+		}
+	}
+	var revisionNo int
+	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(max(revision_no),0)+1 FROM plugin_versions WHERE plugin_id=$1`, plugin.ID).Scan(&revisionNo); err != nil {
+		return false, err
+	}
+	versionID := uuid.NewString()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO plugin_versions(id,plugin_id,revision_no,version,name,author,description,runtime,permissions,package_sha256,icon_sha256,state,created_by,created_via,base_version_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),'pending',$12,'uploader',NULLIF($13,'')::uuid)`, versionID, plugin.ID, revisionNo, plugin.Version, plugin.Name, plugin.Author, plugin.Description, plugin.Runtime, permissions, plugin.PackageSHA256, plugin.IconSHA256, plugin.UploaderID, currentID); err != nil {
+		return false, err
+	}
+	if currentID == "" {
+		_, err = tx.ExecContext(ctx, `UPDATE plugins SET name=$2,version=$3,author=$4,description=$5,runtime=$6,permissions=$7,package_sha256=$8,icon_sha256=NULLIF($9,''),state='pending',moderation_reason='',pending_version_id=$10,updated_at=now() WHERE id=$1`, plugin.ID, plugin.Name, plugin.Version, plugin.Author, plugin.Description, plugin.Runtime, permissions, plugin.PackageSHA256, plugin.IconSHA256, versionID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE plugins SET pending_version_id=$2,updated_at=now() WHERE id=$1`, plugin.ID, versionID)
+	}
+	if err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // DeletePlugin removes the plugin while it belongs to uploaderID and reports

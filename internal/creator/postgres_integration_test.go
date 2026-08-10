@@ -173,6 +173,9 @@ func TestCreatorLifecycle(t *testing.T) {
 	if len(workspace.Revisions) != 1 || workspace.Revisions[0].State != RevisionSubmitted {
 		t.Fatalf("published workspace = %#v", workspace.Revisions)
 	}
+	if workspace.Revisions[0].PaidType != ResourcePaidFree {
+		t.Fatalf("legacy manifest paid type = %q, want %q", workspace.Revisions[0].PaidType, ResourcePaidFree)
+	}
 	if len(workspace.Artifacts) != 1 || workspace.Artifacts[0].SizeBytes != int64(len(watchface)) {
 		t.Fatalf("artifacts = %#v", workspace.Artifacts)
 	}
@@ -190,9 +193,14 @@ func TestCreatorLifecycle(t *testing.T) {
 	if firstRevisionID == "" {
 		t.Fatal("approved revision did not become current")
 	}
-	workspace, err = service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("Test face 2", 1, []string{deviceRows[0].ID}), files))
+	paidManifest := manifest("Test face 2", 1, []string{deviceRows[0].ID})
+	paidManifest["paid_type"] = string(ResourceForcePaid)
+	workspace, err = service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, paidManifest, files))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if workspace.Revisions[0].PaidType != ResourceForcePaid {
+		t.Fatalf("paid revision type = %q, want %q", workspace.Revisions[0].PaidType, ResourceForcePaid)
 	}
 	secondRevisionID := workspace.Revisions[0].ID
 	if secondRevisionID == firstRevisionID {
@@ -237,6 +245,17 @@ func TestCreatorLifecycle(t *testing.T) {
 	if total != 1 || len(public) != 1 || public[0].ID != workspace.Resource.ID {
 		t.Fatalf("recommended public resources = %#v, total=%d", public, total)
 	}
+	if public[0].PaidType != ResourceForcePaid {
+		t.Fatalf("public paid type = %q, want %q", public[0].PaidType, ResourceForcePaid)
+	}
+	_, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, HidePaid: true})
+	if err != nil || total != 0 {
+		t.Fatalf("hide paid filter = total %d, error=%v; all non-free resources must be hidden", total, err)
+	}
+	_, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, HideForcePaid: true})
+	if err != nil || total != 0 {
+		t.Fatalf("hide force-paid filter = total %d, error=%v", total, err)
+	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
 	if err != nil || total != 1 || len(public) != 1 || public[0].ID != workspace.Resource.ID {
 		t.Fatalf("author-search public resources = %#v, total=%d, error=%v", public, total, err)
@@ -248,8 +267,12 @@ func TestCreatorLifecycle(t *testing.T) {
 	if err := service.SetCollectionResources(ctx, userID, collection.ID, workspace.Resource.ID, []string{workspace.Resource.ID}); err != nil {
 		t.Fatal(err)
 	}
+	collection, err = service.Collection(ctx, userID, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if collection.PendingRevision == nil {
-		t.Fatal("new collection has no pending metadata revision")
+		t.Fatal("collection membership has no pending immutable revision")
 	}
 	if err := service.ReviewCollection(ctx, collection.PendingRevision.ID, "", true, ""); err != nil {
 		t.Fatal(err)
@@ -260,6 +283,9 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	if total != 1 || len(public) != 1 || public[0].CardType != "collection" || public[0].ID != collection.ID {
 		t.Fatalf("collection public card = %#v, total=%d", public, total)
+	}
+	if public[0].PaidType != ResourcePaidFree {
+		t.Fatalf("collection paid type = %q, want %q", public[0].PaidType, ResourcePaidFree)
 	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
 	if err != nil || total != 2 || len(public) != 2 {

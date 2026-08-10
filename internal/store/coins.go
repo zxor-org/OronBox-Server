@@ -148,6 +148,14 @@ func coinAccountTx(ctx context.Context, tx *sql.Tx, userID string) (CoinAccount,
 	return coinAccount(units, frozenAt, reason), err
 }
 
+// UserResourceCoins reports how many coins the user has already given to a
+// resource (0, 1 or 2; CoinResource caps the total at 2).
+func (s *Store) UserResourceCoins(ctx context.Context, userID, resourceID string) (int64, error) {
+	var coins int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(coins),0) FROM resource_coin_votes WHERE resource_id=$1 AND user_id=$2 AND invalidated_at IS NULL`, resourceID, userID).Scan(&coins)
+	return coins, err
+}
+
 func (s *Store) CoinResource(ctx context.Context, userID, resourceID string, coins int) (ResourceCoinResult, error) {
 	if coins < 1 || coins > 2 {
 		return ResourceCoinResult{}, ErrCoinVoteLimit

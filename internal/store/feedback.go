@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,6 +42,34 @@ type FeedbackTicket struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 	ClosedAt     *time.Time      `json:"closed_at,omitempty"`
 	Replies      []FeedbackReply `json:"replies"`
+}
+
+type FeedbackTargetSnapshot struct {
+	Kind   string `json:"kind,omitempty"`
+	Source string `json:"source,omitempty"`
+	ID     string `json:"id,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Body   string `json:"body,omitempty"`
+	Owner  string `json:"owner,omitempty"`
+	State  string `json:"state,omitempty"`
+}
+
+type FeedbackInternalNote struct {
+	ID, AuthorID, Author, Message string
+	CreatedAt                     time.Time
+}
+
+type FeedbackStatusEvent struct {
+	ID, ActorID, Actor, FromStatus, ToStatus string
+	CreatedAt                                time.Time
+}
+
+type AdminFeedbackDetail struct {
+	Ticket         FeedbackTicket
+	TargetSnapshot FeedbackTargetSnapshot
+	InternalNotes  []FeedbackInternalNote
+	StatusHistory  []FeedbackStatusEvent
 }
 
 type FeedbackReply struct {
@@ -90,11 +119,54 @@ func validFeedbackStatus(status string) bool {
 
 func (s *Store) CreateFeedback(ctx context.Context, p CreateFeedbackParams) (FeedbackTicket, error) {
 	id := uuid.NewString()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO feedback_tickets(id,user_id,kind,subject,message,target_source,target_id,target_url) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, p.UserID, p.Kind, p.Subject, p.Message, p.TargetSource, p.TargetID, p.TargetURL)
+	snapshot, err := s.feedbackTargetSnapshot(ctx, p.TargetSource, p.TargetID, p.TargetURL)
 	if err != nil {
 		return FeedbackTicket{}, err
 	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return FeedbackTicket{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return FeedbackTicket{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO feedback_tickets(id,user_id,kind,subject,message,target_source,target_id,target_url,target_snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, p.UserID, p.Kind, p.Subject, p.Message, p.TargetSource, p.TargetID, p.TargetURL, snapshotJSON); err != nil {
+		return FeedbackTicket{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO feedback_status_history(id,ticket_id,from_status,to_status) VALUES($1,$2,'','open')`, uuid.NewString(), id); err != nil {
+		return FeedbackTicket{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return FeedbackTicket{}, err
+	}
 	return s.Feedback(ctx, id, p.UserID, false)
+}
+
+func (s *Store) feedbackTargetSnapshot(ctx context.Context, source, id, targetURL string) (FeedbackTargetSnapshot, error) {
+	snapshot := FeedbackTargetSnapshot{Source: source, ID: id, URL: targetURL}
+	if id == "" {
+		return snapshot, nil
+	}
+	if strings.EqualFold(source, "comment") {
+		snapshot.Kind = "comment"
+		err := s.db.QueryRowContext(ctx, `SELECT left(comment.body,500),account.username,comment.moderation_state FROM resource_comments comment JOIN users account ON account.id=comment.user_id WHERE comment.id=$1`, id).Scan(&snapshot.Body, &snapshot.Owner, &snapshot.State)
+		if errors.Is(err, sql.ErrNoRows) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	if source == "" || strings.EqualFold(source, "oronbox") {
+		snapshot.Kind = "resource"
+		err := s.db.QueryRowContext(ctx, `SELECT COALESCE(revision.name,resource.draft_name),account.username,resource.moderation_state FROM resources resource JOIN users account ON account.id=resource.owner_id LEFT JOIN resource_revisions revision ON revision.id=resource.current_revision_id WHERE resource.id=$1`, id).Scan(&snapshot.Title, &snapshot.Owner, &snapshot.State)
+		if errors.Is(err, sql.ErrNoRows) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+	snapshot.Kind = "external"
+	return snapshot, nil
 }
 
 func (s *Store) FeedbackTargetExists(ctx context.Context, source, id string) (bool, error) {
@@ -314,10 +386,79 @@ func (s *Store) UpdateFeedback(ctx context.Context, id string, update FeedbackUp
 			return FeedbackTicket{}, err
 		}
 	}
+	if current != update.Status {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO feedback_status_history(id,ticket_id,actor_id,from_status,to_status) VALUES($1,$2,NULLIF($3,'')::uuid,$4,$5)`, uuid.NewString(), id, update.AuthorID, current, update.Status); err != nil {
+			return FeedbackTicket{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return FeedbackTicket{}, err
 	}
 	return s.Feedback(ctx, id, "", true)
+}
+
+func (s *Store) AdminFeedbackDetail(ctx context.Context, id string) (AdminFeedbackDetail, error) {
+	ticket, err := s.Feedback(ctx, id, "", true)
+	if err != nil {
+		return AdminFeedbackDetail{}, err
+	}
+	detail := AdminFeedbackDetail{Ticket: ticket, InternalNotes: []FeedbackInternalNote{}, StatusHistory: []FeedbackStatusEvent{}}
+	var snapshotJSON []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT target_snapshot FROM feedback_tickets WHERE id=$1`, id).Scan(&snapshotJSON); err != nil {
+		return AdminFeedbackDetail{}, err
+	}
+	if len(snapshotJSON) > 0 {
+		if err := json.Unmarshal(snapshotJSON, &detail.TargetSnapshot); err != nil {
+			return AdminFeedbackDetail{}, fmt.Errorf("decode feedback target snapshot: %w", err)
+		}
+	}
+	notes, err := s.db.QueryContext(ctx, `SELECT note.id::text,COALESCE(note.author_id::text,''),COALESCE(NULLIF(account.username,''),'已删除的管理员'),note.message,note.created_at FROM feedback_internal_notes note LEFT JOIN users account ON account.id=note.author_id WHERE note.ticket_id=$1 ORDER BY note.created_at,note.id`, id)
+	if err != nil {
+		return AdminFeedbackDetail{}, err
+	}
+	for notes.Next() {
+		var note FeedbackInternalNote
+		if err := notes.Scan(&note.ID, &note.AuthorID, &note.Author, &note.Message, &note.CreatedAt); err != nil {
+			notes.Close()
+			return AdminFeedbackDetail{}, err
+		}
+		detail.InternalNotes = append(detail.InternalNotes, note)
+	}
+	if err := notes.Close(); err != nil {
+		return AdminFeedbackDetail{}, err
+	}
+	history, err := s.db.QueryContext(ctx, `SELECT event.id::text,COALESCE(event.actor_id::text,''),COALESCE(NULLIF(account.username,''),CASE WHEN event.actor_id IS NULL THEN '系统' ELSE '已删除的管理员' END),event.from_status,event.to_status,event.created_at FROM feedback_status_history event LEFT JOIN users account ON account.id=event.actor_id WHERE event.ticket_id=$1 ORDER BY event.created_at,event.id`, id)
+	if err != nil {
+		return AdminFeedbackDetail{}, err
+	}
+	defer history.Close()
+	for history.Next() {
+		var event FeedbackStatusEvent
+		if err := history.Scan(&event.ID, &event.ActorID, &event.Actor, &event.FromStatus, &event.ToStatus, &event.CreatedAt); err != nil {
+			return AdminFeedbackDetail{}, err
+		}
+		detail.StatusHistory = append(detail.StatusHistory, event)
+	}
+	return detail, history.Err()
+}
+
+func (s *Store) AddFeedbackInternalNote(ctx context.Context, id, authorID, message string) (FeedbackInternalNote, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return FeedbackInternalNote{}, ErrFeedbackNotFound
+	}
+	message = strings.TrimSpace(message)
+	if message == "" || len([]rune(message)) > 10000 {
+		return FeedbackInternalNote{}, fmt.Errorf("internal note is empty or too long")
+	}
+	note := FeedbackInternalNote{ID: uuid.NewString(), AuthorID: authorID, Message: message}
+	err := s.db.QueryRowContext(ctx, `INSERT INTO feedback_internal_notes(id,ticket_id,author_id,message) SELECT $1,ticket.id,NULLIF($3,'')::uuid,$4 FROM feedback_tickets ticket WHERE ticket.id=$2 RETURNING created_at`, note.ID, id, authorID, message).Scan(&note.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return FeedbackInternalNote{}, ErrFeedbackNotFound
+	}
+	if err != nil {
+		return FeedbackInternalNote{}, err
+	}
+	return note, nil
 }
 
 func (s *Store) ReplyFeedback(ctx context.Context, id, authorID, message string, closeTicket bool) (FeedbackTicket, error) {

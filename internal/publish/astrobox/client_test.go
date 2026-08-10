@@ -29,3 +29,12 @@ func TestSyncForkRejectsStaleFork(t *testing.T) {
 		t.Fatal("stale fork was accepted")
 	}
 }
+
+func TestNormalizePaidTypeForAstroBox(t *testing.T) {
+	tests := map[string]string{"free": "", " FREE ": "", "paid": "paid", "force_paid": "force_paid"}
+	for input, want := range tests {
+		if got := normalizePaid(input); got != want {
+			t.Errorf("normalizePaid(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

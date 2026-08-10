@@ -138,15 +138,15 @@ func TestPluginModerationLifecycle(t *testing.T) {
 	}
 
 	upload()
-	if got := pluginState().State; got != "pending" {
-		t.Fatalf("update upload must return to pending, got %s", got)
+	if got := pluginState(); got.State != "listed" || got.PendingVersionID == "" {
+		t.Fatalf("update must keep current version listed and expose pending version, got %+v", got)
 	}
-	if got := publicCount(); got != 0 {
-		t.Fatalf("plugin under re-review stayed public: %d entries", got)
+	if got := publicCount(); got != 1 {
+		t.Fatalf("approved current version disappeared during update review: %d entries", got)
 	}
 
 	setState("rejected", "contains malware")
-	if plugin := pluginState(); plugin.State != "rejected" || plugin.ModerationReason != "contains malware" {
+	if plugin := pluginState(); plugin.State != "listed" || plugin.PendingVersionID != "" || plugin.ModerationReason != "contains malware" {
 		t.Fatalf("rejection not recorded: %+v", plugin)
 	}
 	if title, body := lastMessage(); title != "插件审核未通过" || !strings.Contains(body, "contains malware") {

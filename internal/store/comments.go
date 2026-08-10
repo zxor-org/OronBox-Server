@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,6 +216,90 @@ type AdminCommentItem struct {
 	ModerationReason string
 	ModerationModel  string
 	HumanReviewed    bool
+}
+
+type AdminCommentQuery struct {
+	Search, State, Resource, User, Sort string
+	Page, PerPage                       int
+}
+
+type AdminCommentPage struct {
+	Items                            []AdminCommentItem
+	Total, Page, PerPage, TotalPages int
+	Query                            AdminCommentQuery
+}
+
+func (q AdminCommentQuery) normalized() AdminCommentQuery {
+	q.Search, q.State = strings.TrimSpace(q.Search), strings.ToLower(strings.TrimSpace(q.State))
+	q.Resource, q.User = strings.TrimSpace(q.Resource), strings.TrimSpace(q.User)
+	if q.State != "visible" && q.State != "hidden" && q.State != "deleted" && q.State != "review" {
+		q.State = ""
+	}
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PerPage < 1 {
+		q.PerPage = 25
+	}
+	if q.PerPage > 100 {
+		q.PerPage = 100
+	}
+	switch q.Sort {
+	case "oldest", "username", "state":
+	default:
+		q.Sort = "newest"
+	}
+	return q
+}
+
+func adminCommentOrder(sort string) string {
+	switch sort {
+	case "oldest":
+		return "comment.created_at ASC,comment.id ASC"
+	case "username":
+		return "author.username ASC,comment.created_at DESC"
+	case "state":
+		return "comment.moderation_state ASC,comment.created_at DESC"
+	default:
+		return "comment.created_at DESC,comment.id DESC"
+	}
+}
+
+// AdminComments returns the complete moderation corpus, including deleted and
+// already-reviewed comments. State=review narrows to the pending AI queue.
+func (s *Store) AdminComments(ctx context.Context, raw AdminCommentQuery) (AdminCommentPage, error) {
+	q := raw.normalized()
+	const filter = `($1='' OR concat_ws(' ',comment.body,author.username,comment.id::text,comment.resource_id::text,comment.user_id::text) ILIKE '%'||$1||'%')
+AND ($2='' OR ($2='deleted' AND comment.deleted_at IS NOT NULL) OR ($2 IN ('visible','hidden') AND comment.deleted_at IS NULL AND comment.moderation_state=$2) OR ($2='review' AND moderation.action='review' AND moderation.human_reviewed_at IS NULL))
+AND ($3='' OR comment.resource_id::text=$3) AND ($4='' OR comment.user_id::text=$4 OR author.username ILIKE '%'||$4||'%')`
+	page := AdminCommentPage{Items: []AdminCommentItem{}, Page: q.Page, PerPage: q.PerPage, Query: q}
+	base := ` FROM resource_comments comment JOIN users author ON author.id=comment.user_id LEFT JOIN comment_moderation moderation ON moderation.comment_id=comment.id WHERE ` + filter
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*)`+base, q.Search, q.State, q.Resource, q.User).Scan(&page.Total); err != nil {
+		return AdminCommentPage{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT comment.id::text,comment.resource_id::text,comment.user_id::text,COALESCE(comment.parent_id::text,''),comment.body,comment.moderation_state,comment.deleted_at IS NOT NULL,author.username,author.avatar_url,author.bandbbs_user_id,comment.created_at,comment.edited_at,COALESCE(moderation.action,''),COALESCE(moderation.reason,''),COALESCE(moderation.model,''),moderation.human_reviewed_at IS NOT NULL%s ORDER BY %s LIMIT $5 OFFSET $6`, base, adminCommentOrder(q.Sort)), q.Search, q.State, q.Resource, q.User, q.PerPage, (q.Page-1)*q.PerPage)
+	if err != nil {
+		return AdminCommentPage{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item AdminCommentItem
+		var edited sql.NullTime
+		if err := rows.Scan(&item.ID, &item.ResourceID, &item.UserID, &item.ParentID, &item.Body, &item.ModerationState, &item.Deleted, &item.Username, &item.AvatarURL, &item.BandBBSUserID, &item.CreatedAt, &edited, &item.ModerationAction, &item.ModerationReason, &item.ModerationModel, &item.HumanReviewed); err != nil {
+			return AdminCommentPage{}, err
+		}
+		if edited.Valid {
+			item.EditedAt = &edited.Time
+		}
+		page.Items = append(page.Items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return AdminCommentPage{}, err
+	}
+	if page.Total > 0 {
+		page.TotalPages = (page.Total + page.PerPage - 1) / page.PerPage
+	}
+	return page, nil
 }
 
 func (s *Store) AdminCommentQueue(ctx context.Context, page, perPage int) ([]AdminCommentItem, int, error) {

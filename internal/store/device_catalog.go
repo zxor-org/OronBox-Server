@@ -78,7 +78,7 @@ func seedDevices(ctx context.Context, db contextExecer) error {
 	for _, device := range supportedDeviceCatalog {
 		id := uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://oronbox.org/devices/"+device.codename))
 		if _, err := db.ExecContext(ctx, `INSERT INTO devices(id,codename,display_name,platform,astrobox_id,vendor) VALUES($1,$2,$3,$4,$5,$6)
-ON CONFLICT(codename) DO UPDATE SET display_name=excluded.display_name,platform=excluded.platform,astrobox_id=excluded.astrobox_id,vendor=excluded.vendor`, id, device.codename, device.name, device.platform, device.astroboxID, device.vendor); err != nil {
+ON CONFLICT(codename) DO NOTHING`, id, device.codename, device.name, device.platform, device.astroboxID, device.vendor); err != nil {
 			return err
 		}
 	}

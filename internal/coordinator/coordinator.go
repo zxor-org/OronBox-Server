@@ -255,6 +255,7 @@ SELECT b.sha256,b.local_key,b.media_type,b.size_bytes FROM blobs b JOIN claimed 
 
 type publication struct {
 	ID, RevisionID, ResourceID, OwnerID, OwnerName, Target string
+	LeaseToken                                             string
 	Config                                                 []byte
 	Attempts                                               int
 }
@@ -270,9 +271,13 @@ WITH candidate AS (
 ), claimed AS (
  UPDATE publications p SET state='running',attempts=attempts+1,updated_at=now() FROM candidate c WHERE p.id=c.id
  RETURNING p.id,p.revision_id,p.target,p.config,p.attempts
+), recorded AS (
+ INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail)
+ SELECT id,attempts,'execute','execution_started','pending','running',jsonb_build_object('target',target) FROM claimed
+ RETURNING publication_id
 )
 SELECT c.id::text,c.revision_id::text,r.id::text,r.owner_id::text,u.username,c.target,c.config,c.attempts
-FROM claimed c JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).
+FROM claimed c JOIN recorded history ON history.publication_id=c.id JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).
 		Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts)
 	if err != nil {
 		return err
@@ -302,13 +307,37 @@ FROM claimed c JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources 
 		state = "failed"
 	}
 	delay := time.Duration(math.Min(3600, math.Pow(2, float64(item.Attempts))*15)) * time.Second
-	_, updateErr := c.db.ExecContext(ctx, `UPDATE publications SET state=$2,error_message=$3,next_attempt_at=$4,updated_at=now() WHERE id=$1`, item.ID, state, compactError(err), time.Now().UTC().Add(delay))
+	updateErr := c.failPublicationAttempt(ctx, item, state, err, delay)
 	if state == "failed" {
 		c.log.Error("publication failed permanently", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "attempts", item.Attempts, "error", err)
 	} else {
 		c.log.Warn("publication attempt failed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "attempt", item.Attempts, "retry_in", delay, "error", err)
 	}
 	return updateErr
+}
+
+func (c *Coordinator) failPublicationAttempt(ctx context.Context, item publication, state string, publishErr error, delay time.Duration) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	message := compactError(publishErr)
+	result, err := tx.ExecContext(ctx, `UPDATE publications SET state=$2,error_message=$3,next_attempt_at=$4,updated_at=now() WHERE id=$1 AND state='running'`, item.ID, state, message, time.Now().UTC().Add(delay))
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("publication %s is no longer running", item.ID)
+	}
+	event := "retry_scheduled"
+	if state == "failed" {
+		event = "execution_failed"
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,error_message,detail) VALUES($1,$2,'execute',$3,'running',$4,$5,jsonb_build_object('retry_delay_seconds',$6::bigint))`, item.ID, item.Attempts, event, state, message, int64(delay/time.Second)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snapshot []byte) error {
@@ -460,7 +489,18 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE publications SET state=$2,external_id=$3,external_url=$4,error_message='',status_detail=$5,updated_at=now() WHERE id=$1`, item.ID, state, externalID, externalURL, raw); err != nil {
+	updateResult, err := tx.ExecContext(ctx, `UPDATE publications SET state=$2,external_id=$3,external_url=$4,error_message='',status_detail=$5,next_attempt_at=CASE WHEN $2='reviewing' THEN now()+interval '20 seconds' ELSE next_attempt_at END,updated_at=now() WHERE id=$1 AND state='running'`, item.ID, state, externalID, externalURL, raw)
+	if err != nil {
+		return err
+	}
+	if err := requirePublicationLease(updateResult, item.ID); err != nil {
+		return fmt.Errorf("finish publication: %w", err)
+	}
+	event := "published"
+	if state == "reviewing" {
+		event = "submitted_for_review"
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'execute',$3,'running',$4,jsonb_build_object('external_id',$5::text,'external_url',$6::text,'status_detail',$7::jsonb))`, item.ID, item.Attempts, event, state, externalID, externalURL, raw); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,meta) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5) ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url,meta=external_bindings.meta||excluded.meta WHERE external_bindings.external_id=excluded.external_id`, item.ResourceID, item.Target, externalID, externalURL, metaRaw)
@@ -476,7 +516,18 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 func (c *Coordinator) pollOne(ctx context.Context) error {
 	var item publication
 	var detail []byte
-	err := c.db.QueryRowContext(ctx, `SELECT p.id::text,p.revision_id::text,r.id::text,r.owner_id::text,u.username,p.target,p.config,p.attempts,p.status_detail FROM publications p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id WHERE p.target='astrobox' AND p.state='reviewing' AND p.updated_at<now()-interval '20 seconds' ORDER BY p.updated_at LIMIT 1`).Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts, &detail)
+	err := c.db.QueryRowContext(ctx, `WITH candidate AS (
+ SELECT p.id FROM publications p WHERE p.target='astrobox' AND p.state='reviewing' AND p.next_attempt_at<=now() AND (p.lease_token IS NULL OR p.lease_expires_at<=now())
+ ORDER BY p.next_attempt_at,p.id LIMIT 1 FOR UPDATE OF p SKIP LOCKED
+), claimed AS (
+ UPDATE publications p SET lease_token=gen_random_uuid(),lease_expires_at=now()+interval '5 minutes',updated_at=now() FROM candidate c WHERE p.id=c.id
+ RETURNING p.id,p.revision_id,p.target,p.config,p.attempts,p.status_detail,p.lease_token
+), recorded AS (
+ INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail)
+ SELECT id,attempts,'poll','poll_started','reviewing','reviewing',jsonb_build_object('lease_seconds',300) FROM claimed RETURNING publication_id
+)
+SELECT p.id::text,p.revision_id::text,r.id::text,r.owner_id::text,u.username,p.target,p.config,p.attempts,p.status_detail,p.lease_token::text
+FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts, &detail, &item.LeaseToken)
 	if err != nil {
 		return err
 	}
@@ -484,30 +535,94 @@ func (c *Coordinator) pollOne(ctx context.Context) error {
 		PullRequestNumber int `json:"pull_request_number"`
 	}
 	if json.Unmarshal(detail, &statusDetail) != nil || statusDetail.PullRequestNumber <= 0 {
-		return fmt.Errorf("publication %s has no pull request number", item.ID)
+		err = fmt.Errorf("publication %s has no pull request number", item.ID)
+		return c.failPublicationPoll(ctx, item, err)
 	}
 	token, err := c.githubToken(ctx, item.OwnerID)
 	if err != nil {
-		return err
+		return c.failPublicationPoll(ctx, item, err)
 	}
 	status, err := c.astro.PullRequest(ctx, token, statusDetail.PullRequestNumber)
 	if err != nil {
+		return c.failPublicationPoll(ctx, item, err)
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 	if status.Merged {
-		_, err = c.db.ExecContext(ctx, `UPDATE publications SET state='published',external_url=$2,error_message='',updated_at=now() WHERE id=$1`, item.ID, status.URL)
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='published',external_url=$2,error_message='',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, status.URL, item.LeaseToken)
+		if err == nil {
+			err = requirePublicationLease(result, item.ID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'poll','published','reviewing','published',jsonb_build_object('external_url',$3::text,'pull_request_state',$4::text))`, item.ID, item.Attempts, status.URL, status.State)
+		}
 		if err == nil {
 			c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", status.URL)
 		}
 	} else if status.State == "closed" {
-		_, err = c.db.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',updated_at=now() WHERE id=$1`, item.ID)
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$2`, item.ID, item.LeaseToken)
+		if err == nil {
+			err = requirePublicationLease(result, item.ID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,error_message,detail) VALUES($1,$2,'poll','external_review_rejected','reviewing','failed','外部审核不通过',jsonb_build_object('external_url',$3::text,'pull_request_state',$4::text))`, item.ID, item.Attempts, status.URL, status.State)
+		}
 		if err == nil {
 			c.log.Warn("publication failed permanently", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", status.URL, "error", "external review rejected")
 		}
 	} else {
-		_, err = c.db.ExecContext(ctx, `UPDATE publications SET updated_at=now() WHERE id=$1`, item.ID)
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET error_message='',next_attempt_at=now()+interval '20 seconds',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$2`, item.ID, item.LeaseToken)
+		if err == nil {
+			err = requirePublicationLease(result, item.ID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'poll','review_pending','reviewing','reviewing',jsonb_build_object('external_url',$3::text,'pull_request_state',$4::text))`, item.ID, item.Attempts, status.URL, status.State)
+		}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (c *Coordinator) failPublicationPoll(ctx context.Context, item publication, pollErr error) error {
+	message := compactError(pollErr)
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE publications SET error_message=$2,next_attempt_at=now()+interval '1 minute',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, message, item.LeaseToken)
+	if err != nil {
+		return err
+	}
+	if err := requirePublicationLease(result, item.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,error_message,detail) VALUES($1,$2,'poll','poll_failed','reviewing','reviewing',$3,jsonb_build_object('retry_delay_seconds',60))`, item.ID, item.Attempts, message); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return pollErr
+}
+
+func requirePublicationLease(result sql.Result, publicationID string) error {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("publication %s polling lease was lost", publicationID)
+	}
+	return nil
 }
 
 func compactError(err error) string {

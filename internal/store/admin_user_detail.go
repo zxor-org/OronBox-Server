@@ -1,0 +1,468 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const (
+	adminUserDetailDefaultPerPage = 25
+	adminUserDetailMaxPerPage     = 100
+)
+
+// AdminUserDetailPageQuery allows every workspace group to paginate
+// independently. A zero value means the first 25 records.
+type AdminUserDetailPageQuery struct {
+	Page    int
+	PerPage int
+}
+
+func (q AdminUserDetailPageQuery) normalized() AdminUserDetailPageQuery {
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PerPage < 1 {
+		q.PerPage = adminUserDetailDefaultPerPage
+	}
+	if q.PerPage > adminUserDetailMaxPerPage {
+		q.PerPage = adminUserDetailMaxPerPage
+	}
+	return q
+}
+
+type AdminUserDetailQuery struct {
+	Resources AdminUserDetailPageQuery
+	Comments  AdminUserDetailPageQuery
+	Tickets   AdminUserDetailPageQuery
+	Messages  AdminUserDetailPageQuery
+	Ledger    AdminUserDetailPageQuery
+	Sessions  AdminUserDetailPageQuery
+	Audit     AdminUserDetailPageQuery
+}
+
+func (q AdminUserDetailQuery) normalized() AdminUserDetailQuery {
+	q.Resources = q.Resources.normalized()
+	q.Comments = q.Comments.normalized()
+	q.Tickets = q.Tickets.normalized()
+	q.Messages = q.Messages.normalized()
+	q.Ledger = q.Ledger.normalized()
+	q.Sessions = q.Sessions.normalized()
+	q.Audit = q.Audit.normalized()
+	return q
+}
+
+type AdminUserDetailPage[T any] struct {
+	Items      []T
+	Total      int
+	Page       int
+	PerPage    int
+	TotalPages int
+}
+
+func newAdminUserDetailPage[T any](q AdminUserDetailPageQuery) AdminUserDetailPage[T] {
+	return AdminUserDetailPage[T]{Items: []T{}, Page: q.Page, PerPage: q.PerPage}
+}
+
+func finishAdminUserDetailPage[T any](page *AdminUserDetailPage[T]) {
+	if page.Total > 0 {
+		page.TotalPages = (page.Total + page.PerPage - 1) / page.PerPage
+	}
+}
+
+type AdminUserResource struct {
+	ID, Slug, Name, Kind, Platform, ModerationState, RevisionState string
+	DownloadCount, RevisionNo                                      int
+	CreatedAt, UpdatedAt                                           time.Time
+}
+
+type AdminUserComment struct {
+	ID, ResourceID, ResourceName, Body, ModerationState string
+	ParentID                                            string
+	CreatedAt                                           time.Time
+	EditedAt, DeletedAt                                 *time.Time
+}
+
+type AdminUserTicket struct {
+	ID, Kind, Subject, Message, TargetSource, TargetID, TargetURL string
+	Status, Resolution                                            string
+	CreatedAt, UpdatedAt                                          time.Time
+	ClosedAt                                                      *time.Time
+}
+
+type AdminUserMessage struct {
+	ID, Kind, Title, Body, Ref string
+	ReadAt                     *time.Time
+	CreatedAt, ExpiresAt       time.Time
+}
+
+type AdminUserCoinLedgerEntry struct {
+	ID, Kind, ReferenceType, ReferenceID, Note, ActorUserID string
+	DeltaUnits                                              int64
+	CreatedAt                                               time.Time
+}
+
+type AdminUserSession struct {
+	ID, AppID, AppVersion, Platform, IP, UserAgent string
+	AccessExpiresAt, RefreshExpiresAt              time.Time
+	CreatedAt, LastSeenAt                          time.Time
+}
+
+type AdminUserAuditEntry struct {
+	ID                                      int64
+	Action, Result, IP, UserAgent, Metadata string
+	CreatedAt                               time.Time
+}
+
+type AdminUserDetail struct {
+	User      AdminUserItem
+	Resources AdminUserDetailPage[AdminUserResource]
+	Comments  AdminUserDetailPage[AdminUserComment]
+	Tickets   AdminUserDetailPage[AdminUserTicket]
+	Messages  AdminUserDetailPage[AdminUserMessage]
+	Coin      CoinAccount
+	Ledger    AdminUserDetailPage[AdminUserCoinLedgerEntry]
+	Sessions  AdminUserDetailPage[AdminUserSession]
+	Audit     AdminUserDetailPage[AdminUserAuditEntry]
+	Query     AdminUserDetailQuery
+}
+
+func (s *Store) AdminUserDetail(ctx context.Context, id string, raw AdminUserDetailQuery) (AdminUserDetail, error) {
+	if _, err := uuid.Parse(strings.TrimSpace(id)); err != nil {
+		return AdminUserDetail{}, ErrAdminUserNotFound
+	}
+	q := raw.normalized()
+	detail := AdminUserDetail{Query: q}
+	var bannedAt, frozenAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,
+ (SELECT count(*) FROM resources WHERE owner_id=u.id),(SELECT count(*) FROM feedback_tickets WHERE user_id=u.id),u.created_at
+ FROM users u WHERE u.id=$1`, id).Scan(&detail.User.ID, &detail.User.BandBBSUserID, &detail.User.Username, &detail.User.AvatarURL,
+		&detail.User.Role, &bannedAt, &detail.User.BanReason, &frozenAt, &detail.User.ResourceCount, &detail.User.TicketCount, &detail.User.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AdminUserDetail{}, ErrAdminUserNotFound
+	}
+	if err != nil {
+		return AdminUserDetail{}, err
+	}
+	if bannedAt.Valid {
+		detail.User.BannedAt = &bannedAt.Time
+	}
+	if frozenAt.Valid {
+		detail.User.CreatorFrozenAt = &frozenAt.Time
+	}
+	if detail.Resources, err = s.adminUserResources(ctx, id, q.Resources); err != nil {
+		return AdminUserDetail{}, err
+	}
+	if detail.Comments, err = s.adminUserComments(ctx, id, q.Comments); err != nil {
+		return AdminUserDetail{}, err
+	}
+	if detail.Tickets, err = s.adminUserTickets(ctx, id, q.Tickets); err != nil {
+		return AdminUserDetail{}, err
+	}
+	if detail.Messages, err = s.adminUserMessages(ctx, id, q.Messages); err != nil {
+		return AdminUserDetail{}, err
+	}
+	var units int64
+	var coinFrozenAt sql.NullTime
+	err = s.db.QueryRowContext(ctx, `SELECT balance_units,voting_frozen_at,voting_frozen_reason FROM user_coin_accounts WHERE user_id=$1`, id).
+		Scan(&units, &coinFrozenAt, &detail.Coin.VotingFrozenReason)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return AdminUserDetail{}, err
+	}
+	detail.Coin = coinAccount(units, coinFrozenAt, detail.Coin.VotingFrozenReason)
+	if detail.Ledger, err = s.adminUserLedger(ctx, id, q.Ledger); err != nil {
+		return AdminUserDetail{}, err
+	}
+	if detail.Sessions, err = s.adminUserSessions(ctx, id, q.Sessions); err != nil {
+		return AdminUserDetail{}, err
+	}
+	if detail.Audit, err = s.adminUserAudit(ctx, id, q.Audit); err != nil {
+		return AdminUserDetail{}, err
+	}
+	return detail, nil
+}
+
+func pageOffset(q AdminUserDetailPageQuery) int { return (q.Page - 1) * q.PerPage }
+
+func (s *Store) adminUserResources(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserResource], error) {
+	p := newAdminUserDetailPage[AdminUserResource](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resources WHERE owner_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,COALESCE(NULLIF(rr.name,''),r.draft_name),r.kind,r.platform,r.moderation_state,COALESCE(rr.state,''),COALESCE(rr.revision_no,0),r.download_count,r.created_at,r.updated_at FROM resources r LEFT JOIN resource_revisions rr ON rr.id=r.current_revision_id WHERE r.owner_id=$1 ORDER BY r.updated_at DESC,r.id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserResource
+		if err := rows.Scan(&v.ID, &v.Slug, &v.Name, &v.Kind, &v.Platform, &v.ModerationState, &v.RevisionState, &v.RevisionNo, &v.DownloadCount, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return p, err
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserComments(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserComment], error) {
+	p := newAdminUserDetailPage[AdminUserComment](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resource_comments WHERE user_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id::text,c.resource_id::text,COALESCE(rr.name,r.draft_name),COALESCE(c.parent_id::text,''),c.body,c.moderation_state,c.created_at,c.edited_at,c.deleted_at FROM resource_comments c JOIN resources r ON r.id=c.resource_id LEFT JOIN resource_revisions rr ON rr.id=r.current_revision_id WHERE c.user_id=$1 ORDER BY c.created_at DESC,c.id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserComment
+		var edited, deleted sql.NullTime
+		if err := rows.Scan(&v.ID, &v.ResourceID, &v.ResourceName, &v.ParentID, &v.Body, &v.ModerationState, &v.CreatedAt, &edited, &deleted); err != nil {
+			return p, err
+		}
+		if edited.Valid {
+			v.EditedAt = &edited.Time
+		}
+		if deleted.Valid {
+			v.DeletedAt = &deleted.Time
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserTickets(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserTicket], error) {
+	p := newAdminUserDetailPage[AdminUserTicket](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM feedback_tickets WHERE user_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,kind,subject,message,target_source,target_id,target_url,status,resolution,created_at,updated_at,closed_at FROM feedback_tickets WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserTicket
+		var closed sql.NullTime
+		if err := rows.Scan(&v.ID, &v.Kind, &v.Subject, &v.Message, &v.TargetSource, &v.TargetID, &v.TargetURL, &v.Status, &v.Resolution, &v.CreatedAt, &v.UpdatedAt, &closed); err != nil {
+			return p, err
+		}
+		if closed.Valid {
+			v.ClosedAt = &closed.Time
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserMessages(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserMessage], error) {
+	p := newAdminUserDetailPage[AdminUserMessage](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,kind,title,body,ref,read_at,created_at,expires_at FROM user_messages WHERE user_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserMessage
+		var read sql.NullTime
+		if err := rows.Scan(&v.ID, &v.Kind, &v.Title, &v.Body, &v.Ref, &read, &v.CreatedAt, &v.ExpiresAt); err != nil {
+			return p, err
+		}
+		if read.Valid {
+			v.ReadAt = &read.Time
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserLedger(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserCoinLedgerEntry], error) {
+	p := newAdminUserDetailPage[AdminUserCoinLedgerEntry](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM coin_ledger WHERE user_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,delta_units,kind,reference_type,reference_id,note,COALESCE(actor_id::text,''),created_at FROM coin_ledger WHERE user_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserCoinLedgerEntry
+		if err := rows.Scan(&v.ID, &v.DeltaUnits, &v.Kind, &v.ReferenceType, &v.ReferenceID, &v.Note, &v.ActorUserID, &v.CreatedAt); err != nil {
+			return p, err
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserSessions(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserSession], error) {
+	p := newAdminUserDetailPage[AdminUserSession](q)
+	const active = `user_id=$1 AND revoked_at IS NULL AND refresh_expires_at>now()`
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sessions WHERE `+active, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,app_id,app_version,platform,COALESCE(ip::text,''),user_agent,access_expires_at,refresh_expires_at,created_at,last_seen_at FROM sessions WHERE `+active+` ORDER BY last_seen_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserSession
+		if err := rows.Scan(&v.ID, &v.AppID, &v.AppVersion, &v.Platform, &v.IP, &v.UserAgent, &v.AccessExpiresAt, &v.RefreshExpiresAt, &v.CreatedAt, &v.LastSeenAt); err != nil {
+			return p, err
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+func (s *Store) adminUserAudit(ctx context.Context, id string, q AdminUserDetailPageQuery) (AdminUserDetailPage[AdminUserAuditEntry], error) {
+	p := newAdminUserDetailPage[AdminUserAuditEntry](q)
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE actor_user_id=$1`, id).Scan(&p.Total); err != nil {
+		return p, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,action,result,COALESCE(ip::text,''),user_agent,metadata::text,created_at FROM audit_logs WHERE actor_user_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	if err != nil {
+		return p, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v AdminUserAuditEntry
+		if err := rows.Scan(&v.ID, &v.Action, &v.Result, &v.IP, &v.UserAgent, &v.Metadata, &v.CreatedAt); err != nil {
+			return p, err
+		}
+		p.Items = append(p.Items, v)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	finishAdminUserDetailPage(&p)
+	return p, nil
+}
+
+// AdminRevokeUserSession revokes one active client session owned by the user.
+// Passing identifiers in the wrong user/session pairing is intentionally
+// reported as not found so callers cannot mutate another user's session.
+func (s *Store) AdminRevokeUserSession(ctx context.Context, userID, sessionID string) error {
+	if _, err := uuid.Parse(userID); err != nil {
+		return ErrAdminUserNotFound
+	}
+	if _, err := uuid.Parse(sessionID); err != nil {
+		return ErrAdminUserSessionNotFound
+	}
+	return s.adminRevokeUserSessions(ctx, userID, sessionID)
+}
+
+// AdminRevokeAllUserSessions atomically revokes every active client session
+// for an existing user and returns the number changed.
+func (s *Store) AdminRevokeAllUserSessions(ctx context.Context, userID string) (int64, error) {
+	if _, err := uuid.Parse(userID); err != nil {
+		return 0, ErrAdminUserNotFound
+	}
+	return s.adminRevokeAllUserSessions(ctx, userID)
+}
+
+var ErrAdminUserSessionNotFound = errors.New("active user session was not found")
+
+func (s *Store) adminRevokeUserSessions(ctx context.Context, userID, sessionID string) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err = tx.QueryRowContext(ctx, `SELECT true FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrAdminUserNotFound
+	}
+	if err != nil {
+		return err
+	}
+	var lockedID string
+	err = tx.QueryRowContext(ctx, `SELECT id::text FROM sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND refresh_expires_at>now() FOR UPDATE`, sessionID, userID).Scan(&lockedID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAdminUserSessionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrAdminUserSessionNotFound
+	}
+	return tx.Commit()
+}
+
+func (s *Store) adminRevokeAllUserSessions(ctx context.Context, userID string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err = tx.QueryRowContext(ctx, `SELECT true FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrAdminUserNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE user_id=$1 AND revoked_at IS NULL AND refresh_expires_at>now() FOR UPDATE`, userID)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL AND refresh_expires_at>now()`, userID)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}

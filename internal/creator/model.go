@@ -17,6 +17,18 @@ func (kind ResourceKind) Valid() bool {
 	return kind == QuickApp || kind == Watchface
 }
 
+type ResourcePaidType string
+
+const (
+	ResourcePaidFree  ResourcePaidType = "free"
+	ResourcePaid      ResourcePaidType = "paid"
+	ResourceForcePaid ResourcePaidType = "force_paid"
+)
+
+func (paidType ResourcePaidType) Valid() bool {
+	return paidType == ResourcePaidFree || paidType == ResourcePaid || paidType == ResourceForcePaid
+}
+
 type RevisionState string
 
 const (
@@ -83,13 +95,14 @@ type Resource struct {
 }
 
 type Revision struct {
-	ID         string        `json:"id"`
-	ResourceID string        `json:"resource_id"`
-	Number     int           `json:"number"`
-	Name       string        `json:"name"`
-	Summary    string        `json:"summary"`
-	Attributes []string      `json:"attributes,omitempty"`
-	State      RevisionState `json:"state"`
+	ID         string           `json:"id"`
+	ResourceID string           `json:"resource_id"`
+	Number     int              `json:"number"`
+	Name       string           `json:"name"`
+	Summary    string           `json:"summary"`
+	PaidType   ResourcePaidType `json:"paid_type"`
+	Attributes []string         `json:"attributes,omitempty"`
+	State      RevisionState    `json:"state"`
 	// PublicationPlan is the saved publish intent (target+config list); it is
 	// data for the editor, never a dispatchable job.
 	PublicationPlan []PublicationRequest `json:"publication_plan"`
@@ -183,15 +196,20 @@ type Workspace struct {
 }
 
 type CollectionRevision struct {
-	ID           string        `json:"id"`
-	CollectionID string        `json:"collection_id"`
-	Number       int           `json:"number"`
-	Name         string        `json:"name"`
-	Summary      string        `json:"summary"`
-	State        RevisionState `json:"state"`
-	ReviewNote   string        `json:"review_note,omitempty"`
-	CreatedAt    time.Time     `json:"created_at"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	ID                       string        `json:"id"`
+	CollectionID             string        `json:"collection_id"`
+	Number                   int           `json:"number"`
+	Name                     string        `json:"name"`
+	Summary                  string        `json:"summary"`
+	State                    RevisionState `json:"state"`
+	ReviewNote               string        `json:"review_note,omitempty"`
+	Enabled                  bool          `json:"enabled"`
+	RepresentativeResourceID string        `json:"representative_resource_id,omitempty"`
+	ResourceIDs              []string      `json:"resource_ids"`
+	CreatedVia               string        `json:"created_via"`
+	BaseRevisionID           string        `json:"base_revision_id,omitempty"`
+	CreatedAt                time.Time     `json:"created_at"`
+	UpdatedAt                time.Time     `json:"updated_at"`
 }
 
 type Collection struct {
@@ -202,6 +220,7 @@ type Collection struct {
 	Kind                     ResourceKind        `json:"kind"`
 	CurrentRevisionID        string              `json:"current_revision_id,omitempty"`
 	RepresentativeResourceID string              `json:"representative_resource_id,omitempty"`
+	Enabled                  bool                `json:"enabled"`
 	CurrentRevision          *CollectionRevision `json:"current_revision,omitempty"`
 	PendingRevision          *CollectionRevision `json:"pending_revision,omitempty"`
 	ResourceCount            int                 `json:"resource_count"`
@@ -305,28 +324,29 @@ func validAstroBoxConfig(value map[string]any) bool {
 }
 
 type PublicResource struct {
-	CardType           string    `json:"card_type"`
-	ID                 string    `json:"id"`
-	Slug               string    `json:"slug"`
-	Name               string    `json:"name"`
-	Summary            string    `json:"summary"`
-	Owner              string    `json:"owner"`
-	OwnerBandBBSUserID int64     `json:"owner_bandbbs_user_id"`
-	OwnerAvatarURL     string    `json:"owner_avatar_url"`
-	PreviewSHA256      string    `json:"preview_sha256"`
-	IconSHA256         string    `json:"icon_sha256"`
-	CoverSHA256        string    `json:"cover_sha256"`
-	Kind               string    `json:"kind"`
-	Version            string    `json:"version"`
-	Devices            []string  `json:"devices"`
-	Attributes         []string  `json:"attributes,omitempty"`
-	DownloadCount      int       `json:"download_count"`
-	CurationGrade      string    `json:"curation_grade"`
-	CoinCount          int64     `json:"coin_count"`
-	CollectionID       string    `json:"collection_id,omitempty"`
-	CollectionName     string    `json:"collection_name,omitempty"`
-	ResourceCount      int       `json:"resource_count,omitempty"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	CardType           string           `json:"card_type"`
+	ID                 string           `json:"id"`
+	Slug               string           `json:"slug"`
+	Name               string           `json:"name"`
+	Summary            string           `json:"summary"`
+	Owner              string           `json:"owner"`
+	OwnerBandBBSUserID int64            `json:"owner_bandbbs_user_id"`
+	OwnerAvatarURL     string           `json:"owner_avatar_url"`
+	PreviewSHA256      string           `json:"preview_sha256"`
+	IconSHA256         string           `json:"icon_sha256"`
+	CoverSHA256        string           `json:"cover_sha256"`
+	Kind               string           `json:"kind"`
+	PaidType           ResourcePaidType `json:"paid_type"`
+	Version            string           `json:"version"`
+	Devices            []string         `json:"devices"`
+	Attributes         []string         `json:"attributes,omitempty"`
+	DownloadCount      int              `json:"download_count"`
+	CurationGrade      string           `json:"curation_grade"`
+	CoinCount          int64            `json:"coin_count"`
+	CollectionID       string           `json:"collection_id,omitempty"`
+	CollectionName     string           `json:"collection_name,omitempty"`
+	ResourceCount      int              `json:"resource_count,omitempty"`
+	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
 type PublicCollection struct {
@@ -356,12 +376,14 @@ type PublicResourceDetail struct {
 }
 
 type PublicQuery struct {
-	Limit      int
-	Offset     int
-	Search     string
-	Kind       string
-	Sort       string
-	Devices    []string
-	Attributes []string
-	Featured   bool
+	Limit         int
+	Offset        int
+	Search        string
+	Kind          string
+	Sort          string
+	Devices       []string
+	Attributes    []string
+	HidePaid      bool
+	HideForcePaid bool
+	Featured      bool
 }

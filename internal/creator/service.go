@@ -133,7 +133,7 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 	if err != nil {
 		return Workspace{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,resource_id::text,revision_no,name,summary,state,publication_plan,created_at FROM resource_revisions WHERE resource_id=$1 ORDER BY revision_no DESC`, resourceID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,resource_id::text,revision_no,name,summary,paid_type,state,publication_plan,created_at FROM resource_revisions WHERE resource_id=$1 ORDER BY revision_no DESC`, resourceID)
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -141,7 +141,7 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 	for rows.Next() {
 		var revision Revision
 		var plan []byte
-		if err := rows.Scan(&revision.ID, &revision.ResourceID, &revision.Number, &revision.Name, &revision.Summary, &revision.State, &plan, &revision.CreatedAt); err != nil {
+		if err := rows.Scan(&revision.ID, &revision.ResourceID, &revision.Number, &revision.Name, &revision.Summary, &revision.PaidType, &revision.State, &plan, &revision.CreatedAt); err != nil {
 			return Workspace{}, err
 		}
 		revision.PublicationPlan = []PublicationRequest{}
@@ -461,7 +461,8 @@ func (s *Service) Review(ctx context.Context, revisionID, reviewerID string, app
 	}
 	var resourceID string
 	var revisionNo int
-	if err = tx.QueryRowContext(ctx, `UPDATE resource_revisions SET state=$2 WHERE id=$1 RETURNING resource_id::text,revision_no`, revisionID, revisionState).Scan(&resourceID, &revisionNo); err != nil {
+	var createdVia string
+	if err = tx.QueryRowContext(ctx, `UPDATE resource_revisions SET state=$2 WHERE id=$1 RETURNING resource_id::text,revision_no,created_via`, revisionID, revisionState).Scan(&resourceID, &revisionNo, &createdVia); err != nil {
 		return err
 	}
 	var restoredByReview bool
@@ -490,6 +491,20 @@ WHERE approved.id=$1
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE resources r SET current_revision_id=$1,updated_at=now() FROM resource_revisions rr WHERE rr.id=$1 AND r.id=rr.resource_id`, revisionID); err != nil {
 			return err
+		}
+		if createdVia == "admin" {
+			if _, err = tx.ExecContext(ctx, `INSERT INTO resource_sources(resource_id,author_name,source_url,license_name,authorization_note) SELECT resource_id,COALESCE(governance_source->>'author_name',''),COALESCE(governance_source->>'source_url',''),COALESCE(governance_source->>'license_name',''),COALESCE(governance_source->>'authorization_note','') FROM resource_revisions WHERE id=$1 ON CONFLICT(resource_id) DO UPDATE SET author_name=excluded.author_name,source_url=excluded.source_url,license_name=excluded.license_name,authorization_note=excluded.authorization_note,updated_at=now()`, revisionID); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE resources resource SET collection_id=revision.governance_collection_id,collection_position=revision.governance_collection_position FROM resource_revisions revision WHERE revision.id=$1 AND resource.id=revision.resource_id`, revisionID); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `DELETE FROM resource_collaborators WHERE resource_id=$1`, resourceID); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO resource_collaborators(resource_id,user_id,invited_by,accepted_at) SELECT revision.resource_id,collaborator.user_id,COALESCE(NULLIF($2,'')::uuid,resource.owner_id),now() FROM resource_revision_collaborators collaborator JOIN resource_revisions revision ON revision.id=collaborator.revision_id JOIN resources resource ON resource.id=revision.resource_id WHERE collaborator.revision_id=$1`, revisionID, reviewerID); err != nil {
+				return err
+			}
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE publications SET state=CASE WHEN target='oronbox' THEN 'published' ELSE 'pending' END,updated_at=now() WHERE revision_id=$1`, revisionID); err != nil {
 			return err
@@ -551,7 +566,7 @@ func (s *Service) ReviewQueue(ctx context.Context) ([]Workspace, error) {
 }
 
 func (s *Service) Devices(ctx context.Context) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,codename,display_name,platform,astrobox_id,vendor FROM devices WHERE platform='vela_os' AND codename NOT IN ('m66','n69') ORDER BY vendor,display_name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text,codename,display_name,platform,astrobox_id,vendor FROM devices WHERE enabled AND platform='vela_os' AND codename NOT IN ('m66','n69') ORDER BY vendor,display_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -579,7 +594,7 @@ JOIN resource_coin_votes vote ON vote.resource_id::text=ledger.reference_id AND 
 WHERE ledger.kind='resource_vote' AND ledger.reference_type='resource' AND ledger.created_at >= now() - interval '14 days'
 GROUP BY ledger.reference_id
 ), cards AS (
-SELECT 'resource'::text card_type,r.id::text id,r.slug,rr.name,rr.summary,u.username owner,u.bandbbs_user_id,u.avatar_url,r.kind,
+SELECT 'resource'::text card_type,r.id::text id,r.slug,rr.name,rr.summary,u.username owner,u.bandbbs_user_id,u.avatar_url,r.kind,rr.paid_type,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 1),'') preview,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),'') icon,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),'') cover,
@@ -598,9 +613,9 @@ LEFT JOIN recent_resource_coins recent ON recent.resource_id=r.id::text
 WHERE r.moderation_state='visible' AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2)
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM revision_artifacts a JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE a.revision_id=rr.id AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resource_revision_attributes attribute WHERE attribute.revision_id=rr.id AND attribute.attribute=ANY($4::text[])))
-AND ($1<>'' OR r.collection_id IS NULL OR NOT EXISTS(SELECT 1 FROM resource_collections c WHERE c.id=r.collection_id AND c.current_revision_id IS NOT NULL))
+AND ($1<>'' OR r.collection_id IS NULL OR NOT EXISTS(SELECT 1 FROM resource_collections c WHERE c.id=r.collection_id AND c.current_revision_id IS NOT NULL AND c.enabled))
 UNION ALL
-SELECT 'collection',c.id::text,c.slug,cr.name,cr.summary,u.username,u.bandbbs_user_id,u.avatar_url,c.kind,
+SELECT 'collection',c.id::text,c.slug,cr.name,cr.summary,u.username,u.bandbbs_user_id,u.avatar_url,c.kind,'free'::text,
 COALESCE((SELECT m.blob_sha256 FROM resources representative JOIN revision_media m ON m.revision_id=representative.current_revision_id AND m.role='preview' WHERE representative.id=c.representative_resource_id ORDER BY m.position LIMIT 1),''),
 COALESCE((SELECT m.blob_sha256 FROM resources representative JOIN revision_media m ON m.revision_id=representative.current_revision_id AND m.role='icon' WHERE representative.id=c.representative_resource_id ORDER BY m.position LIMIT 1),''),
 COALESCE((SELECT m.blob_sha256 FROM resources representative JOIN revision_media m ON m.revision_id=representative.current_revision_id AND m.role='cover' WHERE representative.id=c.representative_resource_id ORDER BY m.position LIMIT 1),''),
@@ -617,7 +632,7 @@ CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AN
 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0) +
 (abs(hashtextextended(c.id::text,floor(extract(epoch FROM now())/86400)::bigint)) % 100)::numeric / 100) recommendation_score
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
-WHERE ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
+WHERE c.enabled AND ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
 AND EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN revision_artifacts a ON a.revision_id=child.current_revision_id JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN resource_revision_attributes attribute ON attribute.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND attribute.attribute=ANY($4::text[])))
@@ -646,10 +661,10 @@ func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]Pub
 	}
 	cards := publicCardsSQL
 	var total int
-	if err := s.db.QueryRowContext(ctx, cards+`SELECT count(*) FROM cards WHERE ($5=false OR curation_grade='featured')`, query.Search, query.Kind, query.Devices, query.Attributes, query.Featured).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, cards+`SELECT count(*) FROM cards WHERE ($5=false OR paid_type='free') AND ($6=false OR paid_type<>'force_paid') AND ($7=false OR curation_grade='featured')`, query.Search, query.Kind, query.Devices, query.Attributes, query.HidePaid, query.HideForcePaid, query.Featured).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, cards+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,updated_at FROM cards WHERE ($7=false OR curation_grade='featured') ORDER BY `+order+` LIMIT $5 OFFSET $6`, query.Search, query.Kind, query.Devices, query.Attributes, query.Limit, query.Offset, query.Featured)
+	rows, err := s.db.QueryContext(ctx, cards+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,paid_type,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,updated_at FROM cards WHERE ($5=false OR paid_type='free') AND ($6=false OR paid_type<>'force_paid') AND ($7=false OR curation_grade='featured') ORDER BY `+order+` LIMIT $8 OFFSET $9`, query.Search, query.Kind, query.Devices, query.Attributes, query.HidePaid, query.HideForcePaid, query.Featured, query.Limit, query.Offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -658,7 +673,7 @@ func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]Pub
 	for rows.Next() {
 		var item PublicResource
 		var devices, attributes []byte
-		if err := rows.Scan(&item.CardType, &item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.Kind, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &attributes, &item.DownloadCount, &item.CurationGrade, &item.CoinCount, &item.CollectionID, &item.CollectionName, &item.ResourceCount, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.CardType, &item.ID, &item.Slug, &item.Name, &item.Summary, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.Kind, &item.PaidType, &item.PreviewSHA256, &item.IconSHA256, &item.CoverSHA256, &item.Version, &devices, &attributes, &item.DownloadCount, &item.CurationGrade, &item.CoinCount, &item.CollectionID, &item.CollectionName, &item.ResourceCount, &item.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		_ = json.Unmarshal(devices, &item.Devices)
@@ -671,15 +686,16 @@ func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]Pub
 // HomeResourceCard is the compact resource payload rendered on the home
 // feed, with up to three preview images for the wide card layout.
 type HomeResourceCard struct {
-	ID          string   `json:"id"`
-	Slug        string   `json:"slug"`
-	Name        string   `json:"name"`
-	Summary     string   `json:"summary"`
-	Kind        string   `json:"kind"`
-	Owner       string   `json:"owner"`
-	IconSHA256  string   `json:"icon_sha256"`
-	CoverSHA256 string   `json:"cover_sha256"`
-	Previews    []string `json:"previews"`
+	ID          string           `json:"id"`
+	Slug        string           `json:"slug"`
+	Name        string           `json:"name"`
+	Summary     string           `json:"summary"`
+	Kind        string           `json:"kind"`
+	PaidType    ResourcePaidType `json:"paid_type"`
+	Owner       string           `json:"owner"`
+	IconSHA256  string           `json:"icon_sha256"`
+	CoverSHA256 string           `json:"cover_sha256"`
+	Previews    []string         `json:"previews"`
 }
 
 // HomeResources returns visible resource cards for the given IDs, preserving
@@ -688,7 +704,7 @@ func (s *Service) HomeResources(ctx context.Context, ids []string) ([]HomeResour
 	if len(ids) == 0 {
 		return []HomeResourceCard{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,r.kind,u.username,
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,r.kind,rr.paid_type,u.username,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT jsonb_agg(blob_sha256 ORDER BY position) FROM (SELECT blob_sha256,position FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 3) p),'[]')
@@ -703,7 +719,7 @@ ORDER BY array_position($1::uuid[],r.id)`, ids)
 	for rows.Next() {
 		var item HomeResourceCard
 		var previews []byte
-		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.IconSHA256, &item.CoverSHA256, &previews); err != nil {
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.PaidType, &item.Owner, &item.IconSHA256, &item.CoverSHA256, &previews); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(previews, &item.Previews)
@@ -716,7 +732,7 @@ func (s *Service) PublicResource(ctx context.Context, resourceID string) (Public
 	var summary PublicResource
 	var devices []byte
 	var revisionID string
-	err := s.db.QueryRowContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,u.bandbbs_user_id,u.avatar_url,r.kind,
+	err := s.db.QueryRowContext(ctx, `SELECT r.id::text,r.slug,rr.name,rr.summary,u.username,u.bandbbs_user_id,u.avatar_url,r.kind,rr.paid_type,
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='preview' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='icon' ORDER BY position LIMIT 1),''),
 COALESCE((SELECT blob_sha256 FROM revision_media WHERE revision_id=rr.id AND role='cover' ORDER BY position LIMIT 1),''),
@@ -725,7 +741,7 @@ COALESCE((SELECT jsonb_agg(DISTINCT d.codename) FROM revision_artifacts a JOIN r
 COALESCE((SELECT sum(v.coins) FROM resource_coin_votes v WHERE v.resource_id=r.id AND v.invalidated_at IS NULL),0),COALESCE(r.collection_id::text,''),
 COALESCE((SELECT revision.name FROM resource_collections collection JOIN resource_collection_revisions revision ON revision.id=collection.current_revision_id WHERE collection.id=r.collection_id),''),r.updated_at,rr.id::text
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id WHERE r.id=$1 AND r.moderation_state='visible'`, resourceID).
-		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.OwnerBandBBSUserID, &summary.OwnerAvatarURL, &summary.Kind, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.DownloadCount, &summary.CurationGrade, &summary.CoinCount, &summary.CollectionID, &summary.CollectionName, &summary.UpdatedAt, &revisionID)
+		Scan(&summary.ID, &summary.Slug, &summary.Name, &summary.Summary, &summary.Owner, &summary.OwnerBandBBSUserID, &summary.OwnerAvatarURL, &summary.Kind, &summary.PaidType, &summary.PreviewSHA256, &summary.IconSHA256, &summary.CoverSHA256, &summary.Version, &devices, &summary.DownloadCount, &summary.CurationGrade, &summary.CoinCount, &summary.CollectionID, &summary.CollectionName, &summary.UpdatedAt, &revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublicResourceDetail{}, ErrNotFound
 	}

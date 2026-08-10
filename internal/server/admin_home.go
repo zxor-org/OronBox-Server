@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/zxor-org/OronBox-Server/internal/store"
+	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 // Bounds match the CHECK constraints on blog_posts.slug and home_sections.id.
@@ -89,14 +90,15 @@ func (a *App) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Page: 1, PerPage: 100, Sort: "updated_desc"})
+	selectorPage, selectorSize := positiveInt(r.URL.Query().Get("selector_page"), 1), positiveInt(r.URL.Query().Get("selector_per_page"), 25)
+	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Search: r.URL.Query().Get("selector_q"), Page: selectorPage, PerPage: selectorSize, Sort: "updated_desc"})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	a.render(w, "admin_home", map[string]any{
 		"Title": "首页编排", "Banners": banners, "Sections": sections, "Cards": cards,
-		"Posts": posts, "Resources": resources.Items,
+		"Posts": posts, "Resources": resources.Items, "SelectorQ": r.URL.Query().Get("selector_q"), "SelectorPager": map[string]any{"Pager": web.NewNamedPagination("/admin/home", r.URL.Query(), resources.Page, resources.PerPage, resources.Total, "selector_page", "selector_per_page"), "PageSizes": []int{25, 50, 100}},
 		"Action": r.URL.Query().Get("action"),
 	})
 }
@@ -200,10 +202,14 @@ func (a *App) handleAdminBannerMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
-	if err := a.store.MoveHomeBanner(r.Context(), r.PathValue("banner"), delta); err != nil {
+	actor := currentAdmin(r)
+	id := r.PathValue("banner")
+	if err := a.store.MoveHomeBanner(r.Context(), id, delta); err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "home.banner.move", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = a.store.RecordAudit(r.Context(), actor, "home.banner.move", "success", a.clientIP(r), r.UserAgent(), "banner="+id+" delta="+strconv.Itoa(delta))
 	http.Redirect(w, r, "/admin/home?action=banner", http.StatusFound)
 }
 
@@ -282,10 +288,14 @@ func (a *App) handleAdminSectionMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
-	if err := a.store.MoveHomeSection(r.Context(), r.PathValue("section"), delta); err != nil {
+	actor := currentAdmin(r)
+	id := r.PathValue("section")
+	if err := a.store.MoveHomeSection(r.Context(), id, delta); err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "home.section.move", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = a.store.RecordAudit(r.Context(), actor, "home.section.move", "success", a.clientIP(r), r.UserAgent(), "section="+id+" delta="+strconv.Itoa(delta))
 	http.Redirect(w, r, "/admin/home?action=section", http.StatusFound)
 }
 
@@ -351,20 +361,25 @@ func (a *App) handleAdminCardMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
-	if err := a.store.MoveHomeSectionCard(r.Context(), r.PathValue("card"), r.FormValue("section_id"), delta); err != nil {
+	actor := currentAdmin(r)
+	id := r.PathValue("card")
+	section := r.FormValue("section_id")
+	if err := a.store.MoveHomeSectionCard(r.Context(), id, section, delta); err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "home.card.move", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = a.store.RecordAudit(r.Context(), actor, "home.card.move", "success", a.clientIP(r), r.UserAgent(), "card="+id+" section="+section+" delta="+strconv.Itoa(delta))
 	http.Redirect(w, r, "/admin/home?action=card", http.StatusFound)
 }
 
 func (a *App) handleAdminBlogList(w http.ResponseWriter, r *http.Request) {
-	posts, err := a.store.ListBlogPosts(r.Context())
+	page, err := a.store.AdminBlogPosts(r.Context(), store.AdminBlogQuery{Search: r.URL.Query().Get("q"), Published: r.URL.Query().Get("published"), Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": posts, "Action": r.URL.Query().Get("action")})
+	a.render(w, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/blog", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
@@ -467,7 +482,12 @@ func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if published != post.Published {
-		if err := a.store.SetBlogPostPublished(r.Context(), slug, published); err != nil {
+		action := "publish"
+		if !published {
+			action = "withdraw"
+		}
+		if _, err := a.store.AdminSetBlogPostState(r.Context(), slug, action); err != nil {
+			_ = a.store.RecordAudit(r.Context(), actor, "blog."+action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -93,6 +93,7 @@ func (a *App) handleListResources(w http.ResponseWriter, r *http.Request) {
 	resources, total, err := a.creator.PublicResources(r.Context(), creator.PublicQuery{
 		Limit: limit, Offset: offset, Search: strings.TrimSpace(r.URL.Query().Get("query")),
 		Kind: strings.TrimSpace(r.URL.Query().Get("type")), Sort: r.URL.Query().Get("sort"), Devices: devices, Attributes: attributes,
+		HidePaid: r.URL.Query().Get("hide_paid") == "1", HideForcePaid: r.URL.Query().Get("hide_force_paid") == "1",
 		Featured: r.URL.Query().Get("featured") == "1",
 	})
 	if err != nil {

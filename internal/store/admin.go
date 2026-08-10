@@ -26,6 +26,24 @@ type AuditLog struct {
 	IP          string
 	UserAgent   string
 	Message     string
+	Before      map[string]any
+	After       map[string]any
+	Target      AuditTarget
+	Metadata    map[string]any
+}
+
+type AuditTarget struct {
+	Type  string `json:"type,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Label string `json:"label,omitempty"`
+}
+
+type AuditData struct {
+	Message  string
+	Before   map[string]any
+	After    map[string]any
+	Target   AuditTarget
+	Metadata map[string]any
 }
 
 type ClientStats struct {
@@ -65,13 +83,44 @@ func (s *Store) DeleteAdminSession(ctx context.Context, id string) error {
 }
 
 func (s *Store) RecordAudit(ctx context.Context, actor AdminSession, action, result, ip, ua, message string) error {
-	metadata, err := json.Marshal(map[string]string{"username": actor.Username, "message": message})
+	data := inferLegacyAuditData(action, message)
+	data.Message = message
+	return s.RecordAuditData(ctx, actor, action, result, ip, ua, data)
+}
+
+func (s *Store) RecordAuditData(ctx context.Context, actor AdminSession, action, result, ip, ua string, data AuditData) error {
+	metadata := make(map[string]any, len(data.Metadata)+2)
+	for key, value := range data.Metadata {
+		metadata[key] = value
+	}
+	metadata["username"] = actor.Username
+	metadata["message"] = data.Message
+	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_user_id,action,result,ip,user_agent,metadata)
-VALUES(NULLIF($1,'')::uuid,$2,$3,NULLIF($4,'')::inet,$5,$6)`, actor.UserID, action, result, ip, ua, metadata)
+	beforeJSON, err := nullableAuditJSON(data.Before)
+	if err != nil {
+		return err
+	}
+	afterJSON, err := nullableAuditJSON(data.After)
+	if err != nil {
+		return err
+	}
+	targetJSON, err := json.Marshal(data.Target)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_user_id,action,result,ip,user_agent,metadata,before_data,after_data,target_data)
+VALUES(NULLIF($1,'')::uuid,$2,$3,NULLIF($4,'')::inet,$5,$6,$7,$8,$9)`, actor.UserID, action, result, ip, ua, metadataJSON, beforeJSON, afterJSON, targetJSON)
 	return err
+}
+
+func nullableAuditJSON(value map[string]any) (any, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(value)
 }
 
 func (s *Store) Stats(ctx context.Context, startedAt time.Time) (model.Stats, error) {
@@ -221,25 +270,17 @@ FROM oauth_events GROUP BY app_id, app_version, app_build, platform ORDER BY MAX
 }
 
 func (s *Store) AuditLogs(ctx context.Context, limit int) ([]AuditLog, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT audit.id,audit.created_at,COALESCE(audit.actor_user_id::text,''),
- COALESCE(NULLIF(actor.username,''),audit.metadata->>'username',''),audit.action,audit.result,
- COALESCE(audit.ip::text,''),audit.user_agent,COALESCE(audit.metadata->>'message','')
-FROM audit_logs audit
-LEFT JOIN users actor ON actor.id=audit.actor_user_id
-ORDER BY audit.id DESC LIMIT $1`, limit)
+	rows, err := s.db.QueryContext(ctx, adminAuditSelect+` ORDER BY audit.id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	logs := make([]AuditLog, 0)
 	for rows.Next() {
-		var log AuditLog
-		var createdAt time.Time
-		if err := rows.Scan(&log.ID, &createdAt, &log.ActorUserID, &log.Username, &log.Action, &log.Result, &log.IP, &log.UserAgent, &log.Message); err != nil {
+		log, err := scanAuditLog(rows)
+		if err != nil {
 			return nil, err
 		}
-		log.CreatedAt = formatTime(createdAt)
 		logs = append(logs, log)
 	}
 	return logs, rows.Err()

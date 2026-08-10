@@ -57,12 +57,13 @@ type publishBindingRef struct {
 }
 
 type publishManifest struct {
-	Version    int            `json:"version"`
-	Kind       string         `json:"kind"`
-	Name       string         `json:"name"`
-	Summary    string         `json:"summary"`
-	Attributes []string       `json:"attributes"`
-	Links      []ResourceLink `json:"links"`
+	Version    int              `json:"version"`
+	Kind       string           `json:"kind"`
+	Name       string           `json:"name"`
+	Summary    string           `json:"summary"`
+	PaidType   ResourcePaidType `json:"paid_type"`
+	Attributes []string         `json:"attributes"`
+	Links      []ResourceLink   `json:"links"`
 	Media      struct {
 		Icon     *publishMediaRef  `json:"icon"`
 		Cover    *publishMediaRef  `json:"cover"`
@@ -122,8 +123,13 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	}
 	manifest.Name = strings.TrimSpace(manifest.Name)
 	manifest.Summary = strings.TrimSpace(manifest.Summary)
+	manifest.PaidType = ResourcePaidType(strings.TrimSpace(string(manifest.PaidType)))
+	if manifest.PaidType == "" {
+		// Older clients did not send payment metadata; preserve their behavior.
+		manifest.PaidType = ResourcePaidFree
+	}
 	kind := ResourceKind(strings.TrimSpace(manifest.Kind))
-	if manifest.Version != 1 || !kind.Valid() || (submit && manifest.Name == "") || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
+	if manifest.Version != 1 || !kind.Valid() || !manifest.PaidType.Valid() || (submit && manifest.Name == "") || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
 		return Workspace{}, fmt.Errorf("%w: manifest metadata", ErrInvalid)
 	}
 	seenAttributes := make(map[string]bool, len(manifest.Attributes))
@@ -246,7 +252,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	if submit {
 		revisionState = "submitted"
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,state,publication_plan) VALUES($1,$2,$3,$4,$5,$6,$7)`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, revisionState, plan); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,created_by,created_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'creator')`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, manifest.PaidType, revisionState, plan, ownerID); err != nil {
 		return Workspace{}, err
 	}
 	for attribute := range seenAttributes {

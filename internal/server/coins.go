@@ -27,6 +27,15 @@ func (a *App) handleCoinCheckin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (a *App) handleResourceCoinStatus(w http.ResponseWriter, r *http.Request) {
+	myCoins, err := a.store.UserResourceCoins(r.Context(), currentUser(r).ID, r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("coin_status_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"my_coins": myCoins})
+}
+
 func (a *App) handleResourceCoin(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Coins int `json:"coins"`

@@ -1,10 +1,10 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +27,7 @@ import (
 const adminCookieName = "oronbox_admin"
 
 type adminContextKey struct{}
+type adminRoleContextKey struct{}
 
 func (a *App) handleAdminLoginPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "admin_login", map[string]any{
@@ -45,9 +46,8 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 // administration stays limited to admins.
 func (a *App) requireAdminRole(role string, next http.HandlerFunc) http.HandlerFunc {
 	return a.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		session := currentAdmin(r)
-		user, err := a.store.UserByID(r.Context(), session.UserID)
-		if err != nil || (role == "admin" && user.Role != "admin") {
+		currentRole, _ := r.Context().Value(adminRoleContextKey{}).(string)
+		if role == "admin" && currentRole != "admin" {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -96,12 +96,24 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/login", http.StatusFound)
 			return
 		}
+		user, err := a.store.UserByID(r.Context(), session.UserID)
+		if err != nil || (user.Role != "admin" && user.Role != "reviewer" && !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID)) {
+			observability.From(r.Context()).With("component", "admin").Warn(
+				"admin authorization rejected",
+				"reason", "role_revoked",
+			)
+			a.clearAdminCookie(w, r)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		if isUnsafeMethod(r.Method) && !a.isSameOriginAdminRequest(r) {
 			_ = a.store.RecordAudit(r.Context(), session, "admin_csrf_rejected", "failure", a.clientIP(r), r.UserAgent(), "path="+r.URL.Path)
 			http.Error(w, "cross-origin admin request rejected", http.StatusForbidden)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), adminContextKey{}, session)))
+		ctx := context.WithValue(r.Context(), adminContextKey{}, session)
+		ctx = context.WithValue(ctx, adminRoleContextKey{}, user.Role)
+		next(w, r.WithContext(ctx))
 	}
 }
 
@@ -224,39 +236,113 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAdminEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := a.store.RecentEvents(r.Context(), 200)
+	from, to := adminTimeRange(r.URL.Query())
+	page, err := a.store.AdminOAuthEvents(r.Context(), store.AdminOAuthEventQuery{
+		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Result: r.URL.Query().Get("result"), Platform: r.URL.Query().Get("platform"),
+		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_events", map[string]any{"Title": "OAuth 事件", "Events": events})
+	a.render(w, "admin_events", map[string]any{"Title": "OAuth 事件", "Events": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/events", r.URL.Query(), page.Page, page.PerPage, page.Total)})
+}
+
+func (a *App) handleAdminEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("event"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	detail, err := a.store.AdminOAuthEvent(r.Context(), id)
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_event_detail", map[string]any{"Title": "OAuth 事件详情", "Detail": detail})
 }
 
 func (a *App) handleAdminStates(w http.ResponseWriter, r *http.Request) {
-	states, err := a.store.ActiveStates(r.Context(), 200)
+	from, to := adminTimeRange(r.URL.Query())
+	page, err := a.store.AdminOAuthStates(r.Context(), store.AdminOAuthStateQuery{
+		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Status: r.URL.Query().Get("status"), Platform: r.URL.Query().Get("platform"),
+		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_states", map[string]any{"Title": "OAuth States", "States": states})
+	a.render(w, "admin_states", map[string]any{"Title": "OAuth States", "States": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/states", r.URL.Query(), page.Page, page.PerPage, page.Total)})
+}
+
+func (a *App) handleAdminState(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.AdminOAuthState(r.Context(), r.PathValue("state"))
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_state_detail", map[string]any{"Title": "OAuth State 详情", "Detail": detail})
 }
 
 func (a *App) handleAdminTickets(w http.ResponseWriter, r *http.Request) {
-	tickets, err := a.store.Tickets(r.Context(), 200)
+	from, to := adminTimeRange(r.URL.Query())
+	page, err := a.store.AdminOAuthTickets(r.Context(), store.AdminOAuthTicketQuery{
+		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Status: r.URL.Query().Get("status"), Platform: r.URL.Query().Get("platform"),
+		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_tickets", map[string]any{"Title": "OAuth Tickets", "Tickets": tickets})
+	a.render(w, "admin_tickets", map[string]any{"Title": "OAuth Tickets", "Tickets": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/tickets", r.URL.Query(), page.Page, page.PerPage, page.Total)})
+}
+
+func (a *App) handleAdminTicket(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.AdminOAuthTicket(r.Context(), r.PathValue("ticket"))
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_ticket_detail", map[string]any{"Title": "登录 Ticket 详情", "Detail": detail})
 }
 
 func (a *App) handleAdminClients(w http.ResponseWriter, r *http.Request) {
-	clients, err := a.store.ClientStats(r.Context(), 200)
+	from, to := adminTimeRange(r.URL.Query())
+	page, err := a.store.AdminClientStats(r.Context(), store.AdminClientStatsQuery{
+		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Result: r.URL.Query().Get("result"), Platform: r.URL.Query().Get("platform"),
+		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_clients", map[string]any{"Title": "客户端", "Clients": clients})
+	a.render(w, "admin_clients", map[string]any{"Title": "客户端统计", "Clients": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/clients", r.URL.Query(), page.Page, page.PerPage, page.Total)})
+}
+
+func (a *App) handleAdminClient(w http.ResponseWriter, r *http.Request) {
+	from, to := adminTimeRange(r.URL.Query())
+	detail, err := a.store.AdminClient(r.Context(), r.URL.Query().Get("app"), r.URL.Query().Get("version"), r.URL.Query().Get("build"), r.URL.Query().Get("platform"), store.AdminOAuthEventQuery{Result: r.URL.Query().Get("result"), From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_client_detail", map[string]any{"Title": "客户端详情", "Detail": detail, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/clients/detail", r.URL.Query(), detail.Events.Page, detail.Events.PerPage, detail.Events.Total)})
 }
 
 func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
@@ -350,39 +436,83 @@ func (a *App) handleAdminDeleteResourceAttribute(w http.ResponseWriter, r *http.
 	http.Redirect(w, r, "/admin/settings?action=attribute_deleted", http.StatusFound)
 }
 
-func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
-	dbStatus := "ok"
-	if err := a.store.Ping(r.Context()); err != nil {
-		dbStatus = err.Error()
-	}
-	stats, _ := a.store.Stats(r.Context(), a.startedAt)
-	a.render(w, "admin_health", map[string]any{
-		"Title":    "健康",
-		"DBStatus": dbStatus,
-		"Stats":    stats,
-	})
-}
-
 func (a *App) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
-	logs, err := a.store.AuditLogs(r.Context(), 200)
+	query := adminAuditQuery(r)
+	page, err := a.store.AdminAuditLogs(r.Context(), query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_audit", map[string]any{"Title": "审计", "Logs": logs})
+	exportQuery := r.URL.Query()
+	exportQuery.Del("page")
+	exportQuery.Del("per_page")
+	exportURL := "/admin/audit.csv"
+	if encoded := exportQuery.Encode(); encoded != "" {
+		exportURL += "?" + encoded
+	}
+	a.render(w, "admin_audit", map[string]any{"Title": "审计日志", "Logs": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "ExportURL": exportURL, "Pager": web.NewPagination("/admin/audit", r.URL.Query(), page.Page, page.PerPage, page.Total)})
 }
 
-func (a *App) handleAdminCleanup(w http.ResponseWriter, r *http.Request) {
-	actor := currentAdmin(r)
-	stats, err := a.store.CleanupExpired(r.Context())
-	result := "success"
-	message := fmt.Sprintf("states=%d tickets=%d admin_sessions=%d messages=%d", stats.OAuthStates, stats.LoginTickets, stats.AdminSessions, stats.UserMessages)
-	if err != nil {
-		result = "failure"
-		message = err.Error()
+func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
+	from, to := adminTimeRange(r.URL.Query())
+	return store.AdminAuditLogQuery{
+		Search: r.URL.Query().Get("q"), Result: r.URL.Query().Get("result"), TargetType: r.URL.Query().Get("target_type"), TargetID: r.URL.Query().Get("target_id"), ActorUserID: r.URL.Query().Get("actor_user_id"), From: from, To: to,
+		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
 	}
-	_ = a.store.RecordAudit(r.Context(), actor, "cleanup_expired", result, a.clientIP(r), r.UserAgent(), message)
-	http.Redirect(w, r, "/admin/health", http.StatusFound)
+}
+
+func (a *App) handleAdminAuditDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("audit"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	item, err := a.store.AdminAuditLog(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_audit_detail", map[string]any{"Title": "审计详情", "Item": item})
+}
+
+func (a *App) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
+	items, err := a.store.AdminAuditLogsForExport(r.Context(), adminAuditQuery(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="oronbox-audit.csv"`)
+	_, _ = w.Write([]byte{0xef, 0xbb, 0xbf})
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"id", "created_at", "actor_user_id", "username", "action", "result", "ip", "user_agent", "message", "target_type", "target_id", "before", "after", "metadata"})
+	for _, item := range items {
+		row := []string{strconv.FormatInt(item.ID, 10), item.CreatedAt, item.ActorUserID, item.Username, item.Action, item.Result, item.IP, item.UserAgent, item.Message, item.Target.Type, item.Target.ID, auditCSVJSON(item.Before), auditCSVJSON(item.After), auditCSVJSON(item.Metadata)}
+		for index := range row {
+			row[index] = safeCSVCell(row[index])
+		}
+		_ = writer.Write(row)
+	}
+	writer.Flush()
+}
+
+func safeCSVCell(value string) string {
+	if value != "" && strings.ContainsRune("=+-@\t\r", rune(value[0])) {
+		return "'" + value
+	}
+	return value
+}
+
+func auditCSVJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil || string(raw) == "null" {
+		return ""
+	}
+	return string(raw)
 }
 
 // ---- review tab ----
@@ -403,54 +533,19 @@ type adminReviewItem struct {
 }
 
 func (a *App) handleAdminReview(w http.ResponseWriter, r *http.Request) {
-	queue, err := a.creator.ReviewQueue(r.Context())
+	from, to := adminTimeRange(r.URL.Query())
+	page, err := a.store.AdminReviews(r.Context(), store.AdminReviewQuery{Search: r.URL.Query().Get("q"), Kind: r.URL.Query().Get("kind"), Target: r.URL.Query().Get("target"), Owner: r.URL.Query().Get("owner"), State: r.URL.Query().Get("state"), From: from, To: to, Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	items := make([]adminReviewItem, 0, len(queue))
-	for _, workspace := range queue {
-		if len(workspace.Revisions) == 0 {
-			continue
-		}
-		entry := workspace.Revisions[0]
-		names := make([]string, 0, len(workspace.Publications))
-		for _, publication := range workspace.Publications {
-			names = append(names, string(publication.Target))
-		}
-		snapshotJSON, _ := json.Marshal(workspace)
-		var snapshot bytes.Buffer
-		_ = json.Indent(&snapshot, snapshotJSON, "", "  ")
-		detail, detailErr := a.store.AdminResource(r.Context(), workspace.Resource.ID)
-		if detailErr != nil {
-			http.Error(w, detailErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		items = append(items, adminReviewItem{
-			ResourceID:  workspace.Resource.ID,
-			RevisionID:  entry.ID,
-			RevisionNo:  entry.Number,
-			Name:        entry.Name,
-			Summary:     entry.Summary,
-			Owner:       workspace.Resource.OwnerID,
-			SubmittedAt: entry.CreatedAt.Local().Format("2006-01-02 15:04:05"),
-			Targets:     names,
-			Snapshot:    snapshot.String(),
-			Artifacts:   detail.Artifacts,
-			Media:       detail.Media,
-			Attributes:  entry.Attributes,
-		})
-	}
-	attributes, err := a.creator.Attributes(r.Context(), false)
+	reviewers, err := a.store.AdminReviewers(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	a.render(w, "admin_review", map[string]any{
-		"Title":      "资源审核",
-		"Items":      items,
-		"Decided":    r.URL.Query().Get("decided") != "",
-		"Attributes": attributes,
+		"Title": "审核中心", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/review", r.URL.Query(), page.Page, page.PerPage, page.Total), "Decided": r.URL.Query().Get("decided") != "", "BulkDone": r.URL.Query().Get("bulk") != "", "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Reviewers": reviewers, "ReturnTo": r.URL.RequestURI(),
 	})
 }
 
@@ -485,7 +580,17 @@ func (a *App) handleAdminBlob(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	}
+	actor := currentAdmin(r)
+	_ = a.store.RecordAuditData(r.Context(), actor, "blob.read", "success", a.clientIP(r), r.UserAgent(), adminBlobReadAuditData(record.SHA256, r.URL.Query().Get("download") == "1"))
 	http.ServeContent(w, r, record.SHA256, time.Time{}, reader)
+}
+
+func adminBlobReadAuditData(sha256 string, download bool) store.AuditData {
+	return store.AuditData{
+		Message:  fmt.Sprintf("sha256=%s download=%t", sha256, download),
+		Target:   store.AuditTarget{Type: "blob", ID: sha256, Label: "sensitive blob read"},
+		Metadata: map[string]any{"download": download, "sensitive": true},
+	}
 }
 
 func (a *App) handleAdminReviewDecision(w http.ResponseWriter, r *http.Request) {
@@ -506,7 +611,7 @@ func (a *App) handleAdminReviewDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	approved := decision == "approve"
 	actor := currentAdmin(r)
-	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, nil, r.Form["attributes"], grade); err != nil {
+	if err := a.creator.Review(r.Context(), revisionID, actor.UserID, approved, note, reviewItems(r.FormValue("items")), r.Form["attributes"], grade); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "resource.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -549,12 +654,16 @@ func (a *App) handleAdminCollectionReviewDecision(w http.ResponseWriter, r *http
 }
 
 func (a *App) handleAdminCollectionsPage(w http.ResponseWriter, r *http.Request) {
-	items, err := a.creator.CollectionReviewQueue(r.Context())
+	page, err := a.store.AdminCollections(r.Context(), store.AdminCollectionQuery{
+		Search: r.URL.Query().Get("q"), Owner: r.URL.Query().Get("owner"), Kind: r.URL.Query().Get("kind"),
+		State: r.URL.Query().Get("state"), Sort: r.URL.Query().Get("sort"),
+		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_collections", map[string]any{"Title": "合集审核", "Items": items, "Action": r.URL.Query().Get("action")})
+	a.render(w, "admin_collections", map[string]any{"Title": "合集管理", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/collections", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminCollectionReviewForm(w http.ResponseWriter, r *http.Request) {
@@ -575,18 +684,12 @@ func (a *App) handleAdminCollectionReviewForm(w http.ResponseWriter, r *http.Req
 }
 
 func (a *App) handleAdminPluginsPage(w http.ResponseWriter, r *http.Request) {
-	plugins, err := a.store.AdminListPlugins(r.Context())
+	page, err := a.store.AdminPluginsV2(r.Context(), store.AdminPluginQuery{Search: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"), Uploader: r.URL.Query().Get("uploader"), Runtime: r.URL.Query().Get("runtime"), Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	pending := make([]store.PluginRecord, 0)
-	for _, plugin := range plugins {
-		if plugin.State == "pending" {
-			pending = append(pending, plugin)
-		}
-	}
-	a.render(w, "admin_plugins", map[string]any{"Title": "插件管理", "Plugins": plugins, "Pending": pending, "Action": r.URL.Query().Get("action")})
+	a.render(w, "admin_plugins", map[string]any{"Title": "插件管理", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/plugins", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminPluginReview(w http.ResponseWriter, r *http.Request) {
@@ -612,7 +715,7 @@ func (a *App) handleAdminPluginReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown decision", http.StatusBadRequest)
 		return
 	}
-	plugin, err := a.store.Plugin(r.Context(), pluginID)
+	pluginDetail, err := a.store.AdminPluginV2(r.Context(), pluginID)
 	if errors.Is(err, store.ErrPluginNotFound) {
 		http.NotFound(w, r)
 		return
@@ -621,7 +724,7 @@ func (a *App) handleAdminPluginReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if plugin.State != "pending" {
+	if pluginDetail.Plugin.PendingVersionID == "" {
 		http.Error(w, "plugin is not pending review", http.StatusConflict)
 		return
 	}
@@ -699,12 +802,22 @@ func (a *App) handleAdminCoinsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	ledger, err := a.store.AdminCoinLedger(r.Context(), strings.TrimSpace(r.URL.Query().Get("user")), 200)
+	page, perPage := positiveInt(r.URL.Query().Get("page"), 1), positiveInt(r.URL.Query().Get("per_page"), 25)
+	if perPage > 100 {
+		perPage = 100
+	}
+	from, to := adminTimeRange(r.URL.Query())
+	ledger, err := a.store.AdminCoinLedgerPage(r.Context(), store.AdminCoinQuery{Search: r.URL.Query().Get("q"), User: r.URL.Query().Get("user"), Kind: r.URL.Query().Get("kind"), ReferenceType: r.URL.Query().Get("reference_type"), Sort: r.URL.Query().Get("sort"), From: from, To: to, Page: page, PerPage: perPage})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	a.render(w, "admin_coins", map[string]any{"Title": "硬币管理", "Stats": stats, "Ledger": ledger, "Action": r.URL.Query().Get("action")})
+	users, err := a.store.AdminCoinUserOptions(r.Context(), r.URL.Query().Get("user_search"), 30)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.render(w, "admin_coins", map[string]any{"Title": "硬币管理", "Stats": stats, "Ledger": ledger.Items, "Page": ledger, "Query": ledger.Query, "Users": users, "Pager": web.NewPagination("/admin/coins", r.URL.Query(), ledger.Page, ledger.PerPage, ledger.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminCoinUserForm(w http.ResponseWriter, r *http.Request) {
@@ -778,6 +891,7 @@ func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "admin_users", map[string]any{
 		"Title":  "用户",
 		"Page":   page,
+		"Pager":  web.NewPagination("/admin/users", r.URL.Query(), page.Page, page.PerPage, page.Total),
 		"Items":  page.Items,
 		"Query":  page.Query,
 		"Action": r.URL.Query().Get("action"),
@@ -802,7 +916,7 @@ func (a *App) handleAdminUserState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
-	_ = a.store.RecordAudit(r.Context(), actor, "user."+action, "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("user=%s(%d) role=%s reason=%s", item.Username, item.BandBBSUserID, item.Role, r.FormValue("reason")))
+	_ = a.store.RecordAudit(r.Context(), actor, "user."+action, "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("user_id=%s user=%s(%d) role=%s reason=%s", userID, item.Username, item.BandBBSUserID, item.Role, r.FormValue("reason")))
 	http.Redirect(w, r, "/admin/users?action=done", http.StatusFound)
 }
 
@@ -828,6 +942,7 @@ func (a *App) handleAdminResources(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "admin_resources", map[string]any{
 		"Title":  "资源",
 		"Page":   page,
+		"Pager":  web.NewPagination("/admin/resources", r.URL.Query(), page.Page, page.PerPage, page.Total),
 		"Items":  page.Items,
 		"Query":  page.Query,
 		"Action": r.URL.Query().Get("action"),
@@ -906,11 +1021,13 @@ func (a *App) handleAdminFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "admin_feedback", map[string]any{
-		"Title":   "反馈",
-		"Page":    page,
-		"Items":   page.Items,
-		"Query":   page.Query,
-		"Replied": r.URL.Query().Get("replied") != "",
+		"Title":    "反馈",
+		"Page":     page,
+		"Pager":    web.NewPagination("/admin/feedback", r.URL.Query(), page.Page, page.PerPage, page.Total),
+		"Items":    page.Items,
+		"Query":    page.Query,
+		"Replied":  r.URL.Query().Get("replied") != "",
+		"ReturnTo": r.URL.RequestURI(),
 	})
 }
 
@@ -929,19 +1046,12 @@ func (a *App) handleAdminFeedbackReply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	message := strings.TrimSpace(r.FormValue("message"))
-	if message == "" {
-		http.Redirect(w, r, "/admin/feedback", http.StatusFound)
-		return
-	}
 	actor := currentAdmin(r)
-	if _, err := a.store.ReplyFeedback(r.Context(), ticketID, actor.UserID, message, r.FormValue("close") == "yes"); err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "feedback.reply", "failure", a.clientIP(r), r.UserAgent(), "ticket="+ticketID+" error="+err.Error())
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "feedback.reply", "success", a.clientIP(r), r.UserAgent(), "ticket="+ticketID)
-	http.Redirect(w, r, "/admin/feedback?replied=1", http.StatusFound)
+	a.handleAdminFeedbackMutation(w, r, ticket, actor, "/admin/feedback/"+ticketID)
+}
+
+func (a *App) handleAdminFeedbackDetail(w http.ResponseWriter, r *http.Request) {
+	a.renderAdminFeedbackDetail(w, r, false)
 }
 
 func (a *App) handleAdminReports(w http.ResponseWriter, r *http.Request) {
@@ -958,17 +1068,23 @@ func (a *App) handleAdminReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "admin_reports", map[string]any{
-		"Title":  "举报",
-		"Page":   page,
-		"Items":  page.Items,
-		"Query":  page.Query,
-		"Action": r.URL.Query().Get("action"),
+		"Title":    "举报",
+		"Page":     page,
+		"Pager":    web.NewPagination("/admin/reports", r.URL.Query(), page.Page, page.PerPage, page.Total),
+		"Items":    page.Items,
+		"Query":    page.Query,
+		"Action":   r.URL.Query().Get("action"),
+		"ReturnTo": r.URL.RequestURI(),
 	})
 }
 
 func (a *App) handleAdminReport(w http.ResponseWriter, r *http.Request) {
-	ticket, err := a.store.Feedback(r.Context(), r.PathValue("ticket"), "", true)
-	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && !store.IsReportKind(ticket.Kind)) {
+	a.renderAdminFeedbackDetail(w, r, true)
+}
+
+func (a *App) renderAdminFeedbackDetail(w http.ResponseWriter, r *http.Request, reportsOnly bool) {
+	detail, err := a.store.AdminFeedbackDetail(r.Context(), r.PathValue("ticket"))
+	if errors.Is(err, store.ErrFeedbackNotFound) || (err == nil && reportsOnly && !store.IsReportKind(detail.Ticket.Kind)) || (err == nil && !reportsOnly && detail.Ticket.Kind != store.FeedbackKindFeedback) {
 		http.NotFound(w, r)
 		return
 	}
@@ -976,17 +1092,14 @@ func (a *App) handleAdminReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var resource *store.AdminResourceDetail
-	if ticket.TargetID != "" && (ticket.TargetSource == "" || strings.EqualFold(ticket.TargetSource, "oronbox")) {
-		if detail, detailErr := a.store.AdminResource(r.Context(), ticket.TargetID); detailErr == nil {
-			resource = &detail
-		}
-	}
 	a.render(w, "admin_report_detail", map[string]any{
-		"Title":    ticket.Subject,
-		"Item":     ticket,
-		"Ticket":   ticket,
-		"Resource": resource,
+		"Title":    detail.Ticket.Subject,
+		"Item":     detail.Ticket,
+		"Ticket":   detail.Ticket,
+		"Detail":   detail,
+		"IsReport": store.IsReportKind(detail.Ticket.Kind),
+		"BackURL":  adminFeedbackReturnURL(r.URL.Query().Get("return_to"), reportsOnly),
+		"ReturnTo": r.URL.Query().Get("return_to"),
 		"Action":   r.URL.Query().Get("action"),
 	})
 }
@@ -1006,24 +1119,62 @@ func (a *App) handleAdminReportUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	status := strings.TrimSpace(r.FormValue("status"))
-	reply := strings.TrimSpace(r.FormValue("message"))
-	if status == "" {
-		if reply == "" {
-			http.Error(w, "status or reply is required", http.StatusBadRequest)
-			return
-		}
-		status = "replied"
-	}
 	actor := currentAdmin(r)
-	updated, err := a.store.UpdateFeedback(r.Context(), ticketID, store.FeedbackUpdate{Status: status, Reply: reply, AuthorID: actor.UserID})
+	a.handleAdminFeedbackMutation(w, r, ticket, actor, "/admin/reports/"+ticketID)
+}
+
+func (a *App) handleAdminFeedbackMutation(w http.ResponseWriter, r *http.Request, ticket store.FeedbackTicket, actor store.AdminSession, detailPath string) {
+	action := strings.TrimSpace(r.FormValue("action"))
+	if action == "" {
+		action = "public_reply"
+	}
+	var err error
+	auditAction := "feedback." + action
+	switch action {
+	case "internal_note":
+		_, err = a.store.AddFeedbackInternalNote(r.Context(), ticket.ID, actor.UserID, r.FormValue("internal_note"))
+	case "public_reply", "status":
+		status := strings.TrimSpace(r.FormValue("status"))
+		message := strings.TrimSpace(r.FormValue("message"))
+		if status == "" {
+			status = ticket.Status
+			if action == "public_reply" && (status == "open" || status == "investigating") {
+				status = "replied"
+			}
+		}
+		if action == "public_reply" && message == "" {
+			err = errors.New("reply is required")
+		} else if action == "status" && status == ticket.Status {
+			err = errors.New("select a different status")
+		} else {
+			_, err = a.store.UpdateFeedback(r.Context(), ticket.ID, store.FeedbackUpdate{Status: status, Reply: message, AuthorID: actor.UserID})
+		}
+	default:
+		err = errors.New("invalid feedback action")
+	}
 	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, ticket.Kind+".update", "failure", a.clientIP(r), r.UserAgent(), "ticket="+ticketID+" error="+err.Error())
+		_ = a.store.RecordAudit(r.Context(), actor, auditAction, "failure", a.clientIP(r), r.UserAgent(), "ticket="+ticket.ID+" ticket_kind="+ticket.Kind+" error="+err.Error())
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	_ = a.store.RecordAudit(r.Context(), actor, ticket.Kind+".update", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("ticket=%s target=%s status=%s", ticketID, updated.TargetID, updated.Status))
-	http.Redirect(w, r, "/admin/reports/"+ticketID+"?action=updated", http.StatusFound)
+	_ = a.store.RecordAudit(r.Context(), actor, auditAction, "success", a.clientIP(r), r.UserAgent(), "ticket="+ticket.ID+" ticket_kind="+ticket.Kind+" status="+strings.TrimSpace(r.FormValue("status")))
+	values := url.Values{"action": {action}}
+	if returnTo := strings.TrimSpace(r.FormValue("return_to")); returnTo != "" {
+		values.Set("return_to", returnTo)
+	}
+	http.Redirect(w, r, detailPath+"?"+values.Encode(), http.StatusFound)
+}
+
+func adminFeedbackReturnURL(raw string, reports bool) string {
+	fallback := "/admin/feedback"
+	if reports {
+		fallback = "/admin/reports"
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Path != fallback {
+		return fallback
+	}
+	return parsed.RequestURI()
 }
 
 func positiveInt(raw string, fallback int) int {
