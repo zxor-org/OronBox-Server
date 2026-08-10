@@ -615,6 +615,10 @@ input[type="checkbox"]:focus { padding: 0; }
 .review-decision-form .actions { grid-column: auto; }
 .review-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
 .review-workbench-main { display: grid; gap: 20px; min-width: 0; }
+.review-submission-summary { display: grid; gap: 12px; }
+.review-submission-summary h2 { margin: 2px 0 0; font-size: 24px; }
+.review-submission-summary .section-header { align-items: start; }
+.review-summary-text { max-width: 78ch; margin: 0; white-space: pre-wrap; line-height: 1.7; color: var(--on-surface-variant); }
 .review-decision-rail { min-width: 0; }
 .sticky-review-decision { position: sticky; top: 82px; display: grid; gap: 16px; }
 .sticky-review-decision form { display: grid; gap: 14px; }
@@ -631,6 +635,12 @@ input[type="checkbox"]:focus { padding: 0; }
 .artifact-review-head { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
 .artifact-review-head > div { min-width: 0; display: grid; gap: 4px; }
 .artifact-review-head code { overflow-wrap: anywhere; }
+.artifact-device-summary { display: grid; gap: 8px; }
+.artifact-device-summary .chip-row { gap: 6px; }
+.artifact-device-summary small { color: inherit; opacity: .75; }
+.artifact-device-editor { border-top: 1px solid var(--outline-variant); padding-top: 12px; }
+.artifact-device-editor > summary { display: inline-flex; cursor: pointer; list-style: none; }
+.artifact-device-editor > form { display: grid; gap: 12px; margin-top: 14px; }
 .inline-editor { position: relative; }
 .inline-editor > form { position: absolute; z-index: 5; right: 0; top: calc(100% + 8px); width: min(420px, 90vw); padding: 16px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface-container-high); box-shadow: var(--shadow-2); display: grid; gap: 12px; }
 .review-inline-editor > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }

@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAdminExternalBindingPresentation(t *testing.T) {
 	band := AdminExternalBinding{
@@ -22,5 +25,18 @@ func TestAdminExternalBindingPresentation(t *testing.T) {
 	}
 	if len(astro.Entries) != 1 || astro.Entries[0].Value != "moe.orpu.neomusic" {
 		t.Fatalf("AstroBox entries = %#v", astro.Entries)
+	}
+}
+
+func TestMergeDuplicateAdminArtifacts(t *testing.T) {
+	left := []AdminArtifactDevice{{ID: "a", DisplayName: "Band 9"}}
+	right := []AdminArtifactDevice{{ID: "b", DisplayName: "Watch 4"}, {ID: "a", DisplayName: "Band 9"}}
+	merged := mergeArtifactDevices(left, right)
+	if len(merged) != 2 || merged[0].DisplayName != "Band 9" || merged[1].DisplayName != "Watch 4" {
+		t.Fatalf("merged devices = %#v", merged)
+	}
+	values := mergeStringValues([]string{"Watch 4", "Band 9"}, []string{"Band 9", "Watch 5"})
+	if got := strings.Join(values, ","); got != "Band 9,Watch 4,Watch 5" {
+		t.Fatalf("merged names = %q", got)
 	}
 }

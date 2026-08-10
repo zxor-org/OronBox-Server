@@ -227,26 +227,43 @@ func (s *Store) AdminSetArtifactDevices(ctx context.Context, resourceID, revisio
 	if err := lockAdminDraft(ctx, tx, resourceID, revisionID); err != nil {
 		return err
 	}
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM revision_artifacts WHERE id=$1 AND revision_id=$2)`, artifactID, revisionID).Scan(&exists); err != nil || !exists {
-		if err != nil {
-			return err
-		}
+	var blobSHA, originalName, packageFormat, packageID, packageVersion string
+	if err := tx.QueryRowContext(ctx, `SELECT blob_sha256,original_name,package_format,package_id,package_version FROM revision_artifacts WHERE id=$1 AND revision_id=$2 FOR UPDATE`, artifactID, revisionID).Scan(&blobSHA, &originalName, &packageFormat, &packageID, &packageVersion); errors.Is(err, sql.ErrNoRows) {
 		return ErrAdminResourceNotFound
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM revision_artifact_devices WHERE artifact_id=$1`, artifactID); err != nil {
+	} else if err != nil {
 		return err
 	}
-	for _, id := range deviceIDs {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO revision_artifact_devices(revision_id,artifact_id,device_id) SELECT $1,$2,id FROM devices WHERE id=$3 AND enabled`, revisionID, artifactID, id); err != nil {
+	rows, err := tx.QueryContext(ctx, `SELECT id::text FROM revision_artifacts WHERE revision_id=$1 AND blob_sha256=$2 AND original_name=$3 AND package_format=$4 AND package_id=$5 AND package_version=$6 FOR UPDATE`, revisionID, blobSHA, originalName, packageFormat, packageID, packageVersion)
+	if err != nil {
+		return err
+	}
+	artifactIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return err
+		}
+		artifactIDs = append(artifactIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM revision_artifact_devices WHERE artifact_id=ANY($1::uuid[])`, artifactIDs); err != nil {
+		return err
+	}
+	for _, duplicateID := range artifactIDs {
+		for _, id := range deviceIDs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO revision_artifact_devices(revision_id,artifact_id,device_id) SELECT $1,$2,id FROM devices WHERE id=$3 AND enabled`, revisionID, duplicateID, id); err != nil {
+				return err
+			}
 		}
 	}
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM revision_artifact_devices WHERE artifact_id=$1`, artifactID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM revision_artifact_devices WHERE artifact_id=ANY($1::uuid[])`, artifactIDs).Scan(&count); err != nil {
 		return err
 	}
-	if count != len(deviceIDs) {
+	if count != len(deviceIDs)*len(artifactIDs) {
 		return fmt.Errorf("%w: unknown or disabled device", ErrAdminResourceConflict)
 	}
 	return tx.Commit()

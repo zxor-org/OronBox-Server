@@ -347,7 +347,7 @@ func TestAdminReviewUsesDedicatedDetailDecisionLayout(t *testing.T) {
 		`保存检查进度`,
 		`preview checked`,
 		`class="review-decision-form"`,
-		`提交内容修正`,
+		`修正提交内容`,
 		`src="/admin/blobs/preview-sha"`,
 		`href="/admin/blobs/artifact-sha?download=1&amp;name=neo.rpk"`,
 		`保存设备绑定`,

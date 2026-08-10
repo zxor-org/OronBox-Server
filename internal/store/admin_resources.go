@@ -170,6 +170,7 @@ type AdminArtifact struct {
 	Analysis       map[string]any
 	Devices        []string
 	DeviceBindings []AdminArtifactDevice
+	DuplicateCount int
 }
 
 type AdminArtifactDevice struct {
@@ -581,6 +582,7 @@ func (s *Store) adminArtifacts(ctx context.Context, query, snapshotID string) ([
 	}
 	defer rows.Close()
 	artifacts := []AdminArtifact{}
+	byContent := make(map[string]int)
 	for rows.Next() {
 		var artifact AdminArtifact
 		var analysis, devices, deviceBindings []byte
@@ -590,9 +592,46 @@ func (s *Store) adminArtifacts(ctx context.Context, query, snapshotID string) ([
 		_ = json.Unmarshal(analysis, &artifact.Analysis)
 		_ = json.Unmarshal(devices, &artifact.Devices)
 		_ = json.Unmarshal(deviceBindings, &artifact.DeviceBindings)
+		artifact.DuplicateCount = 1
+		key := strings.Join([]string{artifact.SHA256, artifact.OriginalName, artifact.PackageFormat, artifact.PackageID, artifact.Version}, "\x00")
+		if index, ok := byContent[key]; ok {
+			artifacts[index].DuplicateCount++
+			artifacts[index].Devices = mergeStringValues(artifacts[index].Devices, artifact.Devices)
+			artifacts[index].DeviceBindings = mergeArtifactDevices(artifacts[index].DeviceBindings, artifact.DeviceBindings)
+			continue
+		}
+		byContent[key] = len(artifacts)
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, rows.Err()
+}
+
+func mergeStringValues(left, right []string) []string {
+	seen := make(map[string]bool, len(left)+len(right))
+	merged := make([]string, 0, len(left)+len(right))
+	for _, values := range [][]string{left, right} {
+		for _, value := range values {
+			if !seen[value] {
+				seen[value] = true
+				merged = append(merged, value)
+			}
+		}
+	}
+	sort.Strings(merged)
+	return merged
+}
+
+func mergeArtifactDevices(left, right []AdminArtifactDevice) []AdminArtifactDevice {
+	byID := make(map[string]AdminArtifactDevice, len(left)+len(right))
+	for _, device := range append(left, right...) {
+		byID[device.ID] = device
+	}
+	merged := make([]AdminArtifactDevice, 0, len(byID))
+	for _, device := range byID {
+		merged = append(merged, device)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].DisplayName < merged[j].DisplayName })
+	return merged
 }
 
 func (s *Store) adminMedia(ctx context.Context, query, snapshotID string) ([]AdminMedia, error) {
