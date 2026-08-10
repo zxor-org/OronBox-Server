@@ -42,6 +42,7 @@ func TestAdminReleaseOrder(t *testing.T) {
 func TestValidateAdminReleaseVersion(t *testing.T) {
 	valid := []AdminReleaseVersionInput{
 		{Version: "1.2.3", Channel: "stable", Platform: "all", Arch: "all"},
+		{Version: "1.2.3-rc.5", Channel: "stable", Platform: "all", Arch: "all"},
 		{Version: "v2.0.0-beta.2+build.4", MinimumVersion: "1.9.0", Channel: "beta", Platform: "linux", Arch: "arm64"},
 		{Version: "3.0.0-nightly.20260810", MinimumVersion: "3.0.0-nightly.1", Channel: "nightly", Platform: "windows", Arch: "x86_64"},
 	}
@@ -55,7 +56,6 @@ func TestValidateAdminReleaseVersion(t *testing.T) {
 		{Version: "1.2", Channel: "stable", Platform: "all", Arch: "all"},
 		{Version: "1.2.3-beta.01", Channel: "beta", Platform: "all", Arch: "all"},
 		{Version: "18446744073709551616.0.0", Channel: "stable", Platform: "all", Arch: "all"},
-		{Version: "1.2.3-beta.1", Channel: "stable", Platform: "all", Arch: "all"},
 		{Version: "1.2.3", MinimumVersion: "2.0.0", Channel: "stable", Platform: "all", Arch: "all"},
 		{Version: "1.2.3", Channel: "preview", Platform: "all", Arch: "all"},
 		{Version: "1.2.3", Channel: "stable", Platform: "linux/amd64", Arch: "all"},

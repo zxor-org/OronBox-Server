@@ -264,9 +264,6 @@ func ValidateAdminReleaseVersion(raw AdminReleaseVersionInput) error {
 	if input.Channel != "stable" && input.Channel != "beta" && input.Channel != "nightly" {
 		return fmt.Errorf("%w: unsupported channel", ErrAdminReleaseInvalid)
 	}
-	if input.Channel == "stable" && version.pre != "" {
-		return fmt.Errorf("%w: stable releases cannot use a prerelease version", ErrAdminReleaseInvalid)
-	}
 	if !adminReleaseTokenPattern.MatchString(input.Platform) || !adminReleaseTokenPattern.MatchString(input.Arch) {
 		return fmt.Errorf("%w: invalid platform or architecture", ErrAdminReleaseInvalid)
 	}
