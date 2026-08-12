@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
+	"github.com/zxor-org/OronBox-Server/internal/publish/astrobox"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
@@ -45,22 +46,28 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string) ([]byte, 
 			artifactRows.Close()
 			return nil, err
 		}
-		rows, err := c.db.QueryContext(ctx, `SELECT COALESCE(NULLIF(d.astrobox_id,''),d.codename),d.display_name FROM revision_artifact_devices b JOIN devices d ON d.id=b.device_id WHERE b.artifact_id=$1 ORDER BY COALESCE(NULLIF(d.astrobox_id,''),d.codename)`, id)
+		rows, err := c.db.QueryContext(ctx, `SELECT COALESCE(NULLIF(d.astrobox_id,''),d.codename),d.display_name,d.platform FROM revision_artifact_devices b JOIN devices d ON d.id=b.device_id WHERE b.artifact_id=$1 ORDER BY COALESCE(NULLIF(d.astrobox_id,''),d.codename)`, id)
 		if err != nil {
 			artifactRows.Close()
 			return nil, err
 		}
 		var devices []map[string]any
 		for rows.Next() {
-			var deviceID, deviceName string
-			if err := rows.Scan(&deviceID, &deviceName); err != nil {
+			var deviceID, deviceName, platform string
+			if err := rows.Scan(&deviceID, &deviceName, &platform); err != nil {
 				rows.Close()
 				artifactRows.Close()
 				return nil, err
 			}
+			if platform != "vela_os" || !astrobox.IsSupportedDeviceID(deviceID) {
+				continue
+			}
 			devices = append(devices, map[string]any{"id": deviceID, "name": deviceName})
 		}
 		rows.Close()
+		if len(devices) == 0 {
+			continue
+		}
 		artifacts = append(artifacts, map[string]any{"blob_sha256": sha, "original_name": originalName, "package_id": packageID, "version": version, "kind": kind, "platform": "vela_os", "devices": devices})
 	}
 	artifactRows.Close()
@@ -68,40 +75,41 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string) ([]byte, 
 	return json.Marshal(result)
 }
 
-func (c *Coordinator) bandBBSToken(ctx context.Context, userID string) (string, error) {
+func (c *Coordinator) bandBBSToken(ctx context.Context, userID string) (string, string, error) {
 	grant, err := c.store.OAuthGrant(ctx, userID, "bandbbs_publish")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !config.HasScopes(config.ScopeString(grant.Scopes), c.cfg.BandBBS.PublishScopes) {
-		return "", fmt.Errorf("BandBBS publishing permission is not authorized")
+		return "", "", fmt.Errorf("BandBBS publishing permission is not authorized")
 	}
 	if grant.ExpiresAt == nil || grant.ExpiresAt.After(time.Now().UTC().Add(time.Minute)) {
-		return c.secrets.Decrypt(grant.AccessTokenCipher)
+		token, decryptErr := c.secrets.Decrypt(grant.AccessTokenCipher)
+		return token, grant.Subject, decryptErr
 	}
 	refresh, err := c.secrets.Decrypt(grant.RefreshTokenCipher)
 	if err != nil || refresh == "" {
-		return "", fmt.Errorf("BandBBS publishing grant expired")
+		return "", "", fmt.Errorf("BandBBS publishing grant expired")
 	}
 	token, err := c.bandAuth.Refresh(ctx, refresh)
 	if err != nil {
 		c.log.Warn("BandBBS token refresh failed", "user_id", userID, "error", err)
-		return "", err
+		return "", "", err
 	}
 	if token.RefreshToken == "" {
 		token.RefreshToken = refresh
 	}
 	subject, scopes, err := c.bandAuth.ValidateScopes(ctx, token, c.cfg.BandBBS.PublishScopes)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	accessCipher, err := c.secrets.Encrypt(token.AccessToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	refreshCipher, err := c.secrets.Encrypt(token.RefreshToken)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var expiresAt *time.Time
 	if token.ExpiresIn > 0 {
@@ -110,17 +118,20 @@ func (c *Coordinator) bandBBSToken(ctx context.Context, userID string) (string, 
 	}
 	err = c.store.UpsertOAuthGrant(ctx, store.GrantParams{UserID: userID, Provider: "bandbbs_publish", Subject: subject, Scopes: config.ParseScopes(scopes), AccessTokenCipher: accessCipher, RefreshTokenCipher: refreshCipher, TokenType: token.TokenType, ExpiresAt: expiresAt})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	c.log.Info("BandBBS token refreshed", "user_id", userID)
-	return token.AccessToken, nil
+	if subject == "" {
+		subject = grant.Subject
+	}
+	return token.AccessToken, subject, nil
 }
 
 // DeleteBandBBSResources removes the creator's BandBBS resources, tolerating
 // ids that are already gone. Used by the creator delete endpoint so a local
 // deletion never silently leaves BandBBS copies behind.
 func (c *Coordinator) DeleteBandBBSResources(ctx context.Context, ownerID string, resourceIDs []string) error {
-	token, err := c.bandBBSToken(ctx, ownerID)
+	token, _, err := c.bandBBSToken(ctx, ownerID)
 	if err != nil {
 		return err
 	}

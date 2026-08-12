@@ -32,6 +32,8 @@ type Result struct {
 type CategoryResult struct {
 	ResourceID string `json:"resource_id"`
 	URL        string `json:"url"`
+	VersionID  string `json:"version_id,omitempty"`
+	UpdateID   string `json:"update_id,omitempty"`
 }
 
 func New(apiURL string, blobs blob.Store, storage *store.Store) *Client {
@@ -62,14 +64,24 @@ type target struct {
 }
 
 type config struct {
-	Description string   `json:"description"`
-	Agreement   bool     `json:"agreement"`
-	Targets     []target `json:"targets"`
+	Description    string   `json:"description"`
+	VersionTitle   string   `json:"version_title"`
+	VersionMessage string   `json:"version_message"`
+	Agreement      bool     `json:"agreement"`
+	Targets        []target `json:"targets"`
 }
 
 // Publish fans one revision out to one BandBBS resource per configured
 // category. existing maps a decimal category id to the bound resource id.
 func (c *Client) Publish(ctx context.Context, token string, existing map[string]string, rawSnapshot, rawConfig []byte) (Result, error) {
+	return c.PublishWithProgress(ctx, token, "", existing, nil, rawSnapshot, rawConfig)
+}
+
+// PublishWithProgress resumes a multi-step publication using the external
+// resource, version, and update IDs already persisted by the coordinator.
+// Replaying a failed attempt therefore edits the resource and skips completed
+// side effects instead of creating duplicate versions or updates.
+func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID string, existing map[string]string, progress map[string]CategoryResult, rawSnapshot, rawConfig []byte) (Result, error) {
 	var snap snapshot
 	var cfg config
 	if err := json.Unmarshal(rawSnapshot, &snap); err != nil {
@@ -80,6 +92,11 @@ func (c *Client) Publish(ctx context.Context, token string, existing map[string]
 	}
 	if !cfg.Agreement || len(cfg.Targets) == 0 {
 		return Result{}, fmt.Errorf("BandBBS targets and agreement are required")
+	}
+	cfg.VersionTitle = strings.TrimSpace(cfg.VersionTitle)
+	cfg.VersionMessage = strings.TrimSpace(cfg.VersionMessage)
+	if (cfg.VersionTitle == "") != (cfg.VersionMessage == "") {
+		return Result{}, fmt.Errorf("BandBBS version title and update notes must be provided together")
 	}
 	var previews []struct {
 		Blob string `json:"blob_sha256"`
@@ -127,21 +144,54 @@ func (c *Client) Publish(ctx context.Context, token string, existing map[string]
 			return Result{}, fmt.Errorf("package %s is not among the snapshot artifacts", target.PackageID)
 		}
 		pack := snap.Artifacts[artifact]
+		packSize := c.blobSize(ctx, pack.Blob)
+		categoryResult := progress[category]
+		reconcileVersion := categoryResult.ResourceID != "" && categoryResult.VersionID == ""
+		reconcileUpdate := categoryResult.ResourceID != "" && categoryResult.UpdateID == ""
 		attachContext := map[string]string{"resource_category_id": category}
 		existingID := existing[category]
+		if existingID == "" {
+			existingID = categoryResult.ResourceID
+		}
+		if existingID == "" && creatorID != "" {
+			resource, findErr := c.findResource(ctx, token, creatorID, target.CategoryID, snap.Revision.Name)
+			if findErr != nil {
+				return result, fmt.Errorf("find existing resource in category %d: %w", target.CategoryID, findErr)
+			}
+			if resource.ID != 0 {
+				existingID = strconv.Itoa(resource.ID)
+			}
+		}
 		if existingID != "" {
 			attachContext = map[string]string{"resource_id": existingID}
 		}
-		versionKey, _, err := c.newAttachmentKey(ctx, token, "resource_version", pack.Blob, pack.Name, attachContext)
-		if err != nil {
-			return Result{}, fmt.Errorf("upload version attachment for package %s: %w", target.PackageID, err)
+		categoryResult.ResourceID = existingID
+		createdResource := existingID == ""
+		if categoryResult.ResourceID != "" {
+			result.Resources[category] = categoryResult
 		}
-		form := url.Values{"resource_category_id": {category}, "title": {snap.Revision.Name}, "tag_line": {truncateRunes(strings.TrimSpace(snap.Revision.Summary), 100)}, "description": {description}, "resource_type": {"download_local"}, "version_attachment_key": {versionKey}}
+		versionKey := ""
+		if categoryResult.VersionID == "" {
+			var err error
+			versionKey, _, err = c.newAttachmentKey(ctx, token, "resource_version", pack.Blob, pack.Name, attachContext)
+			if err != nil {
+				if categoryResult.ResourceID != "" {
+					result.Resources[category] = categoryResult
+				}
+				return result, fmt.Errorf("upload version attachment for package %s: %w", target.PackageID, err)
+			}
+		}
+		form := url.Values{"title": {snap.Revision.Name}, "tag_line": {truncateRunes(strings.TrimSpace(snap.Revision.Summary), 100)}, "description": {description}}
 		if target.PrefixID > 0 {
 			form.Set("prefix_id", strconv.Itoa(target.PrefixID))
 		}
-		if pack.Version != "" {
-			form.Set("version_string", pack.Version)
+		if existingID == "" {
+			form.Set("resource_category_id", category)
+			form.Set("resource_type", "download_local")
+			form.Set("version_attachment_key", versionKey)
+			if pack.Version != "" {
+				form.Set("version_string", pack.Version)
+			}
 		}
 		var response struct {
 			Resource struct {
@@ -159,9 +209,264 @@ func (c *Client) Publish(ctx context.Context, token string, existing map[string]
 		if response.Resource.ID == 0 && existingID != "" {
 			response.Resource.ID, _ = strconv.Atoi(existingID)
 		}
-		result.Resources[category] = CategoryResult{ResourceID: strconv.Itoa(response.Resource.ID), URL: response.Resource.ViewURL}
+		if response.Resource.ID == 0 {
+			return result, fmt.Errorf("BandBBS returned no resource id for category %d", target.CategoryID)
+		}
+		resourceID := strconv.Itoa(response.Resource.ID)
+		categoryResult.ResourceID = resourceID
+		if createdResource && categoryResult.VersionID == "" {
+			// Resource creation includes its first version. The API does not
+			// consistently expose that version ID in the resource response, so
+			// retain an opaque completion marker for retry reconciliation.
+			categoryResult.VersionID = "initial"
+		}
+		if response.Resource.ViewURL != "" {
+			categoryResult.URL = response.Resource.ViewURL
+		}
+		result.Resources[category] = categoryResult
+		if categoryResult.VersionID == "" {
+			version, versionErr := c.replaceVersion(ctx, token, resourceID, pack.Version, pack.Name, packSize, versionKey, reconcileVersion)
+			if versionErr != nil {
+				return result, fmt.Errorf("create version in category %d: %w", target.CategoryID, versionErr)
+			}
+			categoryResult.VersionID = version.ID
+		}
+		if cfg.VersionTitle != "" && categoryResult.UpdateID == "" {
+			update, updateErr := c.createUpdate(ctx, token, resourceID, cfg.VersionTitle, cfg.VersionMessage, reconcileUpdate)
+			if updateErr != nil {
+				return result, fmt.Errorf("create update in category %d: %w", target.CategoryID, updateErr)
+			}
+			categoryResult.UpdateID = update.ID
+		}
+		result.Resources[category] = categoryResult
 	}
 	return result, nil
+}
+
+type versionResult struct {
+	ID string
+}
+
+type resourceSummary struct {
+	ID       int    `json:"resource_id"`
+	Title    string `json:"title"`
+	Category int    `json:"resource_category_id"`
+	ViewURL  string `json:"view_url"`
+}
+
+func (c *Client) findResource(ctx context.Context, token, creatorID string, categoryID int, title string) (resourceSummary, error) {
+	var match resourceSummary
+	for page := 1; ; page++ {
+		var response struct {
+			Resources  []resourceSummary `json:"resources"`
+			Pagination struct {
+				LastPage int `json:"last_page"`
+			} `json:"pagination"`
+		}
+		query := url.Values{
+			"creator_id": {creatorID},
+			"page":       {strconv.Itoa(page)},
+			"order":      {"last_update"},
+			"direction":  {"desc"},
+		}
+		endpoint := c.apiURL + "/resources/?" + query.Encode()
+		if err := c.request(ctx, token, http.MethodGet, endpoint, nil, "", &response); err != nil {
+			return resourceSummary{}, err
+		}
+		for _, resource := range response.Resources {
+			if resource.Category != categoryID || resource.Title != title || resource.ID == 0 {
+				continue
+			}
+			if match.ID != 0 && match.ID != resource.ID {
+				return resourceSummary{}, fmt.Errorf("multiple BandBBS resources match category %d and title %q", categoryID, title)
+			}
+			match = resource
+		}
+		lastPage := response.Pagination.LastPage
+		if lastPage == 0 || page >= lastPage {
+			return match, nil
+		}
+	}
+}
+
+type versionSummary struct {
+	ID            int    `json:"resource_version_id"`
+	VersionString string `json:"version_string"`
+	Files         []struct {
+		Filename string `json:"filename"`
+		Size     int64  `json:"size"`
+	} `json:"files"`
+}
+
+func (c *Client) replaceVersion(ctx context.Context, token, resourceID, versionString, filename string, size int64, attachmentKey string, reconcile bool) (versionResult, error) {
+	oldVersions, err := c.listVersions(ctx, token, resourceID)
+	if err != nil {
+		return versionResult{}, fmt.Errorf("list existing versions: %w", err)
+	}
+	if reconcile {
+		if existing := findMatchingVersion(oldVersions, versionString, filename, size); existing != nil {
+			if err := c.removePreviousVersions(ctx, token, oldVersions, versionString, existing.ID); err != nil {
+				return versionResult{}, err
+			}
+			return versionResult{ID: strconv.Itoa(existing.ID)}, nil
+		}
+	}
+	created, err := c.createVersion(ctx, token, resourceID, versionString, attachmentKey)
+	if err != nil {
+		return versionResult{}, err
+	}
+	if err := c.removePreviousVersions(ctx, token, oldVersions, versionString, createdID(created)); err != nil {
+		return created, err
+	}
+	return created, nil
+}
+
+func createdID(version versionResult) int {
+	id, _ := strconv.Atoi(version.ID)
+	return id
+}
+
+func (c *Client) removePreviousVersions(ctx context.Context, token string, versions []versionSummary, versionString string, keepID int) error {
+	if versionString == "" {
+		return nil
+	}
+	for _, old := range versions {
+		if old.VersionString != versionString || old.ID == keepID {
+			continue
+		}
+		if err := c.deleteVersion(ctx, token, strconv.Itoa(old.ID)); err != nil {
+			return fmt.Errorf("remove previous version %s: %w", strconv.Itoa(old.ID), err)
+		}
+	}
+	return nil
+}
+
+func findMatchingVersion(versions []versionSummary, versionString, filename string, size int64) *versionSummary {
+	if versionString == "" {
+		return nil
+	}
+	for index := range versions {
+		version := &versions[index]
+		if version.VersionString != versionString {
+			continue
+		}
+		for _, file := range version.Files {
+			if file.Filename == filename && (size <= 0 || file.Size <= 0 || file.Size == size) {
+				return version
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Client) blobSize(ctx context.Context, sha string) int64 {
+	if c.store == nil {
+		return 0
+	}
+	record, err := c.store.Blob(ctx, sha)
+	if err != nil {
+		return 0
+	}
+	return record.Size
+}
+
+func (c *Client) listVersions(ctx context.Context, token, resourceID string) ([]versionSummary, error) {
+	var response struct {
+		Versions []versionSummary `json:"versions"`
+	}
+	if err := c.request(ctx, token, http.MethodGet, c.apiURL+"/resources/"+url.PathEscape(resourceID)+"/versions", nil, "", &response); err != nil {
+		return nil, err
+	}
+	return response.Versions, nil
+}
+
+func (c *Client) deleteVersion(ctx context.Context, token, versionID string) error {
+	query := url.Values{"reason": {"replaced by OronBox"}, "hard_delete": {"0"}}
+	endpoint := c.apiURL + "/resource-versions/" + url.PathEscape(versionID) + "/?" + query.Encode()
+	return c.request(ctx, token, http.MethodDelete, endpoint, nil, "", nil)
+}
+
+func (c *Client) createVersion(ctx context.Context, token, resourceID, versionString, attachmentKey string) (versionResult, error) {
+	form := url.Values{
+		"resource_id":            {resourceID},
+		"version_type":           {"local"},
+		"version_attachment_key": {attachmentKey},
+	}
+	if versionString != "" {
+		form.Set("version_string", versionString)
+	}
+	var response struct {
+		Version struct {
+			ID int `json:"resource_version_id"`
+		} `json:"version"`
+	}
+	if err := c.request(ctx, token, http.MethodPost, c.apiURL+"/resource-versions/", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", &response); err != nil {
+		return versionResult{}, err
+	}
+	if response.Version.ID == 0 {
+		return versionResult{}, fmt.Errorf("BandBBS returned no resource version id")
+	}
+	return versionResult{ID: strconv.Itoa(response.Version.ID)}, nil
+}
+
+type updateResult struct {
+	ID string
+}
+
+type updateSummary struct {
+	ID      int    `json:"resource_update_id"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+}
+
+func (c *Client) createUpdate(ctx context.Context, token, resourceID, title, message string, reconcile bool) (updateResult, error) {
+	if reconcile {
+		updates, err := c.listUpdates(ctx, token, resourceID)
+		if err != nil {
+			return updateResult{}, fmt.Errorf("list existing updates: %w", err)
+		}
+		if existing := findMatchingUpdate(updates, title, message); existing != nil {
+			return updateResult{ID: strconv.Itoa(existing.ID)}, nil
+		}
+	}
+	form := url.Values{
+		"resource_id": {resourceID},
+		"title":       {title},
+		"message":     {message},
+	}
+	var response struct {
+		Update struct {
+			ID int `json:"resource_update_id"`
+		} `json:"update"`
+	}
+	if err := c.request(ctx, token, http.MethodPost, c.apiURL+"/resource-updates/", strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", &response); err != nil {
+		return updateResult{}, err
+	}
+	if response.Update.ID == 0 {
+		return updateResult{}, fmt.Errorf("BandBBS returned no resource update id")
+	}
+	return updateResult{ID: strconv.Itoa(response.Update.ID)}, nil
+}
+
+func (c *Client) listUpdates(ctx context.Context, token, resourceID string) ([]updateSummary, error) {
+	var response struct {
+		Updates []updateSummary `json:"updates"`
+	}
+	endpoint := c.apiURL + "/resources/" + url.PathEscape(resourceID) + "/updates?page=1"
+	if err := c.request(ctx, token, http.MethodGet, endpoint, nil, "", &response); err != nil {
+		return nil, err
+	}
+	return response.Updates, nil
+}
+
+func findMatchingUpdate(updates []updateSummary, title, message string) *updateSummary {
+	for index := range updates {
+		update := &updates[index]
+		if update.Title == title && update.Message == message {
+			return update
+		}
+	}
+	return nil
 }
 
 func truncateRunes(value string, limit int) string {

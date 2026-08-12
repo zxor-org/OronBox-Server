@@ -129,7 +129,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 		manifest.PaidType = ResourcePaidFree
 	}
 	kind := ResourceKind(strings.TrimSpace(manifest.Kind))
-	if manifest.Version != 1 || !kind.Valid() || !manifest.PaidType.Valid() || (submit && manifest.Name == "") || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
+	if manifest.Version != 1 || !kind.Valid() || !manifest.PaidType.Valid() || manifest.Name == "" || manifest.Summary == "" || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
 		return Workspace{}, fmt.Errorf("%w: manifest metadata", ErrInvalid)
 	}
 	seenAttributes := make(map[string]bool, len(manifest.Attributes))

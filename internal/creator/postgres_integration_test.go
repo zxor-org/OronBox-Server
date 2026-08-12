@@ -156,12 +156,21 @@ func TestCreatorLifecycle(t *testing.T) {
 		t.Fatalf("replacement draft workspace = %#v", workspace.Revisions)
 	}
 	draftManifest["name"] = ""
-	workspace, err = service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil))
-	if err != nil {
-		t.Fatal(err)
+	if _, err := service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("draft with an empty name error = %v, want invalid", err)
+	}
+	draftManifest["name"] = "Saved draft"
+	draftManifest["summary"] = ""
+	if _, err := service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("draft with an empty summary error = %v, want invalid", err)
 	}
 	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("", 1, []string{deviceRows[0].ID}), files)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("publish with an empty name error = %v, want invalid", err)
+	}
+	emptySummary := manifest("Test face", 1, []string{deviceRows[0].ID})
+	emptySummary["summary"] = ""
+	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, emptySummary, files)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("publish with an empty summary error = %v, want invalid", err)
 	}
 	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("Test face", 1, nil), files)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("publish without device bindings error = %v, want invalid", err)

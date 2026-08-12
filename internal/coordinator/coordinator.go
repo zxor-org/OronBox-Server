@@ -24,6 +24,8 @@ import (
 
 const interval = 3 * time.Second
 
+const pollInterval = 5 * time.Minute
+
 type Coordinator struct {
 	db       *sql.DB
 	store    *store.Store
@@ -257,6 +259,7 @@ type publication struct {
 	ID, RevisionID, ResourceID, OwnerID, OwnerName, Target string
 	LeaseToken                                             string
 	Config                                                 []byte
+	StatusDetail                                           []byte
 	Attempts                                               int
 }
 
@@ -270,15 +273,15 @@ WITH candidate AS (
  ORDER BY p.created_at LIMIT 1 FOR UPDATE OF p SKIP LOCKED
 ), claimed AS (
  UPDATE publications p SET state='running',attempts=attempts+1,updated_at=now() FROM candidate c WHERE p.id=c.id
- RETURNING p.id,p.revision_id,p.target,p.config,p.attempts
+ RETURNING p.id,p.revision_id,p.target,p.config,p.status_detail,p.attempts
 ), recorded AS (
  INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail)
  SELECT id,attempts,'execute','execution_started','pending','running',jsonb_build_object('target',target) FROM claimed
  RETURNING publication_id
 )
-SELECT c.id::text,c.revision_id::text,r.id::text,r.owner_id::text,u.username,c.target,c.config,c.attempts
+SELECT c.id::text,c.revision_id::text,r.id::text,r.owner_id::text,u.username,c.target,c.config,COALESCE(c.status_detail,'{}'::jsonb),c.attempts
 FROM claimed c JOIN recorded history ON history.publication_id=c.id JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).
-		Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts)
+		Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.StatusDetail, &item.Attempts)
 	if err != nil {
 		return err
 	}
@@ -341,7 +344,7 @@ func (c *Coordinator) failPublicationAttempt(ctx context.Context, item publicati
 }
 
 func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snapshot []byte) error {
-	token, err := c.bandBBSToken(ctx, item.OwnerID)
+	token, subject, err := c.bandBBSToken(ctx, item.OwnerID)
 	if err != nil {
 		return err
 	}
@@ -351,8 +354,8 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 		} `json:"targets"`
 	}
 	_ = json.Unmarshal(item.Config, &publishConfig)
-	var bound string
-	_ = c.db.QueryRowContext(ctx, `SELECT external_id FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs'`, item.ResourceID).Scan(&bound)
+	var bound, boundURL string
+	_ = c.db.QueryRowContext(ctx, `SELECT external_id,external_url FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs'`, item.ResourceID).Scan(&bound, &boundURL)
 	targetIDs := make([]int, 0, len(publishConfig.Targets))
 	for _, target := range publishConfig.Targets {
 		targetIDs = append(targetIDs, target.CategoryID)
@@ -373,24 +376,130 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 			bound = string(normalized)
 		}
 	}
-	result, err := c.band.Publish(ctx, token, existing, snapshot, item.Config)
+	config, progress := filterBandBBSConfig(item.Config, item.StatusDetail)
+	if len(config) == 0 {
+		return c.finish(ctx, item, "published", bound, boundURL, map[string]any{"resources": existing}, nil)
+	}
+	result, err := c.band.PublishWithProgress(ctx, token, subject, existing, progress, snapshot, config)
 	if err != nil {
+		if len(result.Resources) > 0 {
+			if persistErr := c.recordBandBBSPartial(ctx, item, result.Resources); persistErr != nil {
+				return fmt.Errorf("%w; persist BandBBS partial progress: %v", err, persistErr)
+			}
+		}
 		return err
 	}
 	canonical := make(map[string]string, len(result.Resources))
+	for categoryID, resourceID := range existing {
+		canonical[categoryID] = resourceID
+	}
 	for categoryID, resource := range result.Resources {
 		canonical[categoryID] = resource.ResourceID
 	}
 	externalID, _ := json.Marshal(canonical)
-	externalURL := ""
+	externalURL := boundURL
 	if len(publishConfig.Targets) > 0 {
-		externalURL = result.Resources[strconv.Itoa(publishConfig.Targets[0].CategoryID)].URL
+		if resource, ok := result.Resources[strconv.Itoa(publishConfig.Targets[0].CategoryID)]; ok {
+			externalURL = resource.URL
+		}
 	}
 	if err := c.finish(ctx, item, "published", string(externalID), externalURL, map[string]any{"resources": result.Resources}, nil); err != nil {
 		return err
 	}
 	c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", externalURL, "categories", len(result.Resources))
 	return nil
+}
+
+func filterBandBBSConfig(raw, detail []byte) ([]byte, map[string]bandbbs.CategoryResult) {
+	var config map[string]any
+	if json.Unmarshal(raw, &config) != nil {
+		return raw, nil
+	}
+	var targets []struct {
+		CategoryID int `json:"category_id"`
+	}
+	targetsRaw, _ := json.Marshal(config["targets"])
+	if json.Unmarshal(targetsRaw, &targets) != nil {
+		return raw, nil
+	}
+	completed := map[string]bandbbs.CategoryResult{}
+	versionTitle, _ := config["version_title"].(string)
+	needsUpdate := strings.TrimSpace(versionTitle) != ""
+	var status struct {
+		Completed map[string]any `json:"completed_categories"`
+	}
+	if json.Unmarshal(detail, &status) == nil {
+		for category, rawResult := range status.Completed {
+			encoded, err := json.Marshal(rawResult)
+			if err != nil {
+				continue
+			}
+			var result bandbbs.CategoryResult
+			if json.Unmarshal(encoded, &result) == nil && result.ResourceID != "" {
+				completed[category] = result
+			}
+		}
+	}
+	if len(completed) == 0 {
+		return raw, completed
+	}
+	kept := targets[:0]
+	for _, target := range targets {
+		result, done := completed[strconv.Itoa(target.CategoryID)]
+		fullyDone := done && result.VersionID != "" && (!needsUpdate || result.UpdateID != "")
+		if !fullyDone {
+			kept = append(kept, target)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, completed
+	}
+	config["targets"] = kept
+	filtered, err := json.Marshal(config)
+	if err != nil {
+		return raw, completed
+	}
+	return filtered, completed
+}
+
+func (c *Coordinator) recordBandBBSPartial(ctx context.Context, item publication, resources map[string]bandbbs.CategoryResult) error {
+	completed := map[string]any{}
+	var prior struct {
+		Completed map[string]any `json:"completed_categories"`
+	}
+	if json.Unmarshal(item.StatusDetail, &prior) == nil {
+		for category, result := range prior.Completed {
+			completed[category] = result
+		}
+	}
+	for category, result := range resources {
+		completed[category] = result
+	}
+	raw, _ := json.Marshal(map[string]any{"completed_categories": completed})
+	external := map[string]string{}
+	for category, result := range resources {
+		external[category] = result.ResourceID
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var previous, previousURL string
+	_ = tx.QueryRowContext(ctx, `SELECT external_id,external_url FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs' FOR UPDATE`, item.ResourceID).Scan(&previous, &previousURL)
+	merged := map[string]string{}
+	_ = json.Unmarshal([]byte(previous), &merged)
+	for category, resourceID := range external {
+		merged[category] = resourceID
+	}
+	mergedID, _ := json.Marshal(merged)
+	if err := c.upsertBandBBSBinding(ctx, tx, item.ResourceID, string(mergedID), previousURL, []byte("{}")); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE publications SET status_detail=$2 WHERE id=$1 AND state='running'`, item.ID, raw); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func parseBandBBSBinding(raw string, targetCategoryIDs []int) (map[string]string, error) {
@@ -489,7 +598,11 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 		return err
 	}
 	defer tx.Rollback()
-	updateResult, err := tx.ExecContext(ctx, `UPDATE publications SET state=$2,external_id=$3,external_url=$4,error_message='',status_detail=$5,next_attempt_at=CASE WHEN $2='reviewing' THEN now()+interval '20 seconds' ELSE next_attempt_at END,updated_at=now() WHERE id=$1 AND state='running'`, item.ID, state, externalID, externalURL, raw)
+	nextAttempt := time.Time{}
+	if state == "reviewing" {
+		nextAttempt = time.Now().UTC().Add(pollInterval)
+	}
+	updateResult, err := tx.ExecContext(ctx, `UPDATE publications SET state=$2,external_id=$3,external_url=$4,error_message='',status_detail=$5,next_attempt_at=CASE WHEN $2='reviewing' THEN $6 ELSE next_attempt_at END,updated_at=now() WHERE id=$1 AND state='running'`, item.ID, state, externalID, externalURL, raw, nextAttempt)
 	if err != nil {
 		return err
 	}
@@ -503,6 +616,12 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 	if _, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'execute',$3,'running',$4,jsonb_build_object('external_id',$5::text,'external_url',$6::text,'status_detail',$7::jsonb))`, item.ID, item.Attempts, event, state, externalID, externalURL, raw); err != nil {
 		return err
 	}
+	if item.Target == "bandbbs" {
+		if err := c.upsertBandBBSBinding(ctx, tx, item.ResourceID, externalID, externalURL, metaRaw); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,meta) VALUES(gen_random_uuid(),$1,$2,$3,$4,$5) ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url,meta=external_bindings.meta||excluded.meta WHERE external_bindings.external_id=excluded.external_id`, item.ResourceID, item.Target, externalID, externalURL, metaRaw)
 	if err != nil {
 		return err
@@ -511,6 +630,57 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 		return fmt.Errorf("external %s resource %s is already bound to another identity", item.Target, item.ResourceID)
 	}
 	return tx.Commit()
+}
+
+func (c *Coordinator) upsertBandBBSBinding(ctx context.Context, tx *sql.Tx, resourceID, externalID, externalURL string, meta []byte) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox-bandbbs-binding'))`); err != nil {
+		return fmt.Errorf("lock BandBBS bindings: %w", err)
+	}
+	var existing string
+	err := tx.QueryRowContext(ctx, `SELECT external_id FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs' FOR UPDATE`, resourceID).Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	newMap := map[string]string{}
+	if err := json.Unmarshal([]byte(externalID), &newMap); err != nil || len(newMap) == 0 {
+		return fmt.Errorf("invalid BandBBS binding returned by publisher")
+	}
+	if existing != "" {
+		oldMap := map[string]string{}
+		if err := json.Unmarshal([]byte(existing), &oldMap); err != nil {
+			return fmt.Errorf("invalid existing BandBBS binding")
+		}
+		for categoryID, oldResourceID := range oldMap {
+			if newMap[categoryID] != oldResourceID {
+				return fmt.Errorf("BandBBS category %s is already bound to resource %s", categoryID, oldResourceID)
+			}
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT resource_id::text,external_id FROM external_bindings WHERE provider='bandbbs' AND resource_id<>$1`, resourceID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var otherResourceID, raw string
+		if err := rows.Scan(&otherResourceID, &raw); err != nil {
+			return err
+		}
+		otherMap := map[string]string{}
+		if json.Unmarshal([]byte(raw), &otherMap) != nil {
+			continue
+		}
+		for categoryID, externalResourceID := range newMap {
+			if otherMap[categoryID] == externalResourceID {
+				return fmt.Errorf("BandBBS category %s resource %s is already bound to OronBox resource %s", categoryID, externalResourceID, otherResourceID)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO external_bindings(id,resource_id,provider,external_id,external_url,meta) VALUES(gen_random_uuid(),$1,'bandbbs',$2,$3,$4) ON CONFLICT(resource_id,provider) DO UPDATE SET external_id=excluded.external_id,external_url=excluded.external_url,meta=external_bindings.meta||excluded.meta`, resourceID, externalID, externalURL, meta)
+	return err
 }
 
 func (c *Coordinator) pollOne(ctx context.Context) error {
@@ -522,12 +692,9 @@ func (c *Coordinator) pollOne(ctx context.Context) error {
 ), claimed AS (
  UPDATE publications p SET lease_token=gen_random_uuid(),lease_expires_at=now()+interval '5 minutes',updated_at=now() FROM candidate c WHERE p.id=c.id
  RETURNING p.id,p.revision_id,p.target,p.config,p.attempts,p.status_detail,p.lease_token
-), recorded AS (
- INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail)
- SELECT id,attempts,'poll','poll_started','reviewing','reviewing',jsonb_build_object('lease_seconds',300) FROM claimed RETURNING publication_id
 )
 SELECT p.id::text,p.revision_id::text,r.id::text,r.owner_id::text,u.username,p.target,p.config,p.attempts,p.status_detail,p.lease_token::text
-FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts, &detail, &item.LeaseToken)
+FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources r ON r.id=rr.resource_id JOIN users u ON u.id=r.owner_id`).Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.OwnerID, &item.OwnerName, &item.Target, &item.Config, &item.Attempts, &detail, &item.LeaseToken)
 	if err != nil {
 		return err
 	}
@@ -536,16 +703,17 @@ FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resourc
 	}
 	if json.Unmarshal(detail, &statusDetail) != nil || statusDetail.PullRequestNumber <= 0 {
 		err = fmt.Errorf("publication %s has no pull request number", item.ID)
-		return c.failPublicationPoll(ctx, item, err)
+		return c.failPublicationPoll(ctx, item, detail, err)
 	}
 	token, err := c.githubToken(ctx, item.OwnerID)
 	if err != nil {
-		return c.failPublicationPoll(ctx, item, err)
+		return c.failPublicationPoll(ctx, item, detail, err)
 	}
 	status, err := c.astro.PullRequest(ctx, token, statusDetail.PullRequestNumber)
 	if err != nil {
-		return c.failPublicationPoll(ctx, item, err)
+		return c.failPublicationPoll(ctx, item, detail, err)
 	}
+	pollDetail := pollStatusDetail(detail, status.State, status.URL, "")
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -553,7 +721,7 @@ FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resourc
 	defer tx.Rollback()
 	if status.Merged {
 		var result sql.Result
-		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='published',external_url=$2,error_message='',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, status.URL, item.LeaseToken)
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='published',external_url=$2,error_message='',status_detail=$3,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$4`, item.ID, status.URL, pollDetail, item.LeaseToken)
 		if err == nil {
 			err = requirePublicationLease(result, item.ID)
 		}
@@ -565,7 +733,7 @@ FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resourc
 		}
 	} else if status.State == "closed" {
 		var result sql.Result
-		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$2`, item.ID, item.LeaseToken)
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',status_detail=$2,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, pollDetail, item.LeaseToken)
 		if err == nil {
 			err = requirePublicationLease(result, item.ID)
 		}
@@ -577,12 +745,9 @@ FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resourc
 		}
 	} else {
 		var result sql.Result
-		result, err = tx.ExecContext(ctx, `UPDATE publications SET error_message='',next_attempt_at=now()+interval '20 seconds',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$2`, item.ID, item.LeaseToken)
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET error_message='',status_detail=$2,next_attempt_at=$3,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$4`, item.ID, pollDetail, time.Now().UTC().Add(pollInterval), item.LeaseToken)
 		if err == nil {
 			err = requirePublicationLease(result, item.ID)
-		}
-		if err == nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'poll','review_pending','reviewing','reviewing',jsonb_build_object('external_url',$3::text,'pull_request_state',$4::text))`, item.ID, item.Attempts, status.URL, status.State)
 		}
 	}
 	if err != nil {
@@ -591,27 +756,54 @@ FROM claimed p JOIN recorded history ON history.publication_id=p.id JOIN resourc
 	return tx.Commit()
 }
 
-func (c *Coordinator) failPublicationPoll(ctx context.Context, item publication, pollErr error) error {
+func (c *Coordinator) failPublicationPoll(ctx context.Context, item publication, detail []byte, pollErr error) error {
 	message := compactError(pollErr)
+	pollDetail := pollStatusDetail(detail, "", "", message)
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE publications SET error_message=$2,next_attempt_at=now()+interval '1 minute',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, message, item.LeaseToken)
+	result, err := tx.ExecContext(ctx, `UPDATE publications SET error_message=$2,status_detail=$3,next_attempt_at=$4,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$5`, item.ID, message, pollDetail, time.Now().UTC().Add(pollInterval), item.LeaseToken)
 	if err != nil {
 		return err
 	}
 	if err := requirePublicationLease(result, item.ID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,error_message,detail) VALUES($1,$2,'poll','poll_failed','reviewing','reviewing',$3,jsonb_build_object('retry_delay_seconds',60))`, item.ID, item.Attempts, message); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return pollErr
+	return nil
+}
+
+func pollStatusDetail(raw []byte, state, externalURL, pollError string) []byte {
+	detail := map[string]any{}
+	if err := json.Unmarshal(raw, &detail); err != nil || detail == nil {
+		detail = map[string]any{}
+	}
+	count := 0
+	if value, ok := detail["poll_count"].(float64); ok && value >= 0 {
+		count = int(value)
+	}
+	detail["poll_count"] = count + 1
+	detail["last_polled_at"] = time.Now().UTC().Format(time.RFC3339)
+	if state != "" {
+		detail["last_poll_state"] = state
+	}
+	if externalURL != "" {
+		detail["last_poll_url"] = externalURL
+	}
+	if pollError == "" {
+		delete(detail, "last_poll_error")
+	} else {
+		detail["last_poll_error"] = compactError(errors.New(pollError))
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 func requirePublicationLease(result sql.Result, publicationID string) error {

@@ -15,7 +15,7 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
-func TestPublicationCoordinatorAppendsExecutionAndPollHistory(t *testing.T) {
+func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not set")
@@ -67,10 +67,21 @@ func TestPublicationCoordinatorAppendsExecutionAndPollHistory(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE publications SET state='reviewing',status_detail='{"pull_request_number":123}',next_attempt_at=now(),error_message='' WHERE id=$1`, publicationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.pollOne(ctx); err == nil {
-		t.Fatal("pollOne without a GitHub grant unexpectedly succeeded")
+	if err := c.pollOne(ctx); err != nil {
+		t.Fatalf("pollOne failed to persist transient poll state: %v", err)
 	}
-	assertPublicationEvents(t, db, publicationID, []string{"execution_started", "retry_scheduled", "poll_started", "poll_failed"})
+	assertPublicationEvents(t, db, publicationID, []string{"execution_started", "retry_scheduled"})
+	var statusDetail []byte
+	var nextAttempt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT status_detail,next_attempt_at FROM publications WHERE id=$1`, publicationID).Scan(&statusDetail, &nextAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(statusDetail), `"poll_count":1`) || !strings.Contains(string(statusDetail), `"last_polled_at"`) || !strings.Contains(string(statusDetail), `"last_poll_error"`) {
+		t.Fatalf("poll status was not overwritten in status_detail: %s", statusDetail)
+	}
+	if time.Until(nextAttempt) < 4*time.Minute {
+		t.Fatalf("next poll is not scheduled five minutes later: %s", nextAttempt)
+	}
 	var leaseToken *string
 	if err := db.QueryRowContext(ctx, `SELECT lease_token::text FROM publications WHERE id=$1`, publicationID).Scan(&leaseToken); err != nil {
 		t.Fatal(err)

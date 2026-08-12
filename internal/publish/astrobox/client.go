@@ -85,6 +85,33 @@ type publishConfig struct {
 	BindABAccount bool     `json:"bind_ab_account"`
 }
 
+// supportedDeviceIDs mirrors the device IDs currently declared by
+// AstroBox-Repo/devices_v2.json. Keep this list intentionally narrower than
+// OronBox's device catalog: AstroBox rejects catalog entries that reference an
+// unknown V2 device ID.
+var supportedDeviceIDs = map[string]struct{}{
+	"xmb9":       {},
+	"xmb9p":      {},
+	"xmb10":      {},
+	"xmb10nfc":   {},
+	"xmb10p":     {},
+	"xmws3":      {},
+	"xmws4":      {},
+	"xmws4xring": {},
+	"xmws441":    {},
+	"xmws5":      {},
+	"xmrw5":      {},
+	"xmrw5xring": {},
+	"xmrw6":      {},
+}
+
+// IsSupportedDeviceID reports whether an ID is present in AstroBox-Repo's
+// current V2 device catalog.
+func IsSupportedDeviceID(id string) bool {
+	_, ok := supportedDeviceIDs[strings.TrimSpace(id)]
+	return ok
+}
+
 func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapshot, rawConfig []byte) (Result, error) {
 	var snap snapshot
 	var cfg publishConfig
@@ -106,6 +133,14 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	if len(snap.Artifacts) == 0 {
 		return Result{}, fmt.Errorf("AstroBox publication has no artifact")
+	}
+	for _, item := range snap.Artifacts {
+		if item.Platform != "vela_os" {
+			return Result{}, fmt.Errorf("AstroBox does not support %s resources", item.Platform)
+		}
+	}
+	if len(uniqueDevices(snap.Artifacts)) == 0 {
+		return Result{}, fmt.Errorf("AstroBox publication has no device supported by devices_v2.json")
 	}
 	restype := ""
 	for _, item := range snap.Artifacts {
@@ -166,16 +201,23 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	downloads := map[string]map[string]string{}
 	var entries []downloadEntry
 	for index, item := range snap.Artifacts {
+		devices := supportedArtifactDevices(item.Devices)
+		if len(devices) == 0 {
+			continue
+		}
 		_, data, err := c.readBlob(ctx, item.Blob)
 		if err != nil {
 			return Result{}, err
 		}
 		filePath := "downloads/" + strconv.Itoa(index) + "-" + path.Base(strings.ReplaceAll(item.Name, "\\", "/"))
 		files[filePath] = data
-		entries = append(entries, downloadEntry{File: filePath, Version: item.Version, SHA256: item.Blob, Devices: item.Devices})
-		for _, device := range item.Devices {
+		entries = append(entries, downloadEntry{File: filePath, Version: item.Version, SHA256: item.Blob, Devices: devices})
+		for _, device := range devices {
 			downloads[device.ID] = map[string]string{"version": item.Version, "file_name": filePath, "sha256": item.Blob}
 		}
+	}
+	if len(entries) == 0 {
+		return Result{}, fmt.Errorf("AstroBox publication has no device supported by devices_v2.json")
 	}
 	author := strings.TrimSpace(cfg.Author)
 	if author == "" {
@@ -782,7 +824,7 @@ func uniqueDevices(artifacts []artifact) []string {
 	seen := map[string]bool{}
 	var result []string
 	for _, item := range artifacts {
-		for _, device := range item.Devices {
+		for _, device := range supportedArtifactDevices(item.Devices) {
 			if !seen[device.ID] {
 				seen[device.ID] = true
 				result = append(result, device.ID)
@@ -792,20 +834,26 @@ func uniqueDevices(artifacts []artifact) []string {
 	return result
 }
 
+func supportedArtifactDevices(devices []deviceRef) []deviceRef {
+	result := make([]deviceRef, 0, len(devices))
+	for _, device := range devices {
+		if IsSupportedDeviceID(device.ID) {
+			result = append(result, device)
+		}
+	}
+	return result
+}
+
 func uniqueVendors(artifacts []artifact) []string {
 	seen := map[string]bool{}
 	var result []string
 	for _, item := range artifacts {
-		vendor := ""
-		switch item.Platform {
-		case "vela_os":
-			vendor = "Xiaomi"
-		case "zepp_os":
-			vendor = "Amazfit"
-		}
-		if vendor != "" && !seen[vendor] {
-			seen[vendor] = true
-			result = append(result, vendor)
+		for range supportedArtifactDevices(item.Devices) {
+			vendor := "xiaomi"
+			if !seen[vendor] {
+				seen[vendor] = true
+				result = append(result, vendor)
+			}
 		}
 	}
 	return result
@@ -813,9 +861,22 @@ func uniqueVendors(artifacts []artifact) []string {
 
 func validateCatalogRow(values []string) error {
 	columns := []string{"id", "name", "restype", "repo_owner", "repo_name", "repo_commit_hash", "icon", "cover", "tags", "device_vendors", "devices", "paid_type"}
+	if len(values) != len(columns) {
+		return fmt.Errorf("AstroBox catalog row must contain %d fields", len(columns))
+	}
 	for index, value := range values {
 		if strings.ContainsAny(value, ",\r\n\x00") {
 			return fmt.Errorf("AstroBox catalog field %s contains a structural CSV character", columns[index])
+		}
+	}
+	for _, vendor := range strings.Split(values[9], ";") {
+		if vendor != "xiaomi" {
+			return fmt.Errorf("unsupported AstroBox catalog vendor %q", vendor)
+		}
+	}
+	for _, device := range strings.Split(values[10], ";") {
+		if device != "" && !IsSupportedDeviceID(device) {
+			return fmt.Errorf("unsupported AstroBox catalog device %q", device)
 		}
 	}
 	return nil
