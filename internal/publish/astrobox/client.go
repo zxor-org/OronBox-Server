@@ -3,6 +3,7 @@ package astrobox
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
@@ -30,9 +31,13 @@ type Client struct {
 	store *store.Store
 }
 type Result struct {
-	PullRequest       string `json:"pull_request"`
-	PullRequestNumber int    `json:"pull_request_number"`
-	Repository        string `json:"repository"`
+	PullRequest        string   `json:"pull_request"`
+	PullRequestNumber  int      `json:"pull_request_number"`
+	Repository         string   `json:"repository"`
+	SubmissionProtocol string   `json:"submission_protocol,omitempty"`
+	SubmissionPath     string   `json:"submission_path,omitempty"`
+	CatalogRow         []string `json:"catalog_row,omitempty"`
+	CatalogCommit      string   `json:"catalog_commit,omitempty"`
 }
 type PullRequestStatus struct {
 	State  string `json:"state"`
@@ -83,6 +88,22 @@ type publishConfig struct {
 	PaidType      string   `json:"paid_type"`
 	Author        string   `json:"author"`
 	BindABAccount bool     `json:"bind_ab_account"`
+}
+
+var catalogHeader = []string{"id", "name", "restype", "repo_owner", "repo_name", "repo_commit_hash", "icon", "cover", "tags", "device_vendors", "devices", "paid_type"}
+
+const (
+	submissionRootPath        = "tmp"
+	submissionCSVFileName     = "resource.csv"
+	submissionRequestFileName = "request.json"
+)
+
+type submissionRequest struct {
+	SchemaVersion     int     `json:"schema_version"`
+	Mode              string  `json:"mode"`
+	OriginalID        *string `json:"original_id"`
+	BaseEntryDigest   *string `json:"base_entry_digest"`
+	BaseCatalogCommit *string `json:"base_catalog_commit"`
 }
 
 // supportedDeviceIDs mirrors the device IDs currently declared by
@@ -235,19 +256,23 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err != nil {
 		return Result{}, err
 	}
-	baseSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+	// The fork is only a PR transport. Base staging and removal branches on
+	// the current upstream commit so stale fork commits are never included.
+	baseSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
 	if err != nil {
 		return Result{}, err
 	}
-	branch := "oronbox-resource-" + sanitize(cfg.ItemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, baseSHA); err != nil {
-		return Result{}, err
-	}
-	catalog, sha, err := c.getContent(ctx, token, fork.Owner, fork.Name, c.cfg.CatalogPath, branch)
+	catalog, _, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, baseSHA)
 	if err != nil {
 		return Result{}, err
 	}
-	header := []string{"id", "name", "restype", "repo_owner", "repo_name", "repo_commit_hash", "icon", "cover", "tags", "device_vendors", "devices", "paid_type"}
+	rows, err := csv.NewReader(bytes.NewReader(catalog)).ReadAll()
+	if err != nil && strings.TrimSpace(string(catalog)) != "" {
+		return Result{}, fmt.Errorf("parse AstroBox catalog: %w", err)
+	}
+	if len(rows) == 0 {
+		rows = append(rows, catalogHeader)
+	}
 	devices := uniqueDevices(snap.Artifacts)
 	shortCommit := commit
 	if len(shortCommit) > 7 {
@@ -257,40 +282,65 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err := validateCatalogRow(line); err != nil {
 		return Result{}, err
 	}
-	rows, err := csv.NewReader(bytes.NewReader(catalog)).ReadAll()
-	if err != nil && strings.TrimSpace(string(catalog)) != "" {
-		return Result{}, fmt.Errorf("parse AstroBox catalog: %w", err)
+	mode := "create"
+	var originalID, baseDigest *string
+	for index := 1; index < len(rows); index++ {
+		if len(rows[index]) == 0 || rows[index][0] != cfg.ItemID {
+			continue
+		}
+		if len(rows[index]) < len(catalogHeader) || !strings.EqualFold(rows[index][3], repo.Owner) || !strings.EqualFold(rows[index][4], repo.Name) {
+			return Result{}, fmt.Errorf("AstroBox item_id %q is already bound to another repository", cfg.ItemID)
+		}
+		mode = "edit"
+		id := cfg.ItemID
+		originalID = &id
+		digest, err := catalogRowDigest(rows[index])
+		if err != nil {
+			return Result{}, err
+		}
+		baseDigest = &digest
+		break
 	}
-	if len(rows) == 0 {
-		rows = append(rows, header)
+	request := submissionRequest{SchemaVersion: 1, Mode: mode, OriginalID: originalID, BaseEntryDigest: baseDigest}
+	if mode == "edit" {
+		request.BaseCatalogCommit = stringPtr(baseSHA)
+	}
+	requestJSON, err := json.MarshalIndent(request, "", "  ")
+	if err != nil {
+		return Result{}, err
+	}
+	resourceCSV, err := encodeCatalogRows([][]string{catalogHeader, line})
+	if err != nil {
+		return Result{}, err
+	}
+	login, err := c.currentUser(ctx, token)
+	if err != nil {
+		return Result{}, err
+	}
+	submissionPath, err := c.submissionPath(login, repo.Name)
+	if err != nil {
+		return Result{}, err
+	}
+	branch := "oronbox-resource-" + sanitize(cfg.ItemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, baseSHA); err != nil {
+		return Result{}, err
+	}
+	if _, err := c.uploadFiles(ctx, token, forkForBranch(fork, branch), "Submit "+snap.Revision.Name, map[string][]byte{
+		path.Join(submissionPath, submissionCSVFileName):     resourceCSV,
+		path.Join(submissionPath, submissionRequestFileName): requestJSON,
+	}); err != nil {
+		return Result{}, err
 	}
 	operation := "Add"
-	replaced := false
-	for index := 1; index < len(rows); index++ {
-		if len(rows[index]) > 0 && rows[index][0] == cfg.ItemID {
-			rows[index] = line
-			replaced = true
-			operation = "Update"
-			break
-		}
-	}
-	if !replaced {
-		rows = append(rows, line)
-	}
-	var encodedCatalog bytes.Buffer
-	writer := csv.NewWriter(&encodedCatalog)
-	if err := writer.WriteAll(rows); err != nil {
-		return Result{}, err
-	}
-	if err := c.putContentWithSHA(ctx, token, fork.Owner, fork.Name, c.cfg.CatalogPath, branch, operation+" "+cfg.ItemID, encodedCatalog.Bytes(), sha); err != nil {
-		return Result{}, err
+	if mode == "edit" {
+		operation = "Update"
 	}
 	body := buildPRBody(snap, cfg, restype, repo, shortCommit, iconPath, coverPath, previews, entries)
 	pr, err := c.createPR(ctx, token, "[OBCC] "+operation+" "+snap.Revision.Name, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + repo.Owner + "/" + repo.Name}, nil
+	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + repo.Owner + "/" + repo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: baseSHA}, nil
 }
 
 type repo struct {
@@ -311,7 +361,7 @@ func (c *Client) Remove(ctx context.Context, token, itemID, name string) (Result
 	if err != nil {
 		return Result{}, err
 	}
-	baseSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+	baseSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
 	if err != nil {
 		return Result{}, err
 	}
@@ -319,7 +369,7 @@ func (c *Client) Remove(ctx context.Context, token, itemID, name string) (Result
 	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, baseSHA); err != nil {
 		return Result{}, err
 	}
-	catalog, sha, err := c.getContent(ctx, token, fork.Owner, fork.Name, c.cfg.CatalogPath, branch)
+	catalog, sha, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, baseSHA)
 	if err != nil {
 		return Result{}, err
 	}
@@ -523,6 +573,103 @@ func (c *Client) currentUser(ctx context.Context, token string) (string, error) 
 	_, err := c.request(ctx, token, http.MethodGet, c.api+"/user", nil, &response)
 	return response.Login, err
 }
+
+type CatalogCheck struct {
+	Found   bool
+	Matches bool
+	Row     []string
+}
+
+func (c *Client) CheckCatalogEntry(ctx context.Context, token, itemID string, expected []string) (CatalogCheck, error) {
+	data, _, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, c.cfg.RepoBranch)
+	if err != nil {
+		return CatalogCheck{}, err
+	}
+	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
+	if err != nil {
+		return CatalogCheck{}, fmt.Errorf("parse AstroBox catalog: %w", err)
+	}
+	check := CatalogCheck{}
+	for index := 1; index < len(rows); index++ {
+		if len(rows[index]) == 0 || rows[index][0] != itemID {
+			continue
+		}
+		check.Found = true
+		if catalogRowsEqual(rows[index], expected) {
+			check.Matches = true
+			check.Row = rows[index]
+			return check, nil
+		}
+		if check.Row == nil {
+			check.Row = rows[index]
+		}
+	}
+	return check, nil
+}
+
+func (c *Client) submissionPath(login, repoName string) (string, error) {
+	login = strings.ToLower(strings.TrimSpace(login))
+	repoName = strings.ToLower(strings.TrimSpace(repoName))
+	if err := validateSubmissionSegment(login, "GitHub login"); err != nil {
+		return "", err
+	}
+	if err := validateSubmissionSegment(repoName, "GitHub repository name"); err != nil {
+		return "", err
+	}
+	return path.Join(submissionRootPath, login, repoName), nil
+}
+
+func validateSubmissionSegment(value, label string) error {
+	if value == "" || value == "." || value == ".." {
+		return fmt.Errorf("%s is required", label)
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return fmt.Errorf("invalid %s %q", label, value)
+	}
+	return nil
+}
+
+func encodeCatalogRows(rows [][]string) ([]byte, error) {
+	var encoded bytes.Buffer
+	writer := csv.NewWriter(&encoded)
+	if err := writer.WriteAll(rows); err != nil {
+		return nil, err
+	}
+	return encoded.Bytes(), nil
+}
+
+func catalogRowDigest(row []string) (string, error) {
+	encoded, err := encodeCatalogRows([][]string{row})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
+}
+
+func catalogRowsEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func forkForBranch(value repo, branch string) repo {
+	value.Branch = branch
+	return value
+}
+
 func (c *Client) ensureFork(ctx context.Context, token string) (repo, error) {
 	var response struct {
 		Name          string `json:"name"`
@@ -548,11 +695,10 @@ func (c *Client) ensureFork(ctx context.Context, token string) (repo, error) {
 		response.DefaultBranch = c.cfg.RepoBranch
 	}
 	fork := repo{Owner: response.Owner.Login, Name: response.Name, Branch: response.DefaultBranch}
+	// Do not rewrite the fork default branch. Every outgoing branch is based on
+	// the upstream SHA directly, so an existing fork can safely retain old PRs.
 	for i := 0; i < 12; i++ {
 		if _, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch); err == nil {
-			if err := c.syncFork(ctx, token, fork); err != nil {
-				return repo{}, err
-			}
 			return fork, nil
 		}
 		time.Sleep(1500 * time.Millisecond)

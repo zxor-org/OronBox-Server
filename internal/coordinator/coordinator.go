@@ -567,7 +567,14 @@ func (c *Coordinator) publishAstroBox(ctx context.Context, item publication, sna
 	if err != nil {
 		return err
 	}
-	detail := map[string]any{"pull_request_number": result.PullRequestNumber, "repository": result.Repository}
+	detail := map[string]any{
+		"pull_request_number": result.PullRequestNumber,
+		"repository":          result.Repository,
+		"submission_protocol": result.SubmissionProtocol,
+		"submission_path":     result.SubmissionPath,
+		"catalog_row":         result.CatalogRow,
+		"catalog_commit":      result.CatalogCommit,
+	}
 	var astroConfig struct {
 		ItemID string `json:"item_id"`
 	}
@@ -699,7 +706,9 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		return err
 	}
 	var statusDetail struct {
-		PullRequestNumber int `json:"pull_request_number"`
+		PullRequestNumber  int      `json:"pull_request_number"`
+		SubmissionProtocol string   `json:"submission_protocol"`
+		CatalogRow         []string `json:"catalog_row"`
 	}
 	if json.Unmarshal(detail, &statusDetail) != nil || statusDetail.PullRequestNumber <= 0 {
 		err = fmt.Errorf("publication %s has no pull request number", item.ID)
@@ -714,12 +723,26 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		return c.failPublicationPoll(ctx, item, detail, err)
 	}
 	pollDetail := pollStatusDetail(detail, status.State, status.URL, "")
+	catalogApplied := true
+	var catalogCheck astrobox.CatalogCheck
+	if status.Merged && statusDetail.SubmissionProtocol == "v2" {
+		if len(statusDetail.CatalogRow) != 12 {
+			err = fmt.Errorf("AstroBox v2 publication has no expected catalog row")
+			return c.failPublicationPoll(ctx, item, detail, err)
+		}
+		catalogCheck, err = c.astro.CheckCatalogEntry(ctx, token, statusDetail.CatalogRow[0], statusDetail.CatalogRow)
+		if err != nil {
+			return c.failPublicationPoll(ctx, item, detail, err)
+		}
+		catalogApplied = catalogCheck.Matches
+		pollDetail = pollCatalogStatusDetail(pollDetail, catalogCheck)
+	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if status.Merged {
+	if status.Merged && catalogApplied {
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='published',external_url=$2,error_message='',status_detail=$3,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$4`, item.ID, status.URL, pollDetail, item.LeaseToken)
 		if err == nil {
@@ -731,7 +754,7 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		if err == nil {
 			c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", status.URL)
 		}
-	} else if status.State == "closed" {
+	} else if !status.Merged && status.State == "closed" {
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',status_detail=$2,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, pollDetail, item.LeaseToken)
 		if err == nil {
@@ -798,6 +821,30 @@ func pollStatusDetail(raw []byte, state, externalURL, pollError string) []byte {
 		delete(detail, "last_poll_error")
 	} else {
 		detail["last_poll_error"] = compactError(errors.New(pollError))
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func pollCatalogStatusDetail(raw []byte, check astrobox.CatalogCheck) []byte {
+	detail := map[string]any{}
+	if err := json.Unmarshal(raw, &detail); err != nil || detail == nil {
+		detail = map[string]any{}
+	}
+	state := "pending"
+	if check.Matches {
+		state = "applied"
+	} else if check.Found {
+		state = "mismatch"
+	}
+	detail["catalog_state"] = state
+	if check.Found {
+		detail["catalog_row_found"] = true
+	} else {
+		detail["catalog_row_found"] = false
 	}
 	encoded, err := json.Marshal(detail)
 	if err != nil {

@@ -1,25 +1,26 @@
-# OronBox Server
+<p align="center">
+  <img src="https://raw.githubusercontent.com/zxor-org/OronBox/main/assets/images/app_icon.png" width="112" alt="OronBox">
+</p>
 
-OronBox 的开源资源服务端，使用 Go 构建
+<h1 align="center">OronBox Server</h1>
 
-The open-source resource server for OronBox, built with Go
+<p align="center">OronBox 的资源、审核与跨平台发布服务</p>
 
-> ⚠️ OronBox Server 仍在积极开发，尚未达到生产可用状态
->
-> ⚠️ OronBox Server is under active development and is not production-ready
+<p align="center">
+  <a href="https://github.com/zxor-org/OronBox-Server/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zxor-org/OronBox-Server/ci.yml?label=CI" alt="CI status"></a>
+  <a href="https://github.com/zxor-org/OronBox-Server/releases"><img src="https://img.shields.io/github/v/release/zxor-org/OronBox-Server?display_name=tag&sort=semver&label=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/zxor-org/OronBox-Server" alt="License"></a>
+  <a href="https://github.com/zxor-org/OronBox-Server/stargazers"><img src="https://img.shields.io/github/stars/zxor-org/OronBox-Server?style=flat" alt="GitHub stars"></a>
+</p>
 
-## 功能状态 / Feature status
+OronBox Server is the production resource service behind OronBox. It provides the shared resource catalog, creator revisions, moderation, downloads, user feedback and publication integrations for BandBBS and AstroBox-Repo.
 
-| 功能 / Feature | 状态 / Status |
-| --- | --- |
-| 米坛 OAuth 登录 / BandBBS OAuth sign-in | ✅ 已完成 / Complete |
-| OronBox 资源浏览与下载 / OronBox resource discovery and downloads | ✅ 已完成 / Complete |
-| OronBox 插件发布与下载 / OronBox plugin publishing and downloads | ✅ 已完成 / Complete |
-| VelaOS 快应用与表盘发布 / VelaOS quick app and watchface publishing | ✅ 已完成 / Complete |
-| 资源修订与审核 / Resource revisions and review | ✅ 已完成 / Complete |
-| 米坛同步发布 / BandBBS publishing | ✅ 已完成 / Complete |
-| AstroBox-Repo 同步发布 / AstroBox-Repo publishing | ✅ 已完成 / Complete |
-| 用户反馈与版本信息 / Feedback and release information | ✅ 已完成 / Complete |
+## 快速入口 / Quick links
+
+- [配置示例 / Configuration](.env.example)
+- [后台运维手册 / Operations guide](docs/admin.md)
+- [问题反馈 / Issues](https://github.com/zxor-org/OronBox-Server/issues)
+- [客户端 / OronBox](https://github.com/zxor-org/OronBox)
 
 ## 技术栈 / Technology
 
@@ -27,7 +28,6 @@ The open-source resource server for OronBox, built with Go
 | --- | --- |
 | Go | HTTP 服务与业务逻辑 / HTTP service and application logic |
 | PostgreSQL | 账号、资源、修订、审核与发布状态 / Accounts, resources, revisions, reviews, and publication state |
-| 本地内容寻址存储 / Local content-addressed storage | 保存资源文件的权威副本 / Authoritative resource storage |
 | Cloudflare R2 | 可选的资源副本与下载线路 / Optional resource replica and download route |
 | BandBBS OAuth 与 API | 用户身份与米坛发布 / User identity and BandBBS publishing |
 | GitHub API | AstroBox-Repo 发布 / AstroBox-Repo publishing |
@@ -51,7 +51,7 @@ gofmt -w .
 go test ./...
 ```
 
-管理后台的角色边界、资源审核、发布控制、维护操作与上线验证流程见 [后台运维手册](docs/admin.md)。
+管理后台的角色边界、资源审核、发布控制、维护操作与上线验证流程见 [后台运维手册](docs/admin.md)
 
 ## 许可证 / License
 
