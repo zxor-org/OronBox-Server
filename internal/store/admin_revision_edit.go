@@ -32,7 +32,7 @@ func (input AdminRevisionDraftInput) normalized() (AdminRevisionDraftInput, erro
 	if input.PaidType == "" {
 		input.PaidType = "free"
 	}
-	if input.Name == "" || len(input.Name) > 120 || len(input.Summary) > 4000 {
+	if input.Name == "" || len(input.Name) > 120 || input.Summary == "" || len(input.Summary) > 4000 {
 		return input, fmt.Errorf("%w: revision metadata", ErrAdminResourceConflict)
 	}
 	if input.PaidType != "free" && input.PaidType != "paid" && input.PaidType != "force_paid" {
@@ -121,7 +121,7 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 		if _, err := uuid.Parse(revisionID); err != nil {
 			return "", ErrAdminResourceNotFound
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions revision SET name=$3,summary=$4,paid_type=$5,publication_plan=$6,created_by=$7 WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending')))`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID)
+		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions revision SET name=$3,summary=$4,paid_type=$5,publication_plan=$6,created_by=$7,purchase_link=CASE WHEN $5='free' THEN '' ELSE purchase_link END,purchase_price=CASE WHEN $5='free' THEN NULL ELSE purchase_price END,purchase_currency=CASE WHEN $5='free' THEN '' ELSE purchase_currency END WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending')))`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID)
 		if err != nil {
 			return "", err
 		}
@@ -133,7 +133,9 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 			return "", fmt.Errorf("%w: base revision", ErrAdminResourceConflict)
 		}
 		var basePlan []byte
-		if err := tx.QueryRowContext(ctx, `SELECT publication_plan FROM resource_revisions WHERE id=$1 AND resource_id=$2`, input.BaseRevisionID, resourceID).Scan(&basePlan); errors.Is(err, sql.ErrNoRows) {
+		var basePurchaseLink, basePurchaseCurrency string
+		var basePurchasePrice sql.NullFloat64
+		if err := tx.QueryRowContext(ctx, `SELECT publication_plan,purchase_link,purchase_price,purchase_currency FROM resource_revisions WHERE id=$1 AND resource_id=$2`, input.BaseRevisionID, resourceID).Scan(&basePlan, &basePurchaseLink, &basePurchasePrice, &basePurchaseCurrency); errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("%w: base revision", ErrAdminResourceConflict)
 		} else if err != nil {
 			return "", err
@@ -149,12 +151,17 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 		if string(input.PublicationPlan) == "[]" && len(basePlan) > 0 {
 			input.PublicationPlan = append(json.RawMessage(nil), basePlan...)
 		}
+		if input.PaidType == "free" {
+			basePurchaseLink = ""
+			basePurchasePrice = sql.NullFloat64{}
+			basePurchaseCurrency = ""
+		}
 		var revisionNo int
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(revision_no),0)+1 FROM resource_revisions WHERE resource_id=$1`, resourceID).Scan(&revisionNo); err != nil {
 			return "", err
 		}
 		revisionID = uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,created_by,created_via,base_revision_id) VALUES($1,$2,$3,$4,$5,$6,'draft',$7,$8,'admin',$9)`, revisionID, resourceID, revisionNo, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID, input.BaseRevisionID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,purchase_link,purchase_price,purchase_currency,state,publication_plan,created_by,created_via,base_revision_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10,$11,'admin',$12)`, revisionID, resourceID, revisionNo, input.Name, input.Summary, input.PaidType, basePurchaseLink, basePurchasePrice, basePurchaseCurrency, input.PublicationPlan, actor.UserID, input.BaseRevisionID); err != nil {
 			return "", err
 		}
 		if err := cloneAdminRevisionAssets(ctx, tx, input.BaseRevisionID, revisionID); err != nil {

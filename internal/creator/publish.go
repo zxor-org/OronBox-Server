@@ -15,6 +15,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"net/url"
 	"strings"
 
@@ -22,7 +23,28 @@ import (
 	resourcecore "github.com/zxor-org/OronBox-Server/internal/resource"
 )
 
-const mediaMaxDimension = 1500
+const (
+	mediaMaxDimension       = 1500
+	maximumPurchasePriceCNY = 9999999999.99
+)
+
+func validPurchasePriceCNY(value float64) bool {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0.01 || value > maximumPurchasePriceCNY {
+		return false
+	}
+	scaled := value * 100
+	tolerance := math.Max(1e-6, math.Abs(scaled)*1e-15)
+	return math.Abs(scaled-math.Round(scaled)) <= tolerance
+}
+
+func publishesToAstroBox(publications []PublicationRequest) bool {
+	for _, publication := range publications {
+		if publication.Target == "astrobox" {
+			return true
+		}
+	}
+	return false
+}
 
 // Publish bundle layout: manifest.json plus the payload files it references.
 // Media files are pre-processed by the client (resized, encoded); the server
@@ -57,14 +79,17 @@ type publishBindingRef struct {
 }
 
 type publishManifest struct {
-	Version    int              `json:"version"`
-	Kind       string           `json:"kind"`
-	Name       string           `json:"name"`
-	Summary    string           `json:"summary"`
-	PaidType   ResourcePaidType `json:"paid_type"`
-	Attributes []string         `json:"attributes"`
-	Links      []ResourceLink   `json:"links"`
-	Media      struct {
+	Version          int              `json:"version"`
+	Kind             string           `json:"kind"`
+	Name             string           `json:"name"`
+	Summary          string           `json:"summary"`
+	PaidType         ResourcePaidType `json:"paid_type"`
+	PurchaseLink     string           `json:"purchase_link"`
+	PurchasePrice    *float64         `json:"purchase_price"`
+	PurchaseCurrency string           `json:"purchase_currency"`
+	Attributes       []string         `json:"attributes"`
+	Links            []ResourceLink   `json:"links"`
+	Media            struct {
 		Icon     *publishMediaRef  `json:"icon"`
 		Cover    *publishMediaRef  `json:"cover"`
 		Previews []publishMediaRef `json:"previews"`
@@ -124,9 +149,23 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	manifest.Name = strings.TrimSpace(manifest.Name)
 	manifest.Summary = strings.TrimSpace(manifest.Summary)
 	manifest.PaidType = ResourcePaidType(strings.TrimSpace(string(manifest.PaidType)))
+	manifest.PurchaseLink = strings.TrimSpace(manifest.PurchaseLink)
 	if manifest.PaidType == "" {
 		// Older clients did not send payment metadata; preserve their behavior.
 		manifest.PaidType = ResourcePaidFree
+	}
+	if manifest.PurchaseLink != "" {
+		parsed, parseErr := url.ParseRequestURI(manifest.PurchaseLink)
+		if parseErr != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || (publishesToAstroBox(manifest.Publications) && parsed.Scheme != "https") || len(manifest.PurchaseLink) > 2048 || manifest.PaidType == ResourcePaidFree {
+			return Workspace{}, fmt.Errorf("%w: external purchase link", ErrInvalid)
+		}
+		manifest.PurchaseCurrency = "CNY"
+		if (submit && manifest.PurchasePrice == nil) || (manifest.PurchasePrice != nil && !validPurchasePriceCNY(*manifest.PurchasePrice)) {
+			return Workspace{}, fmt.Errorf("%w: external purchase amount", ErrInvalid)
+		}
+	} else {
+		manifest.PurchasePrice = nil
+		manifest.PurchaseCurrency = ""
 	}
 	kind := ResourceKind(strings.TrimSpace(manifest.Kind))
 	if manifest.Version != 1 || !kind.Valid() || !manifest.PaidType.Valid() || manifest.Name == "" || manifest.Summary == "" || len(manifest.Name) > 120 || len(manifest.Summary) > 4000 {
@@ -252,7 +291,7 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	if submit {
 		revisionState = "submitted"
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,created_by,created_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'creator')`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, manifest.PaidType, revisionState, plan, ownerID); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,purchase_link,purchase_price,purchase_currency,state,publication_plan,created_by,created_via) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'creator')`, revisionID, resourceID, revisionNo, manifest.Name, manifest.Summary, manifest.PaidType, manifest.PurchaseLink, manifest.PurchasePrice, manifest.PurchaseCurrency, revisionState, plan, ownerID); err != nil {
 		return Workspace{}, err
 	}
 	for attribute := range seenAttributes {
@@ -481,6 +520,17 @@ func (s *Service) verifyBundlePublications(ctx context.Context, tx *sql.Tx, owne
 		case PublishBandBBS:
 			if !validBandBBSConfig(request.Config) {
 				return fmt.Errorf("%w: BandBBS publication settings are incomplete", ErrInvalid)
+			}
+			if manifest.PurchaseLink != "" {
+				if manifest.PurchasePrice == nil || math.IsNaN(*manifest.PurchasePrice) || math.IsInf(*manifest.PurchasePrice, 0) || *manifest.PurchasePrice <= 0 {
+					return fmt.Errorf("%w: BandBBS external purchase amount", ErrInvalid)
+				}
+				if rawPrice, exists := request.Config["price"]; exists {
+					price, ok := rawPrice.(float64)
+					if !ok || math.IsNaN(price) || math.IsInf(price, 0) || math.Abs(price-*manifest.PurchasePrice) > 0.005 {
+						return fmt.Errorf("%w: BandBBS external purchase amount does not match resource metadata", ErrInvalid)
+					}
+				}
 			}
 			packages := map[string]bool{}
 			for _, artifact := range artifacts {

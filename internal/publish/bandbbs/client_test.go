@@ -1,6 +1,11 @@
 package bandbbs
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -46,5 +51,64 @@ func TestFindMatchingUpdateRequiresExactContent(t *testing.T) {
 	}
 	if got := findMatchingUpdate(updates, "更新", "其他内容"); got != nil {
 		t.Fatalf("matched update = %#v, want no match", got)
+	}
+}
+
+func TestPublishExternalPurchaseUsesResourceMetadata(t *testing.T) {
+	t.Parallel()
+	var submitted url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/resources/" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		submitted = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource":{"resource_id":7568,"view_url":"https://www.bandbbs.cn/resources/7568/"}}`))
+	}))
+	defer server.Close()
+
+	price := 100.0
+	var snap snapshot
+	snap.Revision.Name = "测试付费资源"
+	snap.Revision.Summary = "外部购买测试"
+	snap.Revision.PurchaseLink = "https://ifdian.net/item/example"
+	snap.Revision.PurchasePrice = &price
+	snap.Revision.PurchaseCurrency = "CNY"
+	rawSnapshot, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawConfig, err := json.Marshal(config{
+		Agreement: true,
+		Targets:   []target{{CategoryID: 95}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := New(server.URL, nil, nil)
+	result, err := client.Publish(context.Background(), "token", nil, rawSnapshot, rawConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Resources["95"].ResourceID != "7568" {
+		t.Fatalf("publish result = %#v", result)
+	}
+	for key, want := range map[string]string{
+		"resource_type":         "external_purchase",
+		"external_purchase_url": "https://ifdian.net/item/example",
+		"price":                 "100.00",
+		"currency":              "CNY",
+	} {
+		if got := submitted.Get(key); got != want {
+			t.Errorf("form %s = %q, want %q", key, got, want)
+		}
+	}
+	if submitted.Has("version_attachment_key") {
+		t.Fatal("external purchase unexpectedly submitted a version attachment")
 	}
 }

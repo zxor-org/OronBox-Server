@@ -413,7 +413,14 @@ func (a *App) handleAdminResourceAttribute(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid coefficient", http.StatusBadRequest)
 		return
 	}
-	position, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("position")))
+	position := 0
+	if raw := strings.TrimSpace(r.FormValue("position")); raw != "" {
+		position, err = strconv.Atoi(raw)
+		if err != nil || position < 0 {
+			http.Error(w, "invalid position", http.StatusBadRequest)
+			return
+		}
+	}
 	item := creator.ResourceAttribute{
 		ID: strings.TrimSpace(r.FormValue("id")), NameZH: r.FormValue("name_zh"), NameEN: r.FormValue("name_en"),
 		Coefficient: coefficient, Enabled: r.FormValue("enabled") == "on", Position: position,

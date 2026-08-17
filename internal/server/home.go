@@ -3,9 +3,11 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/creator"
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
@@ -52,6 +54,10 @@ func publicBlogCard(post store.BlogPost) blogCard {
 }
 
 func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
+	seed, _ := strconv.ParseInt(r.URL.Query().Get("seed"), 10, 64)
+	if seed == 0 {
+		seed = time.Now().UTC().Unix() / 86400
+	}
 	banners, err := a.store.ListHomeBanners(r.Context(), true)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
@@ -62,17 +68,17 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
 		return
 	}
-	posts, err := a.store.ListPublishedBlogPosts(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
-		return
-	}
-	postBySlug := make(map[string]store.BlogPost, len(posts))
-	for _, post := range posts {
-		postBySlug[post.Slug] = post
-	}
 	cardsBySection := make(map[string][]store.HomeSectionCard, len(sections))
 	resourceIDs := []string{}
+	blogSlugSet := make(map[string]struct{})
+	for _, banner := range banners {
+		if banner.Type == "resource" && banner.ResourceID != "" {
+			resourceIDs = append(resourceIDs, banner.ResourceID)
+		}
+		if banner.Type == "blog" && banner.BlogSlug != "" {
+			blogSlugSet[banner.BlogSlug] = struct{}{}
+		}
+	}
 	for _, section := range sections {
 		cards, err := a.store.ListHomeSectionCards(r.Context(), section.ID)
 		if err != nil {
@@ -84,7 +90,35 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 			if card.Type == "resource" && card.ResourceID != "" {
 				resourceIDs = append(resourceIDs, card.ResourceID)
 			}
+			if card.Type == "blog" && card.BlogSlug != "" {
+				blogSlugSet[card.BlogSlug] = struct{}{}
+			}
 		}
+	}
+	blogSlugs := make([]string, 0, len(blogSlugSet))
+	for slug := range blogSlugSet {
+		blogSlugs = append(blogSlugs, slug)
+	}
+	posts, err := a.store.ListPublishedBlogPostsBySlugs(r.Context(), blogSlugs)
+	if err != nil {
+		observability.From(r.Context()).Warn("homepage curated articles unavailable", "error", err)
+		posts = nil
+	}
+	postBySlug := make(map[string]store.BlogPost, len(posts))
+	for _, post := range posts {
+		postBySlug[post.Slug] = post
+	}
+	resourceFeed := creator.PublicHomeFeed{}
+	resourceFeedAvailable := false
+	if feed, feedErr := a.creator.PublicHomeFeed(r.Context(), creator.PublicHomeQuery{
+		ExcludeIDs: resourceIDs,
+		RowSize:    12,
+		Seed:       seed,
+	}); feedErr == nil {
+		resourceFeed = feed
+		resourceFeedAvailable = true
+	} else {
+		observability.From(r.Context()).Warn("homepage resource feed unavailable", "error", feedErr)
 	}
 	resources, err := a.creator.HomeResources(r.Context(), resourceIDs)
 	if err != nil {
@@ -127,11 +161,24 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 		sectionJSON = append(sectionJSON, out)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"banners": bannerJSON, "sections": sectionJSON})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"banners":                 bannerJSON,
+		"sections":                sectionJSON,
+		"resource_feed":           resourceFeed,
+		"resource_feed_available": resourceFeedAvailable,
+		"resource_feed_seed":      seed,
+	})
 }
 
 func (a *App) handleBlogList(w http.ResponseWriter, r *http.Request) {
-	posts, err := a.store.ListPublishedBlogPosts(r.Context())
+	limit := 0
+	if parsed, parseErr := strconv.Atoi(r.URL.Query().Get("limit")); parseErr == nil && parsed > 0 {
+		limit = parsed
+		if limit > 100 {
+			limit = 100
+		}
+	}
+	posts, err := a.store.ListPublishedBlogPostsLimit(r.Context(), limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("blog_failed", err.Error()))
 		return

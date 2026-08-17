@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -42,8 +43,11 @@ func New(apiURL string, blobs blob.Store, storage *store.Store) *Client {
 
 type snapshot struct {
 	Revision struct {
-		Name    string `json:"name"`
-		Summary string `json:"summary"`
+		Name             string   `json:"name"`
+		Summary          string   `json:"summary"`
+		PurchaseLink     string   `json:"purchase_link"`
+		PurchasePrice    *float64 `json:"purchase_price"`
+		PurchaseCurrency string   `json:"purchase_currency"`
 	} `json:"revision"`
 	Media []struct {
 		Blob string `json:"blob_sha256"`
@@ -68,8 +72,11 @@ type config struct {
 	VersionTitle   string   `json:"version_title"`
 	VersionMessage string   `json:"version_message"`
 	Agreement      bool     `json:"agreement"`
+	Price          float64  `json:"price"`
 	Targets        []target `json:"targets"`
 }
+
+const externalPurchaseCurrency = "CNY"
 
 // Publish fans one revision out to one BandBBS resource per configured
 // category. existing maps a decimal category id to the bound resource id.
@@ -95,6 +102,20 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 	}
 	cfg.VersionTitle = strings.TrimSpace(cfg.VersionTitle)
 	cfg.VersionMessage = strings.TrimSpace(cfg.VersionMessage)
+	purchaseLink := strings.TrimSpace(snap.Revision.PurchaseLink)
+	externalPurchase := purchaseLink != ""
+	if externalPurchase {
+		if snap.Revision.PurchasePrice == nil || math.IsNaN(*snap.Revision.PurchasePrice) || math.IsInf(*snap.Revision.PurchasePrice, 0) || *snap.Revision.PurchasePrice <= 0 {
+			return Result{}, fmt.Errorf("BandBBS external purchase amount is missing from resource metadata")
+		}
+		if math.IsNaN(cfg.Price) || math.IsInf(cfg.Price, 0) || (cfg.Price != 0 && math.Abs(cfg.Price-*snap.Revision.PurchasePrice) > 0.005) {
+			return Result{}, fmt.Errorf("BandBBS external purchase amount does not match resource metadata")
+		}
+		cfg.Price = *snap.Revision.PurchasePrice
+		if cfg.Price <= 0 {
+			return Result{}, fmt.Errorf("BandBBS external purchase amount must be a positive CNY value")
+		}
+	}
 	if (cfg.VersionTitle == "") != (cfg.VersionMessage == "") {
 		return Result{}, fmt.Errorf("BandBBS version title and update notes must be provided together")
 	}
@@ -140,10 +161,21 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 				break
 			}
 		}
-		if artifact < 0 {
+		if artifact < 0 && !externalPurchase {
 			return Result{}, fmt.Errorf("package %s is not among the snapshot artifacts", target.PackageID)
 		}
-		pack := snap.Artifacts[artifact]
+		var pack struct {
+			Blob      string
+			Name      string
+			PackageID string
+			Version   string
+		}
+		if artifact >= 0 {
+			pack.Blob = snap.Artifacts[artifact].Blob
+			pack.Name = snap.Artifacts[artifact].Name
+			pack.PackageID = snap.Artifacts[artifact].PackageID
+			pack.Version = snap.Artifacts[artifact].Version
+		}
 		packSize := c.blobSize(ctx, pack.Blob)
 		categoryResult := progress[category]
 		reconcileVersion := categoryResult.ResourceID != "" && categoryResult.VersionID == ""
@@ -171,7 +203,7 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 			result.Resources[category] = categoryResult
 		}
 		versionKey := ""
-		if categoryResult.VersionID == "" {
+		if categoryResult.VersionID == "" && !externalPurchase {
 			var err error
 			versionKey, _, err = c.newAttachmentKey(ctx, token, "resource_version", pack.Blob, pack.Name, attachContext)
 			if err != nil {
@@ -187,11 +219,23 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		}
 		if existingID == "" {
 			form.Set("resource_category_id", category)
-			form.Set("resource_type", "download_local")
-			form.Set("version_attachment_key", versionKey)
+			if externalPurchase {
+				form.Set("resource_type", "external_purchase")
+				form.Set("external_purchase_url", purchaseLink)
+				form.Set("price", strconv.FormatFloat(cfg.Price, 'f', 2, 64))
+				form.Set("currency", externalPurchaseCurrency)
+			} else {
+				form.Set("resource_type", "download_local")
+				form.Set("version_attachment_key", versionKey)
+			}
 			if pack.Version != "" {
 				form.Set("version_string", pack.Version)
 			}
+		} else if externalPurchase {
+			form.Set("resource_type", "external_purchase")
+			form.Set("external_purchase_url", purchaseLink)
+			form.Set("price", strconv.FormatFloat(cfg.Price, 'f', 2, 64))
+			form.Set("currency", externalPurchaseCurrency)
 		}
 		var response struct {
 			Resource struct {
@@ -224,7 +268,7 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 			categoryResult.URL = response.Resource.ViewURL
 		}
 		result.Resources[category] = categoryResult
-		if categoryResult.VersionID == "" {
+		if categoryResult.VersionID == "" && !externalPurchase {
 			version, versionErr := c.replaceVersion(ctx, token, resourceID, pack.Version, pack.Name, packSize, versionKey, reconcileVersion)
 			if versionErr != nil {
 				return result, fmt.Errorf("create version in category %d: %w", target.CategoryID, versionErr)

@@ -15,11 +15,16 @@ import (
 
 func (c *Coordinator) snapshot(ctx context.Context, revisionID string) ([]byte, error) {
 	result := map[string]any{}
-	var name, summary, kind string
-	if err := c.db.QueryRowContext(ctx, `SELECT rr.name,rr.summary,r.kind FROM resource_revisions rr JOIN resources r ON r.id=rr.resource_id WHERE rr.id=$1`, revisionID).Scan(&name, &summary, &kind); err != nil {
+	var name, summary, kind, purchaseLink, purchaseCurrency string
+	var purchasePrice sql.NullFloat64
+	if err := c.db.QueryRowContext(ctx, `SELECT rr.name,rr.summary,r.kind,COALESCE(rr.purchase_link,''),rr.purchase_price,CASE WHEN COALESCE(rr.purchase_link,'') <> '' THEN 'CNY' ELSE '' END FROM resource_revisions rr JOIN resources r ON r.id=rr.resource_id WHERE rr.id=$1`, revisionID).Scan(&name, &summary, &kind, &purchaseLink, &purchasePrice, &purchaseCurrency); err != nil {
 		return nil, err
 	}
-	result["revision"] = map[string]any{"name": name, "summary": summary}
+	revision := map[string]any{"name": name, "summary": summary, "purchase_link": purchaseLink, "purchase_currency": purchaseCurrency}
+	if purchasePrice.Valid {
+		revision["purchase_price"] = purchasePrice.Float64
+	}
+	result["revision"] = revision
 	mediaRows, err := c.db.QueryContext(ctx, `SELECT blob_sha256,role,position FROM revision_media WHERE revision_id=$1 ORDER BY role,position`, revisionID)
 	if err != nil {
 		return nil, err

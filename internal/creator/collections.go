@@ -309,7 +309,7 @@ func (s *Service) ReviewCollection(ctx context.Context, revisionID, reviewerID s
 		if changed, _ := result.RowsAffected(); int(changed) != expected {
 			return fmt.Errorf("%w: collection membership changed since submission", ErrConflict)
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET current_revision_id=$2,enabled=$3,representative_resource_id=$4,updated_at=now() WHERE id=$1`, collectionID, revisionID, enabled, representativeID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET current_revision_id=$2,published_at=now(),enabled=$3,representative_resource_id=$4,updated_at=now() WHERE id=$1`, collectionID, revisionID, enabled, representativeID); err != nil {
 			return err
 		}
 	}

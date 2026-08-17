@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/url"
@@ -64,6 +65,8 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 	}
 	assertPublicationEvents(t, db, publicationID, []string{"execution_started", "retry_scheduled"})
 
+	// No GitHub grant is inserted on purpose. The poll should record the local
+	// authorization error without making a network request or requiring a token.
 	if _, err := db.ExecContext(ctx, `UPDATE publications SET state='reviewing',status_detail='{"pull_request_number":123}',next_attempt_at=now(),error_message='' WHERE id=$1`, publicationID); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +79,17 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 	if err := db.QueryRowContext(ctx, `SELECT status_detail,next_attempt_at FROM publications WHERE id=$1`, publicationID).Scan(&statusDetail, &nextAttempt); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(statusDetail), `"poll_count":1`) || !strings.Contains(string(statusDetail), `"last_polled_at"`) || !strings.Contains(string(statusDetail), `"last_poll_error"`) {
+	var detail map[string]any
+	if err := json.Unmarshal(statusDetail, &detail); err != nil {
+		t.Fatalf("poll status is not valid JSON: %v", err)
+	}
+	if got, ok := detail["poll_count"].(float64); !ok || got != 1 {
+		t.Fatalf("poll count = %#v, want 1", detail["poll_count"])
+	}
+	if _, ok := detail["last_polled_at"].(string); !ok {
+		t.Fatalf("poll timestamp missing from status_detail: %s", statusDetail)
+	}
+	if got := detail["last_poll_error"]; got != "GitHub publishing permission is not authorized" {
 		t.Fatalf("poll status was not overwritten in status_detail: %s", statusDetail)
 	}
 	if time.Until(nextAttempt) < 4*time.Minute {

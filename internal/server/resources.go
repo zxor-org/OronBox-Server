@@ -90,8 +90,9 @@ func (a *App) handleListResources(w http.ResponseWriter, r *http.Request) {
 	}
 	devices := strings.FieldsFunc(r.URL.Query().Get("devices"), func(r rune) bool { return r == ',' })
 	attributes := strings.FieldsFunc(r.URL.Query().Get("attributes"), func(r rune) bool { return r == ',' })
+	seed, _ := strconv.ParseInt(r.URL.Query().Get("seed"), 10, 64)
 	resources, total, err := a.creator.PublicResources(r.Context(), creator.PublicQuery{
-		Limit: limit, Offset: offset, Search: strings.TrimSpace(r.URL.Query().Get("query")),
+		Limit: limit, Offset: offset, Seed: seed, Search: strings.TrimSpace(r.URL.Query().Get("query")),
 		Kind: strings.TrimSpace(r.URL.Query().Get("type")), Sort: r.URL.Query().Get("sort"), Devices: devices, Attributes: attributes,
 		HidePaid: r.URL.Query().Get("hide_paid") == "1", HideForcePaid: r.URL.Query().Get("hide_force_paid") == "1",
 		Featured: r.URL.Query().Get("featured") == "1",

@@ -52,7 +52,7 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO resources(id,owner_id,slug,draft_name,kind) VALUES($1,$2,'rollback-test','Current','watchface')`, resourceID, ownerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,governance_source,governance_collection_position) VALUES($1,$3,1,'Historical','old','paid','approved','[{"target":"oronbox","config":{}}]','{"author_name":"Old Author"}',7),($2,$3,2,'Current','new','free','approved','[]','{}',0)`, baseID, currentID, resourceID); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,purchase_link,purchase_price,purchase_currency,state,publication_plan,governance_source,governance_collection_position) VALUES($1,$3,1,'Historical','old','paid','https://example.com/full',100.00,'CNY','approved','[{"target":"oronbox","config":{}}]','{"author_name":"Old Author"}',7),($2,$3,2,'Current','new','free','',NULL,'','approved','[]','{}',0)`, baseID, currentID, resourceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,state,publication_plan,created_by,created_via,base_revision_id) VALUES($1,$2,3,'Creator draft','pending','free','draft','[]',$3,'creator',$4)`, creatorDraftID, resourceID, ownerID, currentID); err != nil {
@@ -95,6 +95,14 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	}
 	if detail.Revision.Name != "Historical" || detail.Revision.BaseRevisionID != baseID || detail.Revision.State != "draft" || detail.Revision.CreatedVia != "admin" {
 		t.Fatalf("unexpected rollback revision: %#v", detail.Revision)
+	}
+	var purchaseLink, purchaseCurrency string
+	var purchasePrice float64
+	if err := db.QueryRowContext(ctx, `SELECT purchase_link,purchase_price,purchase_currency FROM resource_revisions WHERE id=$1`, draftID).Scan(&purchaseLink, &purchasePrice, &purchaseCurrency); err != nil {
+		t.Fatal(err)
+	}
+	if purchaseLink != "https://example.com/full" || purchasePrice != 100 || purchaseCurrency != "CNY" {
+		t.Fatalf("rollback purchase metadata = %q %v %q", purchaseLink, purchasePrice, purchaseCurrency)
 	}
 	governance, err := s.AdminRevisionGovernance(ctx, draftID)
 	if err != nil {

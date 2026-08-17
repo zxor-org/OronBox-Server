@@ -20,19 +20,20 @@ var (
 )
 
 type AdminResourceQuery struct {
-	ResourceID        string
-	Device            string
-	Search            string
-	Owner             string
-	Kind              string
-	Moderation        string
-	RevisionState     string
-	ReviewState       string
-	PublicationTarget string
-	PublicationState  string
-	Sort              string
-	Page              int
-	PerPage           int
+	ResourceID           string
+	Device               string
+	Search               string
+	Owner                string
+	Kind                 string
+	Moderation           string
+	RevisionState        string
+	CurrentRevisionState string
+	ReviewState          string
+	PublicationTarget    string
+	PublicationState     string
+	Sort                 string
+	Page                 int
+	PerPage              int
 }
 
 type AdminPublication struct {
@@ -63,6 +64,7 @@ type AdminResourceItem struct {
 	CurrentRevisionID     string
 	CurrentRevisionNumber int
 	CurrentRevisionName   string
+	CurrentRevisionState  string
 	LatestRevisionID      string
 	LatestRevisionNumber  int
 	LatestRevisionName    string
@@ -213,6 +215,9 @@ func (query AdminResourceQuery) normalized() AdminResourceQuery {
 	if query.RevisionState != "submitted" && query.RevisionState != "approved" && query.RevisionState != "rejected" && query.RevisionState != "superseded" {
 		query.RevisionState = ""
 	}
+	if query.CurrentRevisionState != "submitted" && query.CurrentRevisionState != "approved" && query.CurrentRevisionState != "rejected" && query.CurrentRevisionState != "superseded" {
+		query.CurrentRevisionState = ""
+	}
 	if query.ReviewState != "pending" && query.ReviewState != "approved" && query.ReviewState != "rejected" && query.ReviewState != "superseded" {
 		query.ReviewState = ""
 	}
@@ -265,6 +270,9 @@ func (s *Store) AdminResources(ctx context.Context, raw AdminResourceQuery) (Adm
 	if query.RevisionState != "" {
 		add(`latest.state=?`, query.RevisionState)
 	}
+	if query.CurrentRevisionState != "" {
+		add(`current_revision.state=?`, query.CurrentRevisionState)
+	}
 	if query.ReviewState != "" {
 		add(`review.state=?`, query.ReviewState)
 	}
@@ -306,7 +314,7 @@ WHERE ` + strings.Join(where, " AND ")
 	limitPosition, offsetPosition := len(args)-1, len(args)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 SELECT r.id::text,r.owner_id::text,u.username,r.slug,r.platform,r.kind,r.moderation_state,COALESCE(r.moderation_by,''),r.moderation_reason,r.moderation_at,
- COALESCE(current_revision.id::text,''),COALESCE(current_revision.revision_no,0),COALESCE(current_revision.name,''),
+ COALESCE(current_revision.id::text,''),COALESCE(current_revision.revision_no,0),COALESCE(current_revision.name,''),COALESCE(current_revision.state,''),
  COALESCE(latest.id::text,''),COALESCE(latest.revision_no,0),COALESCE(latest.name,''),COALESCE(latest.state,''),
  COALESCE(review.state,''),
  COALESCE((SELECT jsonb_agg(jsonb_build_object(
@@ -325,7 +333,7 @@ ORDER BY %s LIMIT $%d OFFSET $%d`, base, order, limitPosition, offsetPosition), 
 	for rows.Next() {
 		var item AdminResourceItem
 		var publications []byte
-		if err := rows.Scan(&item.ID, &item.OwnerID, &item.Owner, &item.Slug, &item.Platform, &item.Kind, &item.ModerationState, &item.ModerationBy, &item.ModerationReason, &item.ModerationAt, &item.CurrentRevisionID, &item.CurrentRevisionNumber, &item.CurrentRevisionName, &item.LatestRevisionID, &item.LatestRevisionNumber, &item.LatestRevisionName, &item.LatestRevisionState, &item.LatestReviewState, &publications, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.OwnerID, &item.Owner, &item.Slug, &item.Platform, &item.Kind, &item.ModerationState, &item.ModerationBy, &item.ModerationReason, &item.ModerationAt, &item.CurrentRevisionID, &item.CurrentRevisionNumber, &item.CurrentRevisionName, &item.CurrentRevisionState, &item.LatestRevisionID, &item.LatestRevisionNumber, &item.LatestRevisionName, &item.LatestRevisionState, &item.LatestReviewState, &publications, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return AdminResourcePage{}, err
 		}
 		if err := json.Unmarshal(publications, &item.Publications); err != nil {

@@ -95,14 +95,17 @@ type Resource struct {
 }
 
 type Revision struct {
-	ID         string           `json:"id"`
-	ResourceID string           `json:"resource_id"`
-	Number     int              `json:"number"`
-	Name       string           `json:"name"`
-	Summary    string           `json:"summary"`
-	PaidType   ResourcePaidType `json:"paid_type"`
-	Attributes []string         `json:"attributes,omitempty"`
-	State      RevisionState    `json:"state"`
+	ID               string           `json:"id"`
+	ResourceID       string           `json:"resource_id"`
+	Number           int              `json:"number"`
+	Name             string           `json:"name"`
+	Summary          string           `json:"summary"`
+	PaidType         ResourcePaidType `json:"paid_type"`
+	PurchaseLink     string           `json:"purchase_link,omitempty"`
+	PurchasePrice    *float64         `json:"purchase_price,omitempty"`
+	PurchaseCurrency string           `json:"purchase_currency,omitempty"`
+	Attributes       []string         `json:"attributes,omitempty"`
+	State            RevisionState    `json:"state"`
 	// PublicationPlan is the saved publish intent (target+config list); it is
 	// data for the editor, never a dispatchable job.
 	PublicationPlan []PublicationRequest `json:"publication_plan"`
@@ -346,6 +349,7 @@ type PublicResource struct {
 	CollectionID       string           `json:"collection_id,omitempty"`
 	CollectionName     string           `json:"collection_name,omitempty"`
 	ResourceCount      int              `json:"resource_count,omitempty"`
+	PublishedAt        time.Time        `json:"published_at,omitempty"`
 	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
@@ -368,22 +372,47 @@ type PublicCollection struct {
 
 type PublicResourceDetail struct {
 	PublicResource
-	Media         []Media         `json:"media"`
-	Artifacts     []Artifact      `json:"artifacts"`
-	Collaborators []Collaborator  `json:"collaborators"`
-	Source        *ResourceSource `json:"source,omitempty"`
-	Links         []ResourceLink  `json:"links"`
+	Media            []Media         `json:"media"`
+	Artifacts        []Artifact      `json:"artifacts"`
+	Collaborators    []Collaborator  `json:"collaborators"`
+	Source           *ResourceSource `json:"source,omitempty"`
+	Links            []ResourceLink  `json:"links"`
+	PurchaseLink     string          `json:"purchase_link,omitempty"`
+	PurchasePrice    *float64        `json:"purchase_price,omitempty"`
+	PurchaseCurrency string          `json:"purchase_currency,omitempty"`
 }
 
 type PublicQuery struct {
-	Limit         int
-	Offset        int
-	Search        string
-	Kind          string
-	Sort          string
+	Limit  int
+	Offset int
+	Search string
+	Kind   string
+	Sort   string
+	// Seed keeps recommendation ordering stable for one feed session while
+	// allowing the caller to rotate the exploration order explicitly.
+	Seed          int64
 	Devices       []string
 	Attributes    []string
 	HidePaid      bool
 	HideForcePaid bool
 	Featured      bool
+	// SkipRecommendationScore avoids the expensive interaction and attribute
+	// coefficient calculation for feeds that sort exclusively by publication
+	// time, such as the home page's latest row.
+	SkipRecommendationScore bool
+}
+
+// PublicHomeFeed is the de-duplicated resource portion of the application
+// home page. The server owns the candidate selection so the three rows share
+// one ordering seed and cannot repeat the same card across rows.
+type PublicHomeFeed struct {
+	Featured    []PublicResource `json:"featured"`
+	Recommended []PublicResource `json:"recommended"`
+	Latest      []PublicResource `json:"latest"`
+}
+
+type PublicHomeQuery struct {
+	Seed       int64
+	ExcludeIDs []string
+	RowSize    int
 }

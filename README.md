@@ -8,7 +8,6 @@
 
 <p align="center">
   <a href="https://github.com/zxor-org/OronBox-Server/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zxor-org/OronBox-Server/ci.yml?label=CI" alt="CI status"></a>
-  <a href="https://github.com/zxor-org/OronBox-Server/releases"><img src="https://img.shields.io/github/v/release/zxor-org/OronBox-Server?display_name=tag&sort=semver&label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/zxor-org/OronBox-Server" alt="License"></a>
   <a href="https://github.com/zxor-org/OronBox-Server/stargazers"><img src="https://img.shields.io/github/stars/zxor-org/OronBox-Server?style=flat" alt="GitHub stars"></a>
 </p>

@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 2
+const schemaVersion int64 = 4
 
 const notificationSchema = `
 CREATE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -96,9 +96,19 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if installedVersion.Int64 == schemaVersion {
 			return nil
 		}
-		if installedVersion.Int64 == 1 {
-			if err := migrateSchemaV2(ctx, tx); err != nil {
-				return fmt.Errorf("apply PostgreSQL schema v2: %w", err)
+		if installedVersion.Int64 >= 1 && installedVersion.Int64 <= 3 {
+			if installedVersion.Int64 == 1 {
+				if err := migrateSchemaV2(ctx, tx); err != nil {
+					return fmt.Errorf("apply PostgreSQL schema v2: %w", err)
+				}
+			}
+			if installedVersion.Int64 <= 2 {
+				if err := migrateSchemaV3(ctx, tx); err != nil {
+					return fmt.Errorf("apply PostgreSQL schema v3: %w", err)
+				}
+			}
+			if err := migrateSchemaV4(ctx, tx); err != nil {
+				return fmt.Errorf("apply PostgreSQL schema v4: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit PostgreSQL schema v%d: %w", schemaVersion, err)
@@ -218,7 +228,7 @@ CREATE TABLE resources (
  moderation_reason text NOT NULL DEFAULT '',
  moderation_at timestamptz, download_count integer NOT NULL DEFAULT 0,
  curation_grade text NOT NULL DEFAULT 'standard' CHECK (curation_grade IN ('standard','featured')),
- current_revision_id uuid, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+	 current_revision_id uuid, published_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
  UNIQUE(owner_id,slug)
 );
 CREATE INDEX resources_governance_idx ON resources(moderation_state,updated_at DESC);
@@ -235,7 +245,8 @@ CREATE TABLE home_section_cards (
  resource_id uuid REFERENCES resources(id) ON DELETE CASCADE,
  blog_slug text REFERENCES blog_posts(slug) ON DELETE CASCADE,
  position integer NOT NULL DEFAULT 0,
- created_at timestamptz NOT NULL DEFAULT now()
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK ((type='resource' AND resource_id IS NOT NULL AND blog_slug IS NULL) OR (type='blog' AND resource_id IS NULL AND blog_slug IS NOT NULL))
 );
 CREATE TABLE home_banners (
  id uuid PRIMARY KEY,
@@ -246,13 +257,15 @@ CREATE TABLE home_banners (
  blog_slug text REFERENCES blog_posts(slug) ON DELETE CASCADE,
  link_url text NOT NULL DEFAULT '',
  position integer NOT NULL DEFAULT 0, enabled boolean NOT NULL DEFAULT true,
- created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+ CHECK ((type='resource' AND resource_id IS NOT NULL AND blog_slug IS NULL AND link_url='') OR (type='blog' AND resource_id IS NULL AND blog_slug IS NOT NULL AND link_url='') OR (type='link' AND resource_id IS NULL AND blog_slug IS NULL AND link_url<>''))
 );
 CREATE TABLE resource_revisions (
  id uuid PRIMARY KEY, resource_id uuid NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
  revision_no integer NOT NULL, name text NOT NULL, summary text NOT NULL,
  state text NOT NULL DEFAULT 'submitted' CHECK (state IN ('draft','submitted','approved','rejected','superseded')),
- paid_type text NOT NULL DEFAULT 'free' CHECK (paid_type IN ('free','paid','force_paid')),
+	paid_type text NOT NULL DEFAULT 'free' CHECK (paid_type IN ('free','paid','force_paid')),
+	purchase_link text NOT NULL DEFAULT '', purchase_price numeric(12,2), purchase_currency text NOT NULL DEFAULT '',
 	created_by uuid REFERENCES users(id) ON DELETE SET NULL,
 	created_via text NOT NULL DEFAULT 'creator' CHECK (created_via IN ('creator','admin','import')),
 	base_revision_id uuid REFERENCES resource_revisions(id) ON DELETE SET NULL,
@@ -267,7 +280,7 @@ CREATE TABLE resource_collections (
  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  slug text NOT NULL, platform text NOT NULL DEFAULT 'vela_os' CHECK (platform='vela_os'),
  kind text NOT NULL CHECK (kind IN ('quickapp','watchface')), current_revision_id uuid, enabled boolean NOT NULL DEFAULT true,
- representative_resource_id uuid REFERENCES resources(id) ON DELETE SET NULL,
+	 representative_resource_id uuid REFERENCES resources(id) ON DELETE SET NULL, published_at timestamptz,
  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
  UNIQUE(owner_id,slug)
 );
@@ -535,6 +548,55 @@ func migrateSchemaV2(ctx context.Context, tx *sql.Tx) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(2)`); err != nil {
 		return fmt.Errorf("record schema version 2: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV3(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE resources ADD COLUMN published_at timestamptz; ALTER TABLE resource_collections ADD COLUMN published_at timestamptz`); err != nil {
+		return fmt.Errorf("add public resource timestamps: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resources resource SET published_at=COALESCE((SELECT revision.created_at FROM resource_revisions revision WHERE revision.id=resource.current_revision_id),resource.created_at) WHERE resource.current_revision_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("backfill resource publication timestamps: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collections collection SET published_at=COALESCE((SELECT revision.created_at FROM resource_collection_revisions revision WHERE revision.id=collection.current_revision_id),collection.created_at) WHERE collection.current_revision_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("backfill collection publication timestamps: %w", err)
+	}
+	// Older admin forms allowed inactive target fields to remain populated when
+	// an editor changed the target type. Normalize those harmless leftovers
+	// before installing the stricter checks below. Rows with a missing required
+	// target or an unknown type are intentionally preserved for later cleanup
+	// instead of being silently discarded.
+	if _, err := tx.ExecContext(ctx, `
+UPDATE home_banners SET blog_slug=NULL,link_url='' WHERE type='resource';
+UPDATE home_banners SET resource_id=NULL,link_url='' WHERE type='blog';
+UPDATE home_banners SET resource_id=NULL,blog_slug=NULL WHERE type='link';
+UPDATE home_section_cards SET blog_slug=NULL WHERE type='resource';
+UPDATE home_section_cards SET resource_id=NULL WHERE type='blog'`); err != nil {
+		return fmt.Errorf("normalize homepage target fields: %w", err)
+	}
+	// NOT VALID keeps an old installation upgradeable even if an early admin
+	// form left a malformed target behind. PostgreSQL still enforces the check
+	// for every new or updated row; the existing rows can be cleaned and the
+	// constraints validated later without blocking startup.
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE home_banners ADD CONSTRAINT home_banners_target_consistency CHECK ((type='resource' AND resource_id IS NOT NULL AND blog_slug IS NULL AND link_url='') OR (type='blog' AND resource_id IS NULL AND blog_slug IS NOT NULL AND link_url='') OR (type='link' AND resource_id IS NULL AND blog_slug IS NULL AND link_url<>'')) NOT VALID; ALTER TABLE home_section_cards ADD CONSTRAINT home_section_cards_target_consistency CHECK ((type='resource' AND resource_id IS NOT NULL AND blog_slug IS NULL) OR (type='blog' AND resource_id IS NULL AND blog_slug IS NOT NULL)) NOT VALID`); err != nil {
+		return fmt.Errorf("enforce homepage target fields: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX resources_publication_idx ON resources(moderation_state,published_at DESC) WHERE current_revision_id IS NOT NULL; CREATE INDEX resource_collections_publication_idx ON resource_collections(enabled,published_at DESC) WHERE current_revision_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("index public resource timestamps: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(3)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v3: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV4(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE resource_revisions ADD COLUMN purchase_link text NOT NULL DEFAULT '', ADD COLUMN purchase_price numeric(12,2), ADD COLUMN purchase_currency text NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add external purchase metadata: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(4)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v4: %w", err)
 	}
 	return nil
 }

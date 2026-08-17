@@ -52,7 +52,10 @@ type HomeSectionCard struct {
 	Position   int
 }
 
-var ErrBlogPostNotFound = errors.New("blog post not found")
+var (
+	ErrBlogPostNotFound = errors.New("blog post not found")
+	ErrBlogPostConflict = errors.New("blog post was changed or deleted")
+)
 
 const blogColumns = `slug,type,title,subtitle,author,COALESCE(cover_sha256,''),body,published,published_at,created_at,updated_at`
 
@@ -84,7 +87,38 @@ func (s *Store) ListBlogPosts(ctx context.Context) ([]BlogPost, error) {
 }
 
 func (s *Store) ListPublishedBlogPosts(ctx context.Context) ([]BlogPost, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+blogColumns+` FROM blog_posts WHERE published ORDER BY published_at DESC`)
+	return s.listPublishedBlogPosts(ctx, ``)
+}
+
+func (s *Store) ListPublishedBlogPostsLimit(ctx context.Context, limit int) ([]BlogPost, error) {
+	if limit <= 0 {
+		return s.ListPublishedBlogPosts(ctx)
+	}
+	return s.listPublishedBlogPosts(ctx, fmt.Sprintf(" LIMIT %d", limit))
+}
+
+func (s *Store) ListPublishedBlogPostsBySlugs(ctx context.Context, slugs []string) ([]BlogPost, error) {
+	if len(slugs) == 0 {
+		return []BlogPost{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+blogColumns+` FROM blog_posts WHERE published AND slug=ANY($1::text[]) ORDER BY published_at DESC NULLS LAST,slug DESC`, slugs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	posts := []BlogPost{}
+	for rows.Next() {
+		post, err := scanBlogPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		posts = append(posts, post)
+	}
+	return posts, rows.Err()
+}
+
+func (s *Store) listPublishedBlogPosts(ctx context.Context, suffix string) ([]BlogPost, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+blogColumns+` FROM blog_posts WHERE published ORDER BY published_at DESC NULLS LAST,slug DESC`+suffix)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +155,37 @@ ON CONFLICT(slug) DO UPDATE SET
 	return err
 }
 
+// SaveBlogPost updates editable content and publication state in one
+// transaction. The caller's UpdatedAt is used as an optimistic lock when it
+// is available, and the method never recreates a row that was deleted while
+// the editor was open.
+func (s *Store) SaveBlogPost(ctx context.Context, post BlogPost) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	query := `UPDATE blog_posts SET
+ type=$2,title=$3,subtitle=$4,author=$5,cover_sha256=NULLIF($6,''),body=$7,published=$8,
+ published_at=CASE WHEN $8 THEN COALESCE(published_at,now()) ELSE published_at END,
+ updated_at=now() WHERE slug=$1`
+	args := []any{post.Slug, post.Type, post.Title, post.Subtitle, post.Author, post.CoverSHA256, post.Body, post.Published}
+	if !post.UpdatedAt.IsZero() {
+		query += ` AND updated_at=$9`
+		args = append(args, post.UpdatedAt)
+	}
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if affected, rowsErr := result.RowsAffected(); rowsErr != nil {
+		return rowsErr
+	} else if affected == 0 {
+		return ErrBlogPostConflict
+	}
+	return tx.Commit()
+}
+
 // SetBlogPostPublished toggles visibility and stamps published_at on the
 // first publish.
 func (s *Store) SetBlogPostPublished(ctx context.Context, slug string, published bool) error {
@@ -152,7 +217,7 @@ func (s *Store) ListHomeBanners(ctx context.Context, enabledOnly bool) ([]HomeBa
 	if enabledOnly {
 		query += ` WHERE enabled`
 	}
-	rows, err := s.db.QueryContext(ctx, query+` ORDER BY position`)
+	rows, err := s.db.QueryContext(ctx, query+` ORDER BY position,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -169,13 +234,23 @@ func (s *Store) ListHomeBanners(ctx context.Context, enabledOnly bool) ([]HomeBa
 }
 
 func (s *Store) CreateHomeBanner(ctx context.Context, banner HomeBanner) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_banners'))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO home_banners(id,type,title,subtitle,cover_sha256,resource_id,blog_slug,link_url,position,enabled)
 VALUES($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,'')::uuid,NULLIF($7,''),$8,
  COALESCE((SELECT max(position)+1 FROM home_banners),0),$9)`,
 		banner.ID, banner.Type, banner.Title, banner.Subtitle, banner.CoverSHA256,
-		banner.ResourceID, banner.BlogSlug, banner.LinkURL, banner.Enabled)
-	return err
+		banner.ResourceID, banner.BlogSlug, banner.LinkURL, banner.Enabled); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpdateHomeBanner(ctx context.Context, banner HomeBanner) error {
@@ -195,8 +270,18 @@ WHERE id=$1`,
 }
 
 func (s *Store) DeleteHomeBanner(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM home_banners WHERE id=$1`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_banners'))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM home_banners WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListHomeSections(ctx context.Context, enabledOnly bool) ([]HomeSection, error) {
@@ -204,7 +289,7 @@ func (s *Store) ListHomeSections(ctx context.Context, enabledOnly bool) ([]HomeS
 	if enabledOnly {
 		query += ` WHERE enabled`
 	}
-	rows, err := s.db.QueryContext(ctx, query+` ORDER BY position`)
+	rows, err := s.db.QueryContext(ctx, query+` ORDER BY position,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +305,28 @@ func (s *Store) ListHomeSections(ctx context.Context, enabledOnly bool) ([]HomeS
 	return sections, rows.Err()
 }
 
+func (s *Store) HomeSectionExists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM home_sections WHERE id=$1)`, id).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) CreateHomeSection(ctx context.Context, section HomeSection) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_sections'))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO home_sections(id,name,description,position,enabled)
 VALUES($1,$2,$3,COALESCE((SELECT max(position)+1 FROM home_sections),0),$4)`,
-		section.ID, section.Name, section.Description, section.Enabled)
-	return err
+		section.ID, section.Name, section.Description, section.Enabled); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpdateHomeSection(ctx context.Context, section HomeSection) error {
@@ -241,14 +342,24 @@ func (s *Store) UpdateHomeSection(ctx context.Context, section HomeSection) erro
 }
 
 func (s *Store) DeleteHomeSection(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM home_sections WHERE id=$1`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_sections'))`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM home_sections WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListHomeSectionCards(ctx context.Context, sectionID string) ([]HomeSectionCard, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id::text,section_id,type,COALESCE(resource_id::text,''),COALESCE(blog_slug,''),position
-FROM home_section_cards WHERE section_id=$1 ORDER BY position`, sectionID)
+	FROM home_section_cards WHERE section_id=$1 ORDER BY position,id`, sectionID)
 	if err != nil {
 		return nil, err
 	}
@@ -265,17 +376,44 @@ FROM home_section_cards WHERE section_id=$1 ORDER BY position`, sectionID)
 }
 
 func (s *Store) CreateHomeSectionCard(ctx context.Context, card HomeSectionCard) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_section_cards:'||$1))`, card.SectionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
 INSERT INTO home_section_cards(id,section_id,type,resource_id,blog_slug,position)
 VALUES($1,$2,$3,NULLIF($4,'')::uuid,NULLIF($5,''),
  COALESCE((SELECT max(position)+1 FROM home_section_cards WHERE section_id=$2),0))`,
-		card.ID, card.SectionID, card.Type, card.ResourceID, card.BlogSlug)
-	return err
+		card.ID, card.SectionID, card.Type, card.ResourceID, card.BlogSlug); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteHomeSectionCard(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM home_section_cards WHERE id=$1`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var sectionID string
+	if err := tx.QueryRowContext(ctx, `SELECT section_id FROM home_section_cards WHERE id=$1`, id).Scan(&sectionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('oronbox:home_section_cards:'||$1))`, sectionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM home_section_cards WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // moveHomeRow swaps the position of a row with its adjacent neighbour within
@@ -291,6 +429,13 @@ func (s *Store) moveHomeRow(ctx context.Context, table, scopeColumn, scopeValue,
 		return err
 	}
 	defer tx.Rollback()
+	lockName := "oronbox:" + table
+	if scopeColumn != "" {
+		lockName += ":" + scopeValue
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockName); err != nil {
+		return err
+	}
 	scope := ""
 	args := []any{id}
 	if scopeColumn != "" {
@@ -313,7 +458,7 @@ func (s *Store) moveHomeRow(ctx context.Context, table, scopeColumn, scopeValue,
 	}
 	var neighbourID string
 	var neighbourPosition int
-	err = tx.QueryRowContext(ctx, `SELECT id::text,position FROM `+table+` WHERE position`+direction+`$1`+scope+` ORDER BY position `+order+` LIMIT 1 FOR UPDATE`, neighbourArgs...).Scan(&neighbourID, &neighbourPosition)
+	err = tx.QueryRowContext(ctx, `SELECT id::text,position FROM `+table+` WHERE position`+direction+`$1`+scope+` ORDER BY position `+order+`,id `+order+` LIMIT 1 FOR UPDATE`, neighbourArgs...).Scan(&neighbourID, &neighbourPosition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

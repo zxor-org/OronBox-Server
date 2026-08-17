@@ -2,21 +2,54 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"errors"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 	"github.com/zxor-org/OronBox-Server/internal/web"
+	_ "golang.org/x/image/webp"
 )
 
 // Bounds match the CHECK constraints on blog_posts.slug and home_sections.id.
 var blogSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,63}$`)
 var homeSectionIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,31}$`)
+
+type adminFormField struct {
+	Name   string
+	Values []string
+}
+
+// renderAdminFormErrorRequest keeps the submitted fields on the error page so
+// an administrator can retry the same POST without losing a long edit.
+func (a *App) renderAdminFormErrorRequest(w http.ResponseWriter, r *http.Request, title, message, retryURL, backURL string, status int) {
+	fields := make([]adminFormField, 0, len(r.PostForm))
+	for name, values := range r.PostForm {
+		if name == "file" {
+			continue
+		}
+		copied := append([]string(nil), values...)
+		fields = append(fields, adminFormField{Name: name, Values: copied})
+	}
+	sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
+	w.WriteHeader(status)
+	a.render(w, "admin_form_error", map[string]any{
+		"Title": title, "Message": message, "BackURL": backURL, "RetryURL": retryURL, "Fields": fields,
+	})
+}
 
 func blogUploadMediaType(contentType string) bool {
 	switch contentType {
@@ -43,20 +76,37 @@ func (a *App) handleAdminBlobUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_upload", "image must be between 1 B and 8 MiB"))
 		return
 	}
-	head := make([]byte, 512)
-	read, _ := io.ReadFull(file, head)
-	head = head[:read]
+	payload, err := io.ReadAll(io.LimitReader(file, 8<<20+1))
+	if err != nil || len(payload) == 0 || len(payload) > 8<<20 {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_upload", "image must be between 1 B and 8 MiB"))
+		return
+	}
+	head := payload
+	if len(head) > 512 {
+		head = head[:512]
+	}
 	if !blogUploadMediaType(http.DetectContentType(head)) {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_upload", "only PNG, JPEG, WebP and GIF images are allowed"))
 		return
 	}
-	object, err := a.blobs.Put(r.Context(), io.MultiReader(bytes.NewReader(head), file))
+	config, format, err := image.DecodeConfig(bytes.NewReader(payload))
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 1500 || config.Height > 1500 {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_upload", "image dimensions must be between 1 and 1500 pixels"))
+		return
+	}
+	object, err := a.blobs.Put(r.Context(), bytes.NewReader(payload))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("upload_failed", err.Error()))
 		return
 	}
-	mediaType := http.DetectContentType(head)
+	mediaType := "image/" + format
 	if err := a.store.EnsureBlob(r.Context(), object.SHA256, object.Size, mediaType, object.Key); err != nil {
+		// The object is content-addressed, so only remove it when the catalog
+		// confirms that this request did not register a row. If another request
+		// won the race and registered the same digest, retain the shared object.
+		if _, lookupErr := a.store.Blob(r.Context(), object.SHA256); errors.Is(lookupErr, sql.ErrNoRows) {
+			_ = a.blobs.Delete(r.Context(), object.Key)
+		}
 		writeJSON(w, http.StatusInternalServerError, errorBody("upload_failed", err.Error()))
 		return
 	}
@@ -91,14 +141,20 @@ func (a *App) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	selectorPage, selectorSize := positiveInt(r.URL.Query().Get("selector_page"), 1), positiveInt(r.URL.Query().Get("selector_per_page"), 25)
-	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Search: r.URL.Query().Get("selector_q"), Page: selectorPage, PerPage: selectorSize, Sort: "updated_desc"})
+	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Search: r.URL.Query().Get("selector_q"), Moderation: "visible", CurrentRevisionState: "approved", Page: selectorPage, PerPage: selectorSize, Sort: "updated_desc"})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	publishedPosts := make([]store.BlogPost, 0, len(posts))
+	for _, post := range posts {
+		if post.Published {
+			publishedPosts = append(publishedPosts, post)
+		}
+	}
 	a.render(w, "admin_home", map[string]any{
 		"Title": "首页编排", "Banners": banners, "Sections": sections, "Cards": cards,
-		"Posts": posts, "Resources": resources.Items, "SelectorQ": r.URL.Query().Get("selector_q"), "SelectorPager": map[string]any{"Pager": web.NewNamedPagination("/admin/home", r.URL.Query(), resources.Page, resources.PerPage, resources.Total, "selector_page", "selector_per_page"), "PageSizes": []int{25, 50, 100}},
+		"Posts": publishedPosts, "Resources": resources.Items, "SelectorQ": r.URL.Query().Get("selector_q"), "SelectorPager": map[string]any{"Pager": web.NewNamedPagination("/admin/home", r.URL.Query(), resources.Page, resources.PerPage, resources.Total, "selector_page", "selector_per_page"), "PageSizes": []int{25, 50, 100}},
 		"Action": r.URL.Query().Get("action"),
 	})
 }
@@ -122,14 +178,27 @@ func validBannerForm(r *http.Request) (store.HomeBanner, string) {
 		if banner.ResourceID == "" {
 			return banner, "资源 Banner 必须填写资源 ID"
 		}
+		if _, err := uuid.Parse(banner.ResourceID); err != nil {
+			return banner, "资源 Banner 的资源 ID 无效"
+		}
+		banner.BlogSlug, banner.LinkURL = "", ""
 	case "blog":
 		if banner.BlogSlug == "" {
 			return banner, "博客 Banner 必须填写文章 Slug"
 		}
+		if !blogSlugPattern.MatchString(banner.BlogSlug) {
+			return banner, "博客 Banner 的文章 Slug 无效"
+		}
+		banner.ResourceID, banner.LinkURL = "", ""
 	case "link":
 		if banner.LinkURL == "" {
 			return banner, "链接 Banner 必须填写链接"
 		}
+		link, err := url.ParseRequestURI(banner.LinkURL)
+		if err != nil || (link.Scheme != "http" && link.Scheme != "https") || link.Host == "" {
+			return banner, "链接 Banner 只支持有效的 HTTP 或 HTTPS 地址"
+		}
+		banner.ResourceID, banner.BlogSlug = "", ""
 	default:
 		return banner, "未知的 Banner 类型"
 	}
@@ -139,6 +208,60 @@ func validBannerForm(r *http.Request) (store.HomeBanner, string) {
 	return banner, ""
 }
 
+func validHomeCardForm(r *http.Request) (store.HomeSectionCard, string) {
+	card := store.HomeSectionCard{
+		SectionID:  strings.TrimSpace(r.FormValue("section_id")),
+		Type:       strings.TrimSpace(r.FormValue("type")),
+		ResourceID: strings.TrimSpace(r.FormValue("resource_id")),
+		BlogSlug:   strings.TrimSpace(r.FormValue("blog_slug")),
+	}
+	if !homeSectionIDPattern.MatchString(card.SectionID) {
+		return card, "分区无效"
+	}
+	switch card.Type {
+	case "resource":
+		if _, err := uuid.Parse(card.ResourceID); err != nil {
+			return card, "资源卡片必须选择有效的资源"
+		}
+		card.BlogSlug = ""
+	case "blog":
+		if !blogSlugPattern.MatchString(card.BlogSlug) {
+			return card, "文章卡片必须选择有效的文章 Slug"
+		}
+		card.ResourceID = ""
+	default:
+		return card, "未知的卡片类型"
+	}
+	return card, ""
+}
+
+func (a *App) validateHomeTarget(ctx context.Context, targetType, resourceID, blogSlug string) string {
+	switch targetType {
+	case "resource":
+		detail, err := a.store.AdminResource(ctx, resourceID)
+		if errors.Is(err, store.ErrAdminResourceNotFound) {
+			return "目标资源不存在"
+		}
+		if err != nil {
+			return "目标资源暂时无法读取"
+		}
+		if detail.Resource.ModerationState != "visible" ||
+			detail.Resource.CurrentRevisionID == "" ||
+			detail.Resource.CurrentRevisionState != "approved" {
+			return "目标资源必须是已发布且可见的资源"
+		}
+	case "blog":
+		post, err := a.store.BlogPost(ctx, blogSlug)
+		if errors.Is(err, store.ErrBlogPostNotFound) || (err == nil && !post.Published) {
+			return "目标文章不存在或尚未发布"
+		}
+		if err != nil {
+			return "目标文章暂时无法读取"
+		}
+	}
+	return ""
+}
+
 func (a *App) handleAdminBannerCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -146,7 +269,11 @@ func (a *App) handleAdminBannerCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	banner, problem := validBannerForm(r)
 	if problem != "" {
-		http.Error(w, problem, http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "Banner 提交失败", problem, "/admin/home/banners", "/admin/home", http.StatusUnprocessableEntity)
+		return
+	}
+	if problem = a.validateHomeTarget(r.Context(), banner.Type, banner.ResourceID, banner.BlogSlug); problem != "" {
+		a.renderAdminFormErrorRequest(w, r, "Banner 提交失败", problem, "/admin/home/banners", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
 	banner.ID = uuid.NewString()
@@ -167,7 +294,11 @@ func (a *App) handleAdminBannerSave(w http.ResponseWriter, r *http.Request) {
 	}
 	banner, problem := validBannerForm(r)
 	if problem != "" {
-		http.Error(w, problem, http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "Banner 保存失败", problem, "/admin/home/banners/"+url.PathEscape(r.PathValue("banner"))+"/save", "/admin/home", http.StatusUnprocessableEntity)
+		return
+	}
+	if problem = a.validateHomeTarget(r.Context(), banner.Type, banner.ResourceID, banner.BlogSlug); problem != "" {
+		a.renderAdminFormErrorRequest(w, r, "Banner 保存失败", problem, "/admin/home/banners/"+url.PathEscape(r.PathValue("banner"))+"/save", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
 	banner.ID = r.PathValue("banner")
@@ -197,8 +328,8 @@ func (a *App) handleAdminBannerMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	delta, _ := strconv.Atoi(r.FormValue("delta"))
-	if delta != 1 && delta != -1 {
+	delta, err := strconv.Atoi(strings.TrimSpace(r.FormValue("delta")))
+	if err != nil || (delta != 1 && delta != -1) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
@@ -225,11 +356,11 @@ func (a *App) handleAdminSectionCreate(w http.ResponseWriter, r *http.Request) {
 		Enabled:     r.FormValue("enabled") == "on",
 	}
 	if !homeSectionIDPattern.MatchString(section.ID) {
-		http.Error(w, "分区 ID 必须是小写字母、数字和中划线", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "首页分区提交失败", "分区 ID 必须是小写字母、数字和中划线", "/admin/home/sections", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
 	if section.Name == "" {
-		http.Error(w, "分区名称必填", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "首页分区提交失败", "分区名称必填", "/admin/home/sections", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
 	actor := currentAdmin(r)
@@ -254,7 +385,7 @@ func (a *App) handleAdminSectionSave(w http.ResponseWriter, r *http.Request) {
 		Enabled:     r.FormValue("enabled") == "on",
 	}
 	if section.Name == "" {
-		http.Error(w, "分区名称必填", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "首页分区保存失败", "分区名称必填", "/admin/home/sections/"+url.PathEscape(section.ID)+"/save", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
 	actor := currentAdmin(r)
@@ -283,8 +414,8 @@ func (a *App) handleAdminSectionMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	delta, _ := strconv.Atoi(r.FormValue("delta"))
-	if delta != 1 && delta != -1 {
+	delta, err := strconv.Atoi(strings.TrimSpace(r.FormValue("delta")))
+	if err != nil || (delta != 1 && delta != -1) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
@@ -304,32 +435,25 @@ func (a *App) handleAdminCardCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	card := store.HomeSectionCard{
-		ID:         uuid.NewString(),
-		SectionID:  strings.TrimSpace(r.FormValue("section_id")),
-		Type:       strings.TrimSpace(r.FormValue("type")),
-		ResourceID: strings.TrimSpace(r.FormValue("resource_id")),
-		BlogSlug:   strings.TrimSpace(r.FormValue("blog_slug")),
-	}
-	if card.SectionID == "" {
-		http.Error(w, "缺少分区", http.StatusBadRequest)
+	card, problem := validHomeCardForm(r)
+	if problem != "" {
+		a.renderAdminFormErrorRequest(w, r, "首页卡片提交失败", problem, "/admin/home/cards", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
-	switch card.Type {
-	case "resource":
-		if card.ResourceID == "" {
-			http.Error(w, "资源卡片必须填写资源 ID", http.StatusBadRequest)
-			return
-		}
-	case "blog":
-		if card.BlogSlug == "" {
-			http.Error(w, "博客卡片必须填写文章 Slug", http.StatusBadRequest)
-			return
-		}
-	default:
-		http.Error(w, "未知的卡片类型", http.StatusBadRequest)
+	if problem = a.validateHomeTarget(r.Context(), card.Type, card.ResourceID, card.BlogSlug); problem != "" {
+		a.renderAdminFormErrorRequest(w, r, "首页卡片提交失败", problem, "/admin/home/cards", "/admin/home", http.StatusUnprocessableEntity)
 		return
 	}
+	sectionExists, err := a.store.HomeSectionExists(r.Context(), card.SectionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !sectionExists {
+		a.renderAdminFormErrorRequest(w, r, "首页卡片提交失败", "目标分区不存在，请刷新后重试", "/admin/home/cards", "/admin/home", http.StatusUnprocessableEntity)
+		return
+	}
+	card.ID = uuid.NewString()
 	actor := currentAdmin(r)
 	if err := a.store.CreateHomeSectionCard(r.Context(), card); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "home.card.create", "failure", a.clientIP(r), r.UserAgent(), err.Error())
@@ -356,8 +480,8 @@ func (a *App) handleAdminCardMove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	delta, _ := strconv.Atoi(r.FormValue("delta"))
-	if delta != 1 && delta != -1 {
+	delta, err := strconv.Atoi(strings.TrimSpace(r.FormValue("delta")))
+	if err != nil || (delta != 1 && delta != -1) {
 		http.Error(w, "invalid direction", http.StatusBadRequest)
 		return
 	}
@@ -389,19 +513,22 @@ func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	slug := strings.TrimSpace(r.FormValue("slug"))
 	if !blogSlugPattern.MatchString(slug) {
-		http.Error(w, "Slug 必须是小写字母、数字和中划线", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "文章创建失败", "Slug 必须是小写字母、数字和中划线", "/admin/blog", "/admin/blog", http.StatusUnprocessableEntity)
 		return
 	}
-	post := store.BlogPost{Slug: slug, Type: "announcement", Title: slug}
-	switch strings.TrimSpace(r.FormValue("type")) {
+	post := store.BlogPost{Slug: slug, Type: strings.TrimSpace(r.FormValue("type")), Title: slug}
+	switch post.Type {
+	case "", "announcement":
+		post.Type = "announcement"
 	case "recommendation":
-		post.Type = "recommendation"
 	case "docs":
-		post.Type = "docs"
+	default:
+		a.renderAdminFormErrorRequest(w, r, "文章创建失败", "未知的文章类型", "/admin/blog", "/admin/blog", http.StatusUnprocessableEntity)
+		return
 	}
 	actor := currentAdmin(r)
 	if _, err := a.store.BlogPost(r.Context(), slug); err == nil {
-		http.Error(w, "Slug 已存在", http.StatusConflict)
+		a.renderAdminFormErrorRequest(w, r, "文章创建失败", "Slug 已存在", "/admin/blog", "/admin/blog", http.StatusConflict)
 		return
 	} else if !errors.Is(err, store.ErrBlogPostNotFound) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -444,11 +571,18 @@ func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	rawUpdatedAt := strings.TrimSpace(r.FormValue("updated_at"))
+	updatedAt, parseErr := time.Parse(time.RFC3339Nano, rawUpdatedAt)
+	if parseErr != nil {
+		a.renderAdminFormErrorRequest(w, r, "文章保存失败", "编辑页面版本信息缺失或无效，请返回后重新加载", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusConflict)
+		return
+	}
+	post.UpdatedAt = updatedAt
 	post.Type = strings.TrimSpace(r.FormValue("type"))
 	switch post.Type {
 	case "announcement", "recommendation", "docs":
 	default:
-		http.Error(w, "未知的文章类型", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "文章保存失败", "未知的文章类型", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusUnprocessableEntity)
 		return
 	}
 	post.Title = strings.TrimSpace(r.FormValue("title"))
@@ -457,11 +591,11 @@ func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 	post.CoverSHA256 = strings.TrimSpace(r.FormValue("cover_sha256"))
 	post.Body = r.FormValue("body")
 	if post.Title == "" {
-		http.Error(w, "标题必填", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "文章保存失败", "标题必填", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusUnprocessableEntity)
 		return
 	}
 	if post.CoverSHA256 != "" && !sha256Pattern.MatchString(post.CoverSHA256) {
-		http.Error(w, "封面必须是合法的 SHA-256", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "文章保存失败", "封面必须是合法的 SHA-256", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusUnprocessableEntity)
 		return
 	}
 	published := post.Published
@@ -472,25 +606,19 @@ func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 		published = false
 	case "save", "":
 	default:
-		http.Error(w, "未知的文章操作", http.StatusBadRequest)
+		a.renderAdminFormErrorRequest(w, r, "文章保存失败", "未知的文章操作", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusUnprocessableEntity)
 		return
 	}
+	post.Published = published
 	actor := currentAdmin(r)
-	if err := a.store.UpsertBlogPost(r.Context(), post); err != nil {
+	if err := a.store.SaveBlogPost(r.Context(), post); err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "blog.save", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if published != post.Published {
-		action := "publish"
-		if !published {
-			action = "withdraw"
-		}
-		if _, err := a.store.AdminSetBlogPostState(r.Context(), slug, action); err != nil {
-			_ = a.store.RecordAudit(r.Context(), actor, "blog."+action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, store.ErrBlogPostConflict) {
+			a.renderAdminFormErrorRequest(w, r, "文章保存失败", "文章已被删除或被其他管理员更新，请返回后重新加载", "/admin/blog/"+url.PathEscape(slug), "/admin/blog/"+url.PathEscape(slug), http.StatusConflict)
 			return
 		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "blog.save", "success", a.clientIP(r), r.UserAgent(), "slug="+slug+" published="+strconv.FormatBool(published))
 	http.Redirect(w, r, "/admin/blog/"+slug+"?action=saved", http.StatusFound)

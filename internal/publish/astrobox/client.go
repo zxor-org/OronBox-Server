@@ -74,8 +74,11 @@ type artifact struct {
 }
 type snapshot struct {
 	Revision struct {
-		Name    string `json:"name"`
-		Summary string `json:"summary"`
+		Name             string   `json:"name"`
+		Summary          string   `json:"summary"`
+		PurchaseLink     string   `json:"purchase_link"`
+		PurchasePrice    *float64 `json:"purchase_price"`
+		PurchaseCurrency string   `json:"purchase_currency"`
 	} `json:"revision"`
 	Media     []media    `json:"media"`
 	Artifacts []artifact `json:"artifacts"`
@@ -96,7 +99,46 @@ const (
 	submissionRootPath        = "tmp"
 	submissionCSVFileName     = "resource.csv"
 	submissionRequestFileName = "request.json"
+	purchaseLinkIcon          = "coins"
+	purchaseLinkTitle         = "购买链接"
 )
+
+func purchaseLinks(rawURL string) []map[string]string {
+	purchaseURL := strings.TrimSpace(rawURL)
+	if purchaseURL == "" {
+		return []map[string]string{}
+	}
+	return []map[string]string{{
+		"title": purchaseLinkTitle,
+		"url":   purchaseURL,
+		"icon":  purchaseLinkIcon,
+	}}
+}
+
+func buildManifest(
+	snap snapshot,
+	cfg publishConfig,
+	restype, iconPath, coverPath string,
+	authors []map[string]any,
+	previews []string,
+	downloads map[string]map[string]string,
+) map[string]any {
+	return map[string]any{
+		"item": map[string]any{
+			"id":          cfg.ItemID,
+			"restype":     restype,
+			"name":        snap.Revision.Name,
+			"description": snap.Revision.Summary,
+			"preview":     previews,
+			"icon":        iconPath,
+			"cover":       coverPath,
+			"author":      authors,
+		},
+		"links":     purchaseLinks(snap.Revision.PurchaseLink),
+		"downloads": downloads,
+		"ext":       map[string]any{},
+	}
+}
 
 type submissionRequest struct {
 	SchemaVersion     int     `json:"schema_version"`
@@ -192,7 +234,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	repo, err := c.ensureRepo(ctx, token, repoName, "AstroBox resource of "+snap.Revision.Name)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("prepare AstroBox resource repository: %w", err)
 	}
 	files := map[string][]byte{}
 	var previews []string
@@ -245,27 +287,18 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 		author = ownerName
 	}
 	authors := []map[string]any{{"name": author, "bindABAccount": cfg.BindABAccount}}
-	manifest := map[string]any{"item": map[string]any{"id": cfg.ItemID, "restype": restype, "name": snap.Revision.Name, "description": snap.Revision.Summary, "preview": previews, "icon": iconPath, "cover": coverPath, "author": authors}, "links": []any{}, "downloads": downloads, "ext": map[string]any{}}
+	manifest := buildManifest(snap, cfg, restype, iconPath, coverPath, authors, previews, downloads)
 	files["manifest_v2.json"], _ = json.MarshalIndent(manifest, "", "  ")
 	files["README.md"] = []byte(buildREADME(snap, cfg, restype, author, coverPath, previews, entries))
 	commit, err := c.uploadFiles(ctx, token, repo, "Publish "+snap.Revision.Name, files)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("upload AstroBox resource repository: %w", err)
 	}
-	fork, err := c.ensureFork(ctx, token)
+	snapshot, err := c.prepareCatalogSnapshot(ctx, token)
 	if err != nil {
 		return Result{}, err
 	}
-	// The fork is only a PR transport. Base staging and removal branches on
-	// the current upstream commit so stale fork commits are never included.
-	baseSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
-	if err != nil {
-		return Result{}, err
-	}
-	catalog, _, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, baseSHA)
-	if err != nil {
-		return Result{}, err
-	}
+	fork, catalog, catalogCommit, forkBaseSHA := snapshot.Fork, snapshot.Catalog, snapshot.Commit, snapshot.ForkBase
 	rows, err := csv.NewReader(bytes.NewReader(catalog)).ReadAll()
 	if err != nil && strings.TrimSpace(string(catalog)) != "" {
 		return Result{}, fmt.Errorf("parse AstroBox catalog: %w", err)
@@ -303,7 +336,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	request := submissionRequest{SchemaVersion: 1, Mode: mode, OriginalID: originalID, BaseEntryDigest: baseDigest}
 	if mode == "edit" {
-		request.BaseCatalogCommit = stringPtr(baseSHA)
+		request.BaseCatalogCommit = stringPtr(catalogCommit)
 	}
 	requestJSON, err := json.MarshalIndent(request, "", "  ")
 	if err != nil {
@@ -315,21 +348,21 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	login, err := c.currentUser(ctx, token)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("read GitHub publisher identity: %w", err)
 	}
 	submissionPath, err := c.submissionPath(login, repo.Name)
 	if err != nil {
 		return Result{}, err
 	}
 	branch := "oronbox-resource-" + sanitize(cfg.ItemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, baseSHA); err != nil {
-		return Result{}, err
+	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, forkBaseSHA); err != nil {
+		return Result{}, fmt.Errorf("create AstroBox submission branch: %w", err)
 	}
 	if _, err := c.uploadFiles(ctx, token, forkForBranch(fork, branch), "Submit "+snap.Revision.Name, map[string][]byte{
 		path.Join(submissionPath, submissionCSVFileName):     resourceCSV,
 		path.Join(submissionPath, submissionRequestFileName): requestJSON,
 	}); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("upload AstroBox submission files: %w", err)
 	}
 	operation := "Add"
 	if mode == "edit" {
@@ -338,15 +371,68 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	body := buildPRBody(snap, cfg, restype, repo, shortCommit, iconPath, coverPath, previews, entries)
 	pr, err := c.createPR(ctx, token, "[OBCC] "+operation+" "+snap.Revision.Name, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("create AstroBox pull request: %w", err)
 	}
-	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + repo.Owner + "/" + repo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: baseSHA}, nil
+	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + repo.Owner + "/" + repo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
 }
 
 type repo struct {
 	Owner  string
 	Name   string
 	Branch string
+}
+
+type catalogSnapshot struct {
+	Fork     repo
+	Catalog  []byte
+	FileSHA  string
+	Commit   string
+	ForkBase string
+}
+
+// prepareCatalogSnapshot creates a submission base only after the fork and
+// upstream catalog have been observed at the same commit. The upstream branch
+// can move while GitHub API calls are in flight; retrying the whole snapshot
+// prevents a request from mixing a catalog row from one commit with a branch
+// based on another.
+func (c *Client) prepareCatalogSnapshot(ctx context.Context, token string) (catalogSnapshot, error) {
+	fork, err := c.ensureFork(ctx, token)
+	if err != nil {
+		return catalogSnapshot{}, fmt.Errorf("prepare AstroBox catalog fork: %w", err)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := c.syncFork(ctx, token, fork); err != nil {
+			return catalogSnapshot{}, fmt.Errorf("sync AstroBox catalog fork: %w", err)
+		}
+		commit, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
+		if err != nil {
+			return catalogSnapshot{}, fmt.Errorf("read AstroBox upstream branch: %w", err)
+		}
+		forkBase, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+		if err != nil {
+			return catalogSnapshot{}, fmt.Errorf("read AstroBox catalog fork branch: %w", err)
+		}
+		if forkBase != commit {
+			continue
+		}
+		catalog, fileSHA, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, commit)
+		if err != nil {
+			return catalogSnapshot{}, fmt.Errorf("read AstroBox catalog: %w", err)
+		}
+		latestCommit, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
+		if err != nil {
+			return catalogSnapshot{}, fmt.Errorf("recheck AstroBox upstream branch: %w", err)
+		}
+		latestFork, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+		if err != nil {
+			return catalogSnapshot{}, fmt.Errorf("recheck AstroBox catalog fork branch: %w", err)
+		}
+		if latestCommit != commit || latestFork != commit {
+			continue
+		}
+		return catalogSnapshot{Fork: fork, Catalog: catalog, FileSHA: fileSHA, Commit: commit, ForkBase: forkBase}, nil
+	}
+	return catalogSnapshot{}, fmt.Errorf("AstroBox catalog changed while preparing a submission; retry the publication")
 }
 
 // Remove submits a pull request that drops itemID from the catalog index.
@@ -357,22 +443,11 @@ func (c *Client) Remove(ctx context.Context, token, itemID, name string) (Result
 	if itemID == "" {
 		return Result{}, fmt.Errorf("AstroBox item_id is required")
 	}
-	fork, err := c.ensureFork(ctx, token)
+	snapshot, err := c.prepareCatalogSnapshot(ctx, token)
 	if err != nil {
 		return Result{}, err
 	}
-	baseSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
-	if err != nil {
-		return Result{}, err
-	}
-	branch := "oronbox-remove-" + sanitize(itemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, baseSHA); err != nil {
-		return Result{}, err
-	}
-	catalog, sha, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, baseSHA)
-	if err != nil {
-		return Result{}, err
-	}
+	fork, catalog, sha, _, forkBaseSHA := snapshot.Fork, snapshot.Catalog, snapshot.FileSHA, snapshot.Commit, snapshot.ForkBase
 	rows, err := csv.NewReader(bytes.NewReader(catalog)).ReadAll()
 	if err != nil {
 		return Result{}, fmt.Errorf("parse AstroBox catalog: %w", err)
@@ -389,6 +464,10 @@ func (c *Client) Remove(ctx context.Context, token, itemID, name string) (Result
 	if !found {
 		return Result{}, nil
 	}
+	branch := "oronbox-remove-" + sanitize(itemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, forkBaseSHA); err != nil {
+		return Result{}, fmt.Errorf("create AstroBox removal branch: %w", err)
+	}
 	var encodedCatalog bytes.Buffer
 	if err := csv.NewWriter(&encodedCatalog).WriteAll(kept); err != nil {
 		return Result{}, err
@@ -403,7 +482,7 @@ func (c *Client) Remove(ctx context.Context, token, itemID, name string) (Result
 	body := fmt.Sprintf("## 删除资源\n\n- 资源名称：%s\n- 资源 ID：`%s`\n\n---\n\n此 PR 由 [OronBox 创作者中心](https://oronbox.zxor.org) 提交。Submitted through OronBox Creator Center.\n", name, itemID)
 	pr, err := c.createPR(ctx, token, title, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("create AstroBox removal pull request: %w", err)
 	}
 	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number}, nil
 }
@@ -466,6 +545,9 @@ func buildREADME(snap snapshot, cfg publishConfig, restype, author, coverPath st
 	fmt.Fprintf(&output, "| 类型 | %s |\n", restypeLabel(restype))
 	fmt.Fprintf(&output, "| 作者 | %s |\n", author)
 	fmt.Fprintf(&output, "| 付费类型 | %s |\n", paidLabel(cfg.PaidType))
+	if purchaseLink := strings.TrimSpace(snap.Revision.PurchaseLink); purchaseLink != "" {
+		fmt.Fprintf(&output, "| 购买链接 | [%s](%s) |\n", purchaseLink, purchaseLink)
+	}
 	if len(cfg.Tags) > 0 {
 		fmt.Fprintf(&output, "| 标签 | %s |\n", strings.Join(cfg.Tags, " / "))
 	}
@@ -502,6 +584,9 @@ func buildPRBody(snap snapshot, cfg publishConfig, restype string, repo repo, sh
 	fmt.Fprintf(&output, "- 资源类型：%s\n", restypeLabel(restype))
 	output.WriteString("- 提交清单：manifest_v2\n")
 	fmt.Fprintf(&output, "- 付费类型：%s\n", paidLabel(cfg.PaidType))
+	if purchaseLink := strings.TrimSpace(snap.Revision.PurchaseLink); purchaseLink != "" {
+		fmt.Fprintf(&output, "- 购买链接：%s\n", purchaseLink)
+	}
 	if len(cfg.Tags) > 0 {
 		fmt.Fprintf(&output, "- 标签：%s\n", strings.Join(cfg.Tags, " / "))
 	}
@@ -695,32 +780,58 @@ func (c *Client) ensureFork(ctx context.Context, token string) (repo, error) {
 		response.DefaultBranch = c.cfg.RepoBranch
 	}
 	fork := repo{Owner: response.Owner.Login, Name: response.Name, Branch: response.DefaultBranch}
-	// Do not rewrite the fork default branch. Every outgoing branch is based on
-	// the upstream SHA directly, so an existing fork can safely retain old PRs.
-	for i := 0; i < 12; i++ {
+	// The fork is synchronized immediately before every submission. Creating
+	// the temporary branch from the fork HEAD keeps the commit in the fork's
+	// object database and avoids GitHub's 404 for an upstream-only SHA.
+	var lastErr error
+	for i := 0; i < 10; i++ {
 		if _, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch); err == nil {
 			return fork, nil
+		} else {
+			status, ok := githubStatus(err)
+			if !ok || (status != http.StatusNotFound && status != http.StatusConflict) {
+				return repo{}, fmt.Errorf("wait for AstroBox catalog fork: %w", err)
+			}
+			lastErr = err
 		}
 		time.Sleep(1500 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return repo{}, fmt.Errorf("AstroBox catalog fork did not become ready: %w", lastErr)
 	}
 	return repo{}, fmt.Errorf("AstroBox catalog fork did not become ready")
 }
 
 func (c *Client) syncFork(ctx context.Context, token string, fork repo) error {
+	// Match AstroBox Creator Console: try the regular GitHub sync first, but
+	// continue to the explicit ref alignment when GitHub reports a conflict or
+	// the fork has diverged.
+	_, mergeErr := c.request(ctx, token, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/merge-upstream", c.api, fork.Owner, fork.Name), map[string]string{"branch": fork.Branch}, nil)
 	upstreamSHA, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
 	if err != nil {
-		return fmt.Errorf("read AstroBox upstream branch: %w", err)
-	}
-	status, mergeErr := c.request(ctx, token, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/merge-upstream", c.api, fork.Owner, fork.Name), map[string]string{"branch": fork.Branch}, nil)
-	if mergeErr != nil && status != http.StatusConflict {
-		return fmt.Errorf("sync AstroBox catalog fork: %w", mergeErr)
+		return fmt.Errorf("read AstroBox upstream branch after synchronization: %w", err)
 	}
 	forkSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
 	if err != nil {
-		return fmt.Errorf("verify AstroBox catalog fork: %w", err)
+		return fmt.Errorf("read AstroBox fork branch after synchronization: %w", err)
 	}
-	if forkSHA != upstreamSHA {
-		return fmt.Errorf("AstroBox catalog fork is stale after synchronization")
+	if forkSHA == upstreamSHA {
+		return nil
+	}
+
+	_, forceErr := c.request(ctx, token, http.MethodPatch, fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", c.api, fork.Owner, fork.Name, url.PathEscape(fork.Branch)), map[string]any{"sha": upstreamSHA, "force": true}, nil)
+	if forceErr != nil {
+		if mergeErr != nil {
+			return fmt.Errorf("force-align AstroBox catalog fork after merge-upstream failed: %w", forceErr)
+		}
+		return fmt.Errorf("force-align AstroBox catalog fork: %w", forceErr)
+	}
+	alignedSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
+	if err != nil {
+		return fmt.Errorf("verify AstroBox fork alignment: %w", err)
+	}
+	if alignedSHA != upstreamSHA {
+		return fmt.Errorf("AstroBox catalog fork remains stale after force alignment")
 	}
 	return nil
 }
@@ -918,7 +1029,13 @@ func (c *Client) request(ctx context.Context, token, method, endpoint string, bo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return resp.StatusCode, &githubRequestError{status: resp.StatusCode}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return resp.StatusCode, &githubRequestError{
+			status:   resp.StatusCode,
+			method:   method,
+			endpoint: endpoint,
+			body:     string(body),
+		}
 	}
 	if destination != nil {
 		return resp.StatusCode, json.NewDecoder(resp.Body).Decode(destination)
@@ -1029,11 +1146,28 @@ func validateCatalogRow(values []string) error {
 }
 
 type githubRequestError struct {
-	status int
+	status   int
+	method   string
+	endpoint string
+	body     string
 }
 
 func (e *githubRequestError) Error() string {
-	return fmt.Sprintf("GitHub API returned HTTP %d", e.status)
+	displayEndpoint := e.endpoint
+	if parsed, err := url.Parse(e.endpoint); err == nil {
+		displayEndpoint = parsed.Path
+		if parsed.RawQuery != "" {
+			displayEndpoint += "?" + parsed.RawQuery
+		}
+	}
+	detail := strings.TrimSpace(e.body)
+	if detail == "" {
+		detail = "no response body"
+	}
+	if len(detail) > 512 {
+		detail = detail[:512] + "..."
+	}
+	return fmt.Sprintf("GitHub API %s %s returned HTTP %d: %s", e.method, displayEndpoint, e.status, detail)
 }
 
 func githubStatus(err error) (int, bool) {

@@ -202,14 +202,35 @@ func TestCreatorLifecycle(t *testing.T) {
 	if firstRevisionID == "" {
 		t.Fatal("approved revision did not become current")
 	}
+	purchaseDraft := manifest("Imported paid draft", 1, []string{deviceRows[0].ID})
+	purchaseDraft["paid_type"] = string(ResourcePaid)
+	purchaseDraft["purchase_link"] = "https://example.com/full"
+	purchaseDraft["purchase_currency"] = "CNY"
+	workspace, err = service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, purchaseDraft, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Revisions[0].PurchaseLink != "https://example.com/full" || workspace.Revisions[0].PurchasePrice != nil {
+		t.Fatalf("imported purchase draft = %#v", workspace.Revisions[0])
+	}
+	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, purchaseDraft, files)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("purchase submission without amount error = %v, want invalid", err)
+	}
 	paidManifest := manifest("Test face 2", 1, []string{deviceRows[0].ID})
 	paidManifest["paid_type"] = string(ResourceForcePaid)
+	paidPrice := 100.0
+	paidManifest["purchase_link"] = "https://example.com/full"
+	paidManifest["purchase_price"] = paidPrice
+	paidManifest["purchase_currency"] = "CNY"
 	workspace, err = service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, paidManifest, files))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if workspace.Revisions[0].PaidType != ResourceForcePaid {
 		t.Fatalf("paid revision type = %q, want %q", workspace.Revisions[0].PaidType, ResourceForcePaid)
+	}
+	if workspace.Revisions[0].PurchaseLink != "https://example.com/full" || workspace.Revisions[0].PurchasePrice == nil || *workspace.Revisions[0].PurchasePrice != paidPrice || workspace.Revisions[0].PurchaseCurrency != "CNY" {
+		t.Fatalf("purchase metadata = %#v, want link, price, and currency", workspace.Revisions[0])
 	}
 	secondRevisionID := workspace.Revisions[0].ID
 	if secondRevisionID == firstRevisionID {
@@ -295,6 +316,17 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	if public[0].PaidType != ResourcePaidFree {
 		t.Fatalf("collection paid type = %q, want %q", public[0].PaidType, ResourcePaidFree)
+	}
+	childPublishedAt := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	if _, err := db.ExecContext(ctx, `UPDATE resources SET published_at=$2 WHERE id=$1`, workspace.Resource.ID, childPublishedAt); err != nil {
+		t.Fatal(err)
+	}
+	public, _, err = service.PublicResources(ctx, PublicQuery{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(public) != 1 || !public[0].PublishedAt.Equal(childPublishedAt) {
+		t.Fatalf("collection published_at = %v, want latest child %v", public, childPublishedAt)
 	}
 	public, total, err = service.PublicResources(ctx, PublicQuery{Limit: 20, Search: "creator-test"})
 	if err != nil || total != 2 || len(public) != 2 {

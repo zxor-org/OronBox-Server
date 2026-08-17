@@ -18,6 +18,9 @@ const CSS = `
   --surface-container: #f3edf7;
   --surface-high: #ece6f0;
   --surface-highest: #e6e0e9;
+  --surface-container-low: var(--surface-low);
+  --surface-container-high: var(--surface-high);
+  --shadow-2: 0 10px 32px rgb(0 0 0 / .18);
   --outline: #79747e;
   --outline-variant: #cac4d0;
   --error: #b3261e;
@@ -54,6 +57,9 @@ const CSS = `
   --surface-container: #211f26;
   --surface-high: #2b2930;
   --surface-highest: #36343b;
+  --surface-container-low: var(--surface-low);
+  --surface-container-high: var(--surface-high);
+  --shadow-2: 0 10px 32px rgb(0 0 0 / .35);
   --outline: #938f99;
   --outline-variant: #49454f;
   --error: #f2b8b5;
@@ -546,6 +552,8 @@ input[type="checkbox"]:focus { padding: 0; }
   font-weight: 500;
 }
 .form-error-summary[hidden] { display: none; }
+.form-failure { max-width: 720px; display: grid; gap: 16px; }
+.form-failure .notice { margin: 0; }
 [aria-invalid="true"] { border-color: var(--error); }
 .toast-notice {
   position: fixed;
@@ -652,6 +660,7 @@ input[type="checkbox"]:focus { padding: 0; }
 .binding-details > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .binding-details span { min-width: 0; display: grid; gap: 2px; }
 .binding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.inline-role-form { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 .header-actions, .composer-actions, .composer-footer, .blog-list-actions, .blog-editor-actions > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .home-composer { display: grid; gap: 16px; }
@@ -671,7 +680,7 @@ input[type="checkbox"]:focus { padding: 0; }
 .composer-editor, .composer-add { position: relative; }
 .composer-editor > summary, .composer-add > summary { list-style: none; cursor: pointer; }
 .composer-editor > summary::-webkit-details-marker, .composer-add > summary::-webkit-details-marker { display: none; }
-.composer-editor[open] > .composer-form, .composer-add[open] > .composer-form { position: absolute; z-index: 20; top: calc(100% + 8px); right: 0; width: min(520px, calc(100vw - 48px)); padding: 18px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface-container); box-shadow: 0 10px 32px rgb(0 0 0 / .18); }
+.composer-editor[open] > .composer-form, .composer-add[open] > .composer-form { position: absolute; z-index: 20; top: calc(100% + 8px); inset-inline-end: 0; width: min(520px, calc(100vw - 32px)); max-height: min(640px, calc(100vh - 96px)); overflow: auto; padding: 18px; border: 1px solid var(--outline-variant); border-radius: 12px; background: var(--surface-container); box-shadow: 0 10px 32px rgb(0 0 0 / .18); }
 .composer-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .composer-form label, .blog-fields label, .writing-grid label { display: grid; gap: 6px; color: var(--on-surface-variant); font-size: 12px; font-weight: 500; }
 .composer-form .actions { grid-column: 1 / -1; justify-content: flex-end; }
@@ -1001,6 +1010,7 @@ input[type="checkbox"]:focus { padding: 0; }
   .table-wrap tbody,
   .table-wrap tr,
   .table-wrap td { display: block; width: 100%; }
+  .table-wrap table { min-width: 0; }
   .table-wrap thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
   .table-wrap tbody { display: grid; gap: 10px; }
   .table-wrap tbody tr {

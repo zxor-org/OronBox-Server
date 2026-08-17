@@ -125,7 +125,15 @@ func (a *App) handleAdminResourceGovernanceSave(w http.ResponseWriter, r *http.R
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	position, _ := strconv.Atoi(r.FormValue("collection_position"))
+	position := 0
+	if raw := strings.TrimSpace(r.FormValue("collection_position")); raw != "" {
+		var parseErr error
+		position, parseErr = strconv.Atoi(raw)
+		if parseErr != nil || position < 0 {
+			http.Error(w, "invalid collection position", http.StatusBadRequest)
+			return
+		}
+	}
 	input := store.AdminRevisionGovernance{AuthorName: r.FormValue("author_name"), SourceURL: r.FormValue("source_url"), LicenseName: r.FormValue("license_name"), AuthorizationNote: r.FormValue("authorization_note"), CollectionID: r.FormValue("collection_id"), CollectionPosition: position}
 	for _, id := range strings.FieldsFunc(r.FormValue("collaborator_ids"), func(value rune) bool { return value == ',' || value == '\n' || value == ' ' || value == '\t' }) {
 		input.CollaboratorIDs = append(input.CollaboratorIDs, id)
