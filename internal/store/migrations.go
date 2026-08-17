@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 4
+const schemaVersion int64 = 5
 
 const notificationSchema = `
 CREATE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -96,7 +96,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if installedVersion.Int64 == schemaVersion {
 			return nil
 		}
-		if installedVersion.Int64 >= 1 && installedVersion.Int64 <= 3 {
+		if installedVersion.Int64 >= 1 && installedVersion.Int64 <= 4 {
 			if installedVersion.Int64 == 1 {
 				if err := migrateSchemaV2(ctx, tx); err != nil {
 					return fmt.Errorf("apply PostgreSQL schema v2: %w", err)
@@ -107,8 +107,13 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 					return fmt.Errorf("apply PostgreSQL schema v3: %w", err)
 				}
 			}
-			if err := migrateSchemaV4(ctx, tx); err != nil {
-				return fmt.Errorf("apply PostgreSQL schema v4: %w", err)
+			if installedVersion.Int64 <= 3 {
+				if err := migrateSchemaV4(ctx, tx); err != nil {
+					return fmt.Errorf("apply PostgreSQL schema v4: %w", err)
+				}
+			}
+			if err := migrateSchemaV5(ctx, tx); err != nil {
+				return fmt.Errorf("apply PostgreSQL schema v5: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit PostgreSQL schema v%d: %w", schemaVersion, err)
@@ -223,7 +228,7 @@ CREATE TABLE resources (
  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES users(id), slug text NOT NULL, draft_name text NOT NULL DEFAULT '',
  platform text NOT NULL DEFAULT 'vela_os' CHECK (platform='vela_os'),
  kind text NOT NULL CHECK (kind IN ('quickapp','watchface')),
- moderation_state text NOT NULL DEFAULT 'visible' CHECK (moderation_state IN ('visible','suspended','frozen')),
+	moderation_state text NOT NULL DEFAULT 'visible' CHECK (moderation_state IN ('visible','suspended','frozen','deleted')),
  moderation_by text CHECK (moderation_by IN ('owner','admin')),
  moderation_reason text NOT NULL DEFAULT '',
  moderation_at timestamptz, download_count integer NOT NULL DEFAULT 0,
@@ -597,6 +602,16 @@ func migrateSchemaV4(ctx context.Context, tx *sql.Tx) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(4)`); err != nil {
 		return fmt.Errorf("record PostgreSQL schema v4: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV5(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE resources DROP CONSTRAINT resources_moderation_state_check; ALTER TABLE resources ADD CONSTRAINT resources_moderation_state_check CHECK (moderation_state IN ('visible','suspended','frozen','deleted'))`); err != nil {
+		return fmt.Errorf("allow deleted resource state: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(5)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v5: %w", err)
 	}
 	return nil
 }

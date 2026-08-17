@@ -94,7 +94,7 @@ func (s *Service) Create(ctx context.Context, ownerID, slug, name string, kind R
 }
 
 func (s *Service) List(ctx context.Context, ownerID string) ([]Workspace, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text FROM resources WHERE owner_id=$1 ORDER BY updated_at DESC`, ownerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text FROM resources WHERE owner_id=$1 AND moderation_state<>'deleted' ORDER BY updated_at DESC`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +243,9 @@ func (s *Service) SetModeration(ctx context.Context, ownerID, resourceID, action
 	if err != nil {
 		return Workspace{}, err
 	}
+	if moderationState == "deleted" {
+		return Workspace{}, fmt.Errorf("%w: deleted resources cannot be modified", ErrConflict)
+	}
 	eventType := ""
 	switch action {
 	case "takedown":
@@ -288,8 +291,9 @@ type DeleteResult struct {
 }
 
 // Delete removes the OronBox resource. External platforms are only touched
-// when explicitly listed in deleteExternal; bindings of a plain draft delete
-// simply cascade away with the resource row.
+// when explicitly listed in deleteExternal. Drafts without publication
+// history are physically removed; published resources are soft-deleted so
+// immutable publication history remains intact.
 func (s *Service) Delete(ctx context.Context, ownerID, resourceID string, deleteExternal []string) (DeleteResult, error) {
 	var result DeleteResult
 	external := map[string]bool{}
@@ -300,7 +304,8 @@ func (s *Service) Delete(ctx context.Context, ownerID, resourceID string, delete
 		external[provider] = true
 	}
 	var name string
-	err := s.db.QueryRowContext(ctx, `SELECT draft_name FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID).Scan(&name)
+	var hasPublicationHistory bool
+	err := s.db.QueryRowContext(ctx, `SELECT resource.draft_name,EXISTS(SELECT 1 FROM resource_revisions revision JOIN publications publication ON publication.revision_id=revision.id WHERE revision.resource_id=resource.id) FROM resources resource WHERE resource.id=$1 AND resource.owner_id=$2`, resourceID, ownerID).Scan(&name, &hasPublicationHistory)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, ErrNotFound
 	}
@@ -351,12 +356,29 @@ func (s *Service) Delete(ctx context.Context, ownerID, resourceID string, delete
 			result.AstroBoxRemovalPR = pr
 		}
 	}
-	deleted, err := s.db.ExecContext(ctx, `DELETE FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
-	if count, _ := deleted.RowsAffected(); count != 1 {
-		return result, ErrConflict
+	defer tx.Rollback()
+	if hasPublicationHistory {
+		if _, err := tx.ExecContext(ctx, `UPDATE resources SET moderation_state='deleted',moderation_by='owner',moderation_reason='deleted by owner',moderation_at=now(),updated_at=now() WHERE id=$1 AND owner_id=$2`, resourceID, ownerID); err != nil {
+			return result, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM external_bindings WHERE resource_id=$1`, resourceID); err != nil {
+			return result, err
+		}
+	} else {
+		deleted, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE id=$1 AND owner_id=$2`, resourceID, ownerID)
+		if err != nil {
+			return result, err
+		}
+		if count, _ := deleted.RowsAffected(); count != 1 {
+			return result, ErrConflict
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
 	}
 	log(ctx).Info("resource deleted", "resource_id", resourceID, "owner_id", ownerID, "bandbbs_resources", result.BandBBSDeleted, "astrobox_removal_pr", result.AstroBoxRemovalPR)
 	return result, nil

@@ -350,8 +350,21 @@ func TestCreatorLifecycle(t *testing.T) {
 	if _, err := service.Delete(ctx, userID, workspace.Resource.ID, nil); err != nil {
 		t.Fatalf("resource deletion error = %v", err)
 	}
-	if _, err := service.Workspace(ctx, userID, workspace.Resource.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("workspace after deletion error = %v, want not found", err)
+	deletedWorkspace, err := service.Workspace(ctx, userID, workspace.Resource.ID)
+	if err != nil {
+		t.Fatalf("workspace after deletion error = %v", err)
+	}
+	if deletedWorkspace.Resource.ModerationState != "deleted" {
+		t.Fatalf("workspace after deletion state = %q, want deleted", deletedWorkspace.Resource.ModerationState)
+	}
+	listed, err := service.List(ctx, userID)
+	if err != nil {
+		t.Fatalf("creator list after deletion error = %v", err)
+	}
+	for _, item := range listed {
+		if item.Resource.ID == workspace.Resource.ID {
+			t.Fatal("deleted resource remained in creator list")
+		}
 	}
 }
 

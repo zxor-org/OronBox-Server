@@ -244,6 +244,9 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 	if moderationState == "frozen" {
 		return Workspace{}, fmt.Errorf("%w: resource is frozen by an administrator", ErrConflict)
 	}
+	if moderationState == "deleted" {
+		return Workspace{}, fmt.Errorf("%w: deleted resources cannot be published", ErrConflict)
+	}
 	if resourceKind != kind {
 		return Workspace{}, fmt.Errorf("%w: manifest kind does not match the resource", ErrInvalid)
 	}
