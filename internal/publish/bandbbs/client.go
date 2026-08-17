@@ -68,12 +68,13 @@ type target struct {
 }
 
 type config struct {
-	Description    string   `json:"description"`
-	VersionTitle   string   `json:"version_title"`
-	VersionMessage string   `json:"version_message"`
-	Agreement      bool     `json:"agreement"`
-	Price          float64  `json:"price"`
-	Targets        []target `json:"targets"`
+	Description       string   `json:"description"`
+	VersionTitle      string   `json:"version_title"`
+	VersionMessage    string   `json:"version_message"`
+	OverwritePrevious bool     `json:"overwrite_previous_version"`
+	Agreement         bool     `json:"agreement"`
+	Price             float64  `json:"price"`
+	Targets           []target `json:"targets"`
 }
 
 const externalPurchaseCurrency = "CNY"
@@ -269,7 +270,7 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		}
 		result.Resources[category] = categoryResult
 		if categoryResult.VersionID == "" && !externalPurchase {
-			version, versionErr := c.replaceVersion(ctx, token, resourceID, pack.Version, pack.Name, packSize, versionKey, reconcileVersion)
+			version, versionErr := c.replaceVersion(ctx, token, resourceID, pack.Version, pack.Name, packSize, versionKey, reconcileVersion, cfg.OverwritePrevious)
 			if versionErr != nil {
 				return result, fmt.Errorf("create version in category %d: %w", target.CategoryID, versionErr)
 			}
@@ -342,27 +343,48 @@ type versionSummary struct {
 	} `json:"files"`
 }
 
-func (c *Client) replaceVersion(ctx context.Context, token, resourceID, versionString, filename string, size int64, attachmentKey string, reconcile bool) (versionResult, error) {
+func (c *Client) replaceVersion(ctx context.Context, token, resourceID, versionString, filename string, size int64, attachmentKey string, reconcile, overwritePrevious bool) (versionResult, error) {
 	oldVersions, err := c.listVersions(ctx, token, resourceID)
 	if err != nil {
 		return versionResult{}, fmt.Errorf("list existing versions: %w", err)
 	}
 	if reconcile {
-		if existing := findMatchingVersion(oldVersions, versionString, filename, size); existing != nil {
-			if err := c.removePreviousVersions(ctx, token, oldVersions, versionString, existing.ID); err != nil {
-				return versionResult{}, err
+		if !overwritePrevious {
+			if existing := findMatchingVersion(oldVersions, versionString, filename, size); existing != nil {
+				if err := c.removePreviousVersions(ctx, token, oldVersions, versionString, existing.ID); err != nil {
+					return versionResult{}, err
+				}
+				return versionResult{ID: strconv.Itoa(existing.ID)}, nil
 			}
-			return versionResult{ID: strconv.Itoa(existing.ID)}, nil
 		}
 	}
 	created, err := c.createVersion(ctx, token, resourceID, versionString, attachmentKey)
 	if err != nil {
 		return versionResult{}, err
 	}
+	if overwritePrevious {
+		if previous := latestVersion(oldVersions); previous != nil {
+			if err := c.deleteVersion(ctx, token, strconv.Itoa(previous.ID)); err != nil {
+				return created, fmt.Errorf("remove previous version %s: %w", strconv.Itoa(previous.ID), err)
+			}
+		}
+		return created, nil
+	}
 	if err := c.removePreviousVersions(ctx, token, oldVersions, versionString, createdID(created)); err != nil {
 		return created, err
 	}
 	return created, nil
+}
+
+func latestVersion(versions []versionSummary) *versionSummary {
+	var latest *versionSummary
+	for index := range versions {
+		version := &versions[index]
+		if latest == nil || version.ID > latest.ID {
+			latest = version
+		}
+	}
+	return latest
 }
 
 func createdID(version versionResult) int {
