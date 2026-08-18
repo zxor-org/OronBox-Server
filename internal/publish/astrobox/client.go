@@ -334,9 +334,16 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 		baseDigest = &digest
 		break
 	}
-	request := submissionRequest{SchemaVersion: 1, Mode: mode, OriginalID: originalID, BaseEntryDigest: baseDigest}
-	if mode == "edit" {
-		request.BaseCatalogCommit = stringPtr(catalogCommit)
+	// Both create and edit submissions must identify the upstream catalog
+	// snapshot they were prepared against.  The digest and original ID remain
+	// edit-only fields, but create requests still need base_catalog_commit so
+	// ABCC can validate the submission against the same index_v2.csv revision.
+	request := submissionRequest{
+		SchemaVersion:     1,
+		Mode:              mode,
+		OriginalID:        originalID,
+		BaseEntryDigest:   baseDigest,
+		BaseCatalogCommit: stringPtr(catalogCommit),
 	}
 	requestJSON, err := json.MarshalIndent(request, "", "  ")
 	if err != nil {

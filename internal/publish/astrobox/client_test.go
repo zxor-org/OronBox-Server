@@ -268,12 +268,17 @@ func TestCatalogRowDigestIsStable(t *testing.T) {
 	}
 }
 
-func TestSubmissionRequestCreateLeavesEditFieldsNull(t *testing.T) {
-	data, err := json.Marshal(submissionRequest{SchemaVersion: 1, Mode: "create"})
+func TestSubmissionRequestCreateKeepsCatalogCommitAndLeavesEditFieldsNull(t *testing.T) {
+	commit := "ffb9e96a7d423b0bf261a6850fc09c83bdc08c46"
+	data, err := json.Marshal(submissionRequest{
+		SchemaVersion:     1,
+		Mode:              "create",
+		BaseCatalogCommit: &commit,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != `{"schema_version":1,"mode":"create","original_id":null,"base_entry_digest":null,"base_catalog_commit":null}` {
+	if string(data) != `{"schema_version":1,"mode":"create","original_id":null,"base_entry_digest":null,"base_catalog_commit":"ffb9e96a7d423b0bf261a6850fc09c83bdc08c46"}` {
 		t.Fatalf("create request = %s", data)
 	}
 }
