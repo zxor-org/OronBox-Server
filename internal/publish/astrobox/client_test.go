@@ -88,6 +88,47 @@ func TestSyncForkCreatesMissingRefAfterUpdate404(t *testing.T) {
 	}
 }
 
+func TestPrepareCatalogSnapshotAllowsStaleForkWhenSyncIsNotWritable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /repos/upstream/catalog/forks", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"name":"catalog","default_branch":"main","owner":{"login":"creator"}}`))
+	})
+	mux.HandleFunc("GET /repos/creator/catalog/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":{"sha":"stale"}}`))
+	})
+	mux.HandleFunc("POST /repos/creator/catalog/merge-upstream", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	})
+	mux.HandleFunc("GET /repos/upstream/catalog/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":{"sha":"current"}}`))
+	})
+	mux.HandleFunc("PATCH /repos/creator/catalog/git/refs/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+	mux.HandleFunc("POST /repos/creator/catalog/git/refs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+	catalog := []byte("id,name,restype,repo_owner,repo_name,repo_commit_hash,icon,cover,tags,device_vendors,devices,paid_type\n")
+	mux.HandleFunc("GET /repos/upstream/catalog/contents/index_v2.csv", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"content":"` + base64.StdEncoding.EncodeToString(catalog) + `","sha":"file-sha"}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := &Client{api: server.URL, http: server.Client(), cfg: config.AstroBoxConfig{
+		RepoOwner: "upstream", RepoName: "catalog", RepoBranch: "main", CatalogPath: "index_v2.csv",
+	}}
+	snapshot, err := client.prepareCatalogSnapshot(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("stale fork should not block a v2 snapshot: %v", err)
+	}
+	if snapshot.Commit != "current" || snapshot.ForkBase != "stale" {
+		t.Fatalf("snapshot = %#v, want upstream current and stale fork base", snapshot)
+	}
+}
+
 func TestNormalizePaidTypeForAstroBox(t *testing.T) {
 	tests := map[string]string{"free": "", " FREE ": "", "paid": "paid", "force_paid": "force_paid"}
 	for input, want := range tests {

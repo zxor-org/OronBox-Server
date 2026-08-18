@@ -390,20 +390,21 @@ type catalogSnapshot struct {
 	ForkBase string
 }
 
-// prepareCatalogSnapshot creates a submission base only after the fork and
-// upstream catalog have been observed at the same commit. The upstream branch
-// can move while GitHub API calls are in flight; retrying the whole snapshot
-// prevents a request from mixing a catalog row from one commit with a branch
-// based on another.
+// prepareCatalogSnapshot reads a stable upstream catalog snapshot and a
+// readable fork base for the submission branch. Fork-main synchronization is
+// best-effort: AstroBox Creator Console continues from the fork's current HEAD
+// when GitHub refuses to update the default ref, because v2 submissions carry
+// their catalog row and upstream base commit in tmp/.../request.json instead of
+// rewriting the fork catalog itself.
 func (c *Client) prepareCatalogSnapshot(ctx context.Context, token string) (catalogSnapshot, error) {
 	fork, err := c.ensureFork(ctx, token)
 	if err != nil {
 		return catalogSnapshot{}, fmt.Errorf("prepare AstroBox catalog fork: %w", err)
 	}
+	// Match AstroBox Creator Console: default-branch synchronization is a
+	// convenience, not a prerequisite for creating the staging branch.
+	_ = c.syncFork(ctx, token, fork)
 	for attempt := 0; attempt < 3; attempt++ {
-		if err := c.syncFork(ctx, token, fork); err != nil {
-			return catalogSnapshot{}, fmt.Errorf("sync AstroBox catalog fork: %w", err)
-		}
 		commit, err := c.refSHA(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.RepoBranch)
 		if err != nil {
 			return catalogSnapshot{}, fmt.Errorf("read AstroBox upstream branch: %w", err)
@@ -411,9 +412,6 @@ func (c *Client) prepareCatalogSnapshot(ctx context.Context, token string) (cata
 		forkBase, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
 		if err != nil {
 			return catalogSnapshot{}, fmt.Errorf("read AstroBox catalog fork branch: %w", err)
-		}
-		if forkBase != commit {
-			continue
 		}
 		catalog, fileSHA, err := c.getContent(ctx, token, c.cfg.RepoOwner, c.cfg.RepoName, c.cfg.CatalogPath, commit)
 		if err != nil {
@@ -423,11 +421,7 @@ func (c *Client) prepareCatalogSnapshot(ctx context.Context, token string) (cata
 		if err != nil {
 			return catalogSnapshot{}, fmt.Errorf("recheck AstroBox upstream branch: %w", err)
 		}
-		latestFork, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
-		if err != nil {
-			return catalogSnapshot{}, fmt.Errorf("recheck AstroBox catalog fork branch: %w", err)
-		}
-		if latestCommit != commit || latestFork != commit {
+		if latestCommit != commit {
 			continue
 		}
 		return catalogSnapshot{Fork: fork, Catalog: catalog, FileSHA: fileSHA, Commit: commit, ForkBase: forkBase}, nil

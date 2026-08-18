@@ -620,6 +620,8 @@ const collectionPublishedAtSQL = `GREATEST(
 		WHERE child.collection_id=c.id AND child.moderation_state='visible'),COALESCE(c.published_at,cr.created_at))
 )`
 
+// Recommendation jitter is deterministic for a resource and request seed so
+// pagination remains stable while a fresh seed reshuffles the catalog.
 const publicCardsSQL = `WITH recent_resource_coins AS (
 SELECT ledger.reference_id resource_id,
 count(DISTINCT ledger.user_id)::numeric unique_coiners,
@@ -643,7 +645,7 @@ r.download_count,r.curation_grade,COALESCE((SELECT sum(v.coins) FROM resource_co
 	 (1.0 + exp(-GREATEST(EXTRACT(EPOCH FROM (now()-COALESCE(r.published_at,rr.created_at)))/86400.0,0)/7.0)) *
 		 CASE WHEN r.curation_grade='featured' THEN 1.5 ELSE 1.0 END *
 		 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_revision_attributes binding JOIN resource_attributes definition ON definition.id=binding.attribute WHERE binding.revision_id=rr.id),1.0)) *
-		 (0.80 + (((hashtextextended(r.id::text,$5) % 10000 + 10000) % 10000)::numeric / 25000.0)) END recommendation_score
+		 (0.50 + (((hashtextextended(r.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id
 LEFT JOIN recent_resource_coins recent ON recent.resource_id=r.id::text
 WHERE r.moderation_state='visible' AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2)
@@ -668,7 +670,7 @@ COALESCE((SELECT sum(v.coins) FROM resources child JOIN resource_coin_votes v ON
 		 (1.0 + exp(-GREATEST(EXTRACT(EPOCH FROM (now()-(` + collectionPublishedAtSQL + `)))/86400.0,0)/7.0)) *
 	CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 1.5 ELSE 1.0 END *
 		COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0)) *
-		(0.80 + (((hashtextextended(c.id::text,$5) % 10000 + 10000) % 10000)::numeric / 25000.0)) END recommendation_score
+		(0.50 + (((hashtextextended(c.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
 WHERE c.enabled AND ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
 AND EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)
