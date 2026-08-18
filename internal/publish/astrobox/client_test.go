@@ -45,6 +45,49 @@ func TestSyncForkAlignsStaleFork(t *testing.T) {
 	}
 }
 
+func TestSyncForkCreatesMissingRefAfterUpdate404(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/upstream/catalog/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":{"sha":"current"}}`))
+	})
+	mux.HandleFunc("POST /repos/creator/catalog/merge-upstream", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	})
+	forkReads := 0
+	mux.HandleFunc("GET /repos/creator/catalog/git/ref/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		forkReads++
+		if forkReads == 2 {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+			return
+		}
+		sha := "stale"
+		if forkReads > 2 {
+			sha = "current"
+		}
+		_, _ = w.Write([]byte(`{"object":{"sha":"` + sha + `"}}`))
+	})
+	mux.HandleFunc("PATCH /repos/creator/catalog/git/refs/heads/main", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+	created := false
+	mux.HandleFunc("POST /repos/creator/catalog/git/refs", func(w http.ResponseWriter, r *http.Request) {
+		created = true
+		w.WriteHeader(http.StatusCreated)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := &Client{api: server.URL, http: server.Client(), cfg: config.AstroBoxConfig{RepoOwner: "upstream", RepoName: "catalog", RepoBranch: "main"}}
+	if err := client.syncFork(context.Background(), "token", repo{Owner: "creator", Name: "catalog", Branch: "main"}); err != nil {
+		t.Fatalf("missing fork ref was not recovered: %v", err)
+	}
+	if !created {
+		t.Fatal("missing fork ref was not created")
+	}
+}
+
 func TestNormalizePaidTypeForAstroBox(t *testing.T) {
 	tests := map[string]string{"free": "", " FREE ": "", "paid": "paid", "force_paid": "force_paid"}
 	for input, want := range tests {

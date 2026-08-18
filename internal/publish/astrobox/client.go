@@ -813,18 +813,24 @@ func (c *Client) syncFork(ctx context.Context, token string, fork repo) error {
 	}
 	forkSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
 	if err != nil {
+		if status, ok := githubStatus(err); ok && status == http.StatusNotFound {
+			if createErr := c.createRef(ctx, token, fork.Owner, fork.Name, fork.Branch, upstreamSHA); createErr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("read AstroBox fork branch after synchronization: %w; create missing ref: %v", err, createErr)
+			}
+		}
 		return fmt.Errorf("read AstroBox fork branch after synchronization: %w", err)
 	}
 	if forkSHA == upstreamSHA {
 		return nil
 	}
 
-	_, forceErr := c.request(ctx, token, http.MethodPatch, fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", c.api, fork.Owner, fork.Name, url.PathEscape(fork.Branch)), map[string]any{"sha": upstreamSHA, "force": true}, nil)
-	if forceErr != nil {
+	if err := c.forceAlignForkRef(ctx, token, fork, upstreamSHA); err != nil {
 		if mergeErr != nil {
-			return fmt.Errorf("force-align AstroBox catalog fork after merge-upstream failed: %w", forceErr)
+			return fmt.Errorf("force-align AstroBox catalog fork after merge-upstream failed: %w", err)
 		}
-		return fmt.Errorf("force-align AstroBox catalog fork: %w", forceErr)
+		return fmt.Errorf("force-align AstroBox catalog fork: %w", err)
 	}
 	alignedSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch)
 	if err != nil {
@@ -835,6 +841,45 @@ func (c *Client) syncFork(ctx context.Context, token string, fork repo) error {
 	}
 	return nil
 }
+
+// forceAlignForkRef updates the fork's default branch to the upstream commit.
+// GitHub may briefly return 404 while a fork synchronization is being
+// materialized, and an old fork may genuinely be missing the configured ref.
+// Re-read the ref once before creating it so a transient response does not
+// create a duplicate branch, then use the Git refs API as the missing-ref
+// recovery path.
+func (c *Client) forceAlignForkRef(ctx context.Context, token string, fork repo, sha string) error {
+	updateErr := c.updateRef(ctx, token, fork.Owner, fork.Name, fork.Branch, sha)
+	if updateErr == nil {
+		return nil
+	}
+	status, ok := githubStatus(updateErr)
+	if !ok || status != http.StatusNotFound {
+		return updateErr
+	}
+
+	if currentSHA, err := c.refSHA(ctx, token, fork.Owner, fork.Name, fork.Branch); err == nil {
+		if currentSHA == sha {
+			return nil
+		}
+		if retryErr := c.updateRef(ctx, token, fork.Owner, fork.Name, fork.Branch, sha); retryErr == nil {
+			return nil
+		} else {
+			updateErr = fmt.Errorf("initial update failed: %w; retry failed: %v", updateErr, retryErr)
+		}
+	} else {
+		refStatus, refKnown := githubStatus(err)
+		if !refKnown || refStatus != http.StatusNotFound {
+			return fmt.Errorf("update fork ref: %w; re-read ref: %v", updateErr, err)
+		}
+	}
+
+	if err := c.createRef(ctx, token, fork.Owner, fork.Name, fork.Branch, sha); err != nil {
+		return fmt.Errorf("update fork ref: %w; create missing ref: %v", updateErr, err)
+	}
+	return nil
+}
+
 func (c *Client) refSHA(ctx context.Context, token, owner, repoName, branch string) (string, error) {
 	var response struct {
 		Object struct {
