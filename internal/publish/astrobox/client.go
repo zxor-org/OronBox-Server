@@ -728,11 +728,11 @@ func encodeCatalogRows(rows [][]string) ([]byte, error) {
 }
 
 func catalogRowDigest(row []string) (string, error) {
-	encoded, err := encodeCatalogRows([][]string{row})
-	if err != nil {
-		return "", err
+	canonical := make([]string, len(row))
+	for index, value := range row {
+		canonical[index] = strings.TrimSpace(value)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(canonical, ",")))), nil
 }
 
 func catalogRowsEqual(left, right []string) bool {

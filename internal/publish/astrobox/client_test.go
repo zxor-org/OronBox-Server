@@ -254,7 +254,7 @@ func TestSubmissionPathNormalizesGitHubNames(t *testing.T) {
 }
 
 func TestCatalogRowDigestIsStable(t *testing.T) {
-	row := []string{"item", "name", "quick_app", "owner", "repo", "abcdef1", "icon.png", "cover.png", "tools", "xiaomi", "xmb10", ""}
+	row := []string{"com.example.band.bilibili.lite", "腕上哔哩-WristBili", "quick_app", "Velvetine13245", "astrobox-resource-com.example.band.bilibili.lite", "b2dd909", "media/icon.webp", "media/cover.webp", "WristBili;腕上哔哩;B站", "xiaomi", "xmb9p;xmrw5;xmrw5xring;xmrw6;xmws4;xmws441;xmws4xring;xmws5", ""}
 	one, err := catalogRowDigest(row)
 	if err != nil {
 		t.Fatal(err)
@@ -263,8 +263,9 @@ func TestCatalogRowDigestIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one != two || len(one) != 64 {
-		t.Fatalf("digest is not stable: %q != %q", one, two)
+	const expected = "f1c66aa2ed7b7a6e2b8c9041b86648f284b2274a41243274cd093fb64d00b466"
+	if one != expected || two != expected {
+		t.Fatalf("digest = %q and %q, want %q", one, two, expected)
 	}
 }
 
