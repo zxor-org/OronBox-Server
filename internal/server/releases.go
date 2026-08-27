@@ -1,22 +1,11 @@
 package server
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func (a *App) handleAdminReleases(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminReleases(r.Context(), store.AdminReleaseQuery{Search: r.URL.Query().Get("q"), Platform: r.URL.Query().Get("platform"), Arch: r.URL.Query().Get("arch"), Channel: r.URL.Query().Get("channel"), Enabled: r.URL.Query().Get("state"), Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_releases", map[string]any{"Title": "客户端版本", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/releases", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
-}
 
 func (a *App) handleAdminPublishRelease(w http.ResponseWriter, r *http.Request) {
 	release := store.AppRelease{Version: strings.TrimSpace(r.FormValue("version")), Channel: strings.TrimSpace(r.FormValue("channel")), Platform: strings.TrimSpace(r.FormValue("platform")), Arch: strings.TrimSpace(r.FormValue("arch")), MinimumVersion: strings.TrimSpace(r.FormValue("minimum_version")), NotesZH: strings.TrimSpace(r.FormValue("notes_zh")), NotesEN: strings.TrimSpace(r.FormValue("notes_en")), DownloadURL: strings.TrimSpace(r.FormValue("download_url"))}
@@ -46,20 +35,6 @@ func (a *App) handleAdminPublishRelease(w http.ResponseWriter, r *http.Request) 
 	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "release.publish", "success", a.clientIP(r), r.UserAgent(), "release="+created.Version+" channel="+created.Channel)
 	http.Redirect(w, r, "/admin/releases", http.StatusFound)
 }
-
-func (a *App) handleAdminRelease(w http.ResponseWriter, r *http.Request) {
-	item, err := a.store.AdminRelease(r.Context(), r.PathValue("release"))
-	if errors.Is(err, store.ErrAdminReleaseNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	a.render(w, r, "admin_release_detail", map[string]any{"Title": item.Version, "Item": item, "Action": r.URL.Query().Get("action")})
-}
-
 func (a *App) handleAdminReleaseNotes(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", 400)

@@ -1,13 +1,9 @@
 package server
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -71,35 +67,4 @@ func (a *App) handleAdminUserMessage(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
 	_ = a.store.RecordAudit(r.Context(), actor, "message.send", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("recipients=%d title=%s", count, title))
 	http.Redirect(w, r, "/admin/users?action=message_sent", http.StatusFound)
-}
-
-func (a *App) handleAdminMessages(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	page, err := a.store.AdminMessages(r.Context(), store.AdminMessageQuery{
-		Search: r.URL.Query().Get("q"), Kind: r.URL.Query().Get("kind"), Read: r.URL.Query().Get("read"),
-		User: r.URL.Query().Get("user"), From: from, To: to,
-		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_messages", map[string]any{
-		"Title": "系统消息", "Page": page, "Items": page.Items, "Query": page.Query,
-		"From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"),
-		"Pager": web.NewPagination("/admin/messages", r.URL.Query(), page.Page, page.PerPage, page.Total),
-	})
-}
-
-func (a *App) handleAdminMessage(w http.ResponseWriter, r *http.Request) {
-	item, err := a.store.AdminMessage(r.Context(), r.PathValue("message"))
-	if errors.Is(err, store.ErrAdminMessageNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_message_detail", map[string]any{"Title": item.Title, "Item": item})
 }

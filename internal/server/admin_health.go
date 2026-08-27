@@ -76,59 +76,22 @@ func cleanupConfirmation(preview store.AdminCleanupPreview) string {
 func cleanupSummary(stats store.CleanupStats) string {
 	return fmt.Sprintf("states=%d tickets=%d admin_sessions=%d messages=%d", stats.OAuthStates, stats.LoginTickets, stats.AdminSessions, stats.UserMessages)
 }
-
-func (a *App) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
-	a.renderAdminHealth(w, r, nil, "", "")
-}
-
-func (a *App) renderAdminHealth(w http.ResponseWriter, r *http.Request, preview *store.AdminCleanupPreview, token, pageError string) {
-	dbStarted := time.Now()
-	dbStatus := "ok"
-	if err := a.store.Ping(r.Context()); err != nil {
-		dbStatus = err.Error()
-	}
-	dbLatency := time.Since(dbStarted)
-	stats, statsErr := a.store.Stats(r.Context(), a.startedAt)
-	diagnostics, diagnosticsErr := a.store.AdminHealthDiagnostics(r.Context())
-	if statsErr != nil && pageError == "" {
-		pageError = statsErr.Error()
-	}
-	if diagnosticsErr != nil && pageError == "" {
-		pageError = diagnosticsErr.Error()
-	}
-	uptime := time.Since(a.startedAt)
-	if a.startedAt.IsZero() || uptime < 0 {
-		uptime = 0
-	}
-	data := map[string]any{
-		"Title": "运行状态", "DBStatus": dbStatus, "DBLatency": dbLatency.Round(time.Millisecond).String(),
-		"Stats": stats, "Diagnostics": diagnostics, "Uptime": uptime.Round(time.Second).String(),
-		"Error": pageError, "Action": r.URL.Query().Get("action"),
-	}
-	if preview != nil {
-		data["CleanupPreview"] = *preview
-		data["CleanupToken"] = token
-		data["CleanupConfirmation"] = cleanupConfirmation(*preview)
-	}
-	a.render(w, r, "admin_health", data)
-}
-
 func (a *App) handleAdminCleanupPreview(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
 	preview, err := a.store.PreviewExpiredCleanup(r.Context(), time.Now().UTC())
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		a.renderAdminHealth(w, r, nil, "", "无法生成清理预览："+err.Error())
+		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_preview_failed", err.Error()))
 		return
 	}
 	token, err := a.signCleanupPreview(cleanupPreviewToken{Preview: preview, ActorID: actor.UserID, ExpiresAt: time.Now().UTC().Add(cleanupPreviewTTL)})
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		a.renderAdminHealth(w, r, nil, "", "无法生成清理预览")
+		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_preview_failed", "无法生成清理预览"))
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("cutoff=%s total=%d %s", preview.Cutoff.Format(time.RFC3339Nano), preview.Total(), cleanupSummary(store.CleanupStats{OAuthStates: preview.OAuthStates, LoginTickets: preview.LoginTickets, AdminSessions: preview.AdminSessions, UserMessages: preview.UserMessages})))
-	a.renderAdminHealth(w, r, &preview, token, "")
+	writeJSON(w, http.StatusOK, map[string]any{"preview": preview, "token": token, "confirmation": cleanupConfirmation(preview)})
 }
 
 func (a *App) handleAdminCleanupExecute(w http.ResponseWriter, r *http.Request) {
@@ -146,13 +109,13 @@ func (a *App) handleAdminCleanupExecute(w http.ResponseWriter, r *http.Request) 
 	}
 	if r.FormValue("confirmation") != cleanupConfirmation(preview) {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), fmt.Sprintf("confirmation mismatch cutoff=%s total=%d", preview.Cutoff.Format(time.RFC3339Nano), preview.Total()))
-		a.renderAdminHealth(w, r, &preview, r.FormValue("preview_token"), "危险操作确认短语不匹配，未执行任何清理")
+		writeJSON(w, http.StatusBadRequest, errorBody("cleanup_confirmation_mismatch", "危险操作确认短语不匹配，未执行任何清理"))
 		return
 	}
 	stats, err := a.store.ExecuteExpiredCleanup(r.Context(), preview)
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		a.renderAdminHealth(w, r, &preview, r.FormValue("preview_token"), "清理失败："+err.Error())
+		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_failed", err.Error()))
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("cutoff=%s preview_total=%d deleted_total=%d %s", preview.Cutoff.Format(time.RFC3339Nano), preview.Total(), stats.OAuthStates+stats.LoginTickets+stats.AdminSessions+stats.UserMessages, cleanupSummary(stats)))

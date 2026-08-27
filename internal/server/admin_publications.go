@@ -7,21 +7,7 @@ import (
 	"net/url"
 
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func (a *App) handleAdminPublications(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminPublications(r.Context(), store.AdminPublicationQuery{
-		Search: r.URL.Query().Get("q"), Target: r.URL.Query().Get("target"), State: r.URL.Query().Get("state"),
-		Resource: r.URL.Query().Get("resource"), Owner: r.URL.Query().Get("owner"), Sort: r.URL.Query().Get("sort"),
-		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_publications", map[string]any{"Title": "发布任务", "Page": page, "Items": page.Items, "Query": page.Query, "Pager": web.NewPagination("/admin/publications", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action"), "Retried": r.URL.Query().Get("retried")})
-}
 
 func (a *App) handleAdminPublicationBatchRetry(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -51,33 +37,4 @@ func (a *App) handleAdminPublicationBatchRetry(w http.ResponseWriter, r *http.Re
 		}
 	}
 	http.Redirect(w, r, "/admin/publications?"+redirect.Encode(), http.StatusFound)
-}
-
-func (a *App) handleAdminPublication(w http.ResponseWriter, r *http.Request) {
-	item, err := a.store.AdminPublication(r.Context(), r.PathValue("publication"))
-	if errors.Is(err, store.ErrAdminPublicationNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_publication_detail", map[string]any{"Title": item.RevisionName, "Item": item, "Action": r.URL.Query().Get("action")})
-}
-
-func (a *App) handleAdminPublicationAction(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	item, err := a.store.AdminManagePublication(r.Context(), r.PathValue("publication"), r.FormValue("action"))
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "publication."+r.FormValue("action"), "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "publication."+r.FormValue("action"), "success", a.clientIP(r), r.UserAgent(), "publication="+item.ID)
-	http.Redirect(w, r, "/admin/publications/"+item.ID+"?action="+r.FormValue("action"), http.StatusFound)
 }

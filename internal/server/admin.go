@@ -95,6 +95,14 @@ func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
+func (a *App) rejectAdminAuth(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		writeJSON(w, http.StatusUnauthorized, errorBody("unauthenticated", "admin session required"))
+		return
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusFound)
+}
+
 func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// An OAuth callback delivers the login ticket as a query parameter
@@ -109,7 +117,7 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				"admin authentication rejected",
 				"reason", "missing_cookie",
 			)
-			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			a.rejectAdminAuth(w, r)
 			return
 		}
 		session, err := a.store.AdminSession(r.Context(), cookie.Value)
@@ -123,7 +131,7 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				"reason", reason,
 			)
 			a.clearAdminCookie(w, r)
-			http.Redirect(w, r, "/admin/login", http.StatusFound)
+			a.rejectAdminAuth(w, r)
 			return
 		}
 		user, err := a.store.UserByID(r.Context(), session.UserID)
@@ -272,191 +280,8 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, web.HomePathFor(role), http.StatusFound)
 		return
 	}
-	stats, err := a.store.Stats(r.Context(), a.startedAt)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	events, _ := a.store.RecentEvents(r.Context(), 12)
-	clients, _ := a.store.ClientStats(r.Context(), 8)
-	a.render(w, r, "admin_dashboard", map[string]any{
-		"Title":   "仪表盘",
-		"Stats":   stats,
-		"Events":  events,
-		"Clients": clients,
-	})
+	a.serveAdminSPA(w, r)
 }
-
-func (a *App) handleAdminEvents(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	page, err := a.store.AdminOAuthEvents(r.Context(), store.AdminOAuthEventQuery{
-		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Result: r.URL.Query().Get("result"), Platform: r.URL.Query().Get("platform"),
-		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_events", map[string]any{"Title": "OAuth 事件", "Events": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/events", r.URL.Query(), page.Page, page.PerPage, page.Total)})
-}
-
-func (a *App) handleAdminEvent(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("event"), 10, 64)
-	if err != nil || id < 1 {
-		http.NotFound(w, r)
-		return
-	}
-	detail, err := a.store.AdminOAuthEvent(r.Context(), id)
-	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_event_detail", map[string]any{"Title": "OAuth 事件详情", "Detail": detail})
-}
-
-func (a *App) handleAdminStates(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	page, err := a.store.AdminOAuthStates(r.Context(), store.AdminOAuthStateQuery{
-		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Status: r.URL.Query().Get("status"), Platform: r.URL.Query().Get("platform"),
-		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_states", map[string]any{"Title": "OAuth States", "States": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/states", r.URL.Query(), page.Page, page.PerPage, page.Total)})
-}
-
-func (a *App) handleAdminState(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.AdminOAuthState(r.Context(), r.PathValue("state"))
-	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_state_detail", map[string]any{"Title": "OAuth State 详情", "Detail": detail})
-}
-
-func (a *App) handleAdminTickets(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	page, err := a.store.AdminOAuthTickets(r.Context(), store.AdminOAuthTicketQuery{
-		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Status: r.URL.Query().Get("status"), Platform: r.URL.Query().Get("platform"),
-		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_tickets", map[string]any{"Title": "OAuth Tickets", "Tickets": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/oauth/tickets", r.URL.Query(), page.Page, page.PerPage, page.Total)})
-}
-
-func (a *App) handleAdminTicket(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.AdminOAuthTicket(r.Context(), r.PathValue("ticket"))
-	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_ticket_detail", map[string]any{"Title": "登录 Ticket 详情", "Detail": detail})
-}
-
-func (a *App) handleAdminClients(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	page, err := a.store.AdminClientStats(r.Context(), store.AdminClientStatsQuery{
-		Search: r.URL.Query().Get("q"), App: r.URL.Query().Get("app"), Result: r.URL.Query().Get("result"), Platform: r.URL.Query().Get("platform"),
-		From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_clients", map[string]any{"Title": "客户端统计", "Clients": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/clients", r.URL.Query(), page.Page, page.PerPage, page.Total)})
-}
-
-func (a *App) handleAdminClient(w http.ResponseWriter, r *http.Request) {
-	from, to := adminTimeRange(r.URL.Query())
-	detail, err := a.store.AdminClient(r.Context(), r.URL.Query().Get("app"), r.URL.Query().Get("version"), r.URL.Query().Get("build"), r.URL.Query().Get("platform"), store.AdminOAuthEventQuery{Result: r.URL.Query().Get("result"), From: from, To: to, Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
-	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_client_detail", map[string]any{"Title": "客户端详情", "Detail": detail, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/clients/detail", r.URL.Query(), detail.Events.Page, detail.Events.PerPage, detail.Events.Total)})
-}
-
-func (a *App) handleAdminSettings(w http.ResponseWriter, r *http.Request) {
-	announcements := []store.Announcement{}
-	attributes := []creator.ResourceAttribute{}
-	if a.store != nil {
-		page, err := a.store.AdminAnnouncementsPage(r.Context(), store.AdminAnnouncementQuery{Page: 1, PerPage: 5})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		for _, item := range page.Items {
-			announcements = append(announcements, item.Announcement)
-		}
-	}
-	if a.creator != nil {
-		var err error
-		attributes, err = a.creator.Attributes(r.Context(), true)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	type oauthSettings struct {
-		ClientID      string
-		RedirectURI   string
-		Scopes        []string
-		PublishScopes []string
-	}
-	type settingsView struct {
-		BandBBS   oauthSettings
-		GitHub    oauthSettings
-		PublicURL string
-		Version   string
-		Commit    string
-	}
-	a.render(w, r, "admin_settings", map[string]any{
-		"Title": "设置",
-		"Config": settingsView{
-			BandBBS: oauthSettings{
-				ClientID:      a.cfg.BandBBS.ClientID,
-				RedirectURI:   a.cfg.BandBBS.RedirectURI,
-				Scopes:        a.cfg.BandBBS.Scopes,
-				PublishScopes: a.cfg.BandBBS.PublishScopes,
-			},
-			GitHub: oauthSettings{
-				ClientID:    a.cfg.GitHub.ClientID,
-				RedirectURI: a.cfg.GitHub.RedirectURI,
-				Scopes:      a.cfg.GitHub.Scopes,
-			},
-			PublicURL: a.cfg.PublicURL,
-			Version:   a.cfg.Version,
-			Commit:    a.cfg.Commit,
-		},
-		"BandBBSSecretState": map[bool]string{true: "已配置", false: "未配置"}[a.cfg.BandBBS.ClientSecret != ""],
-		"GitHubSecretState":  map[bool]string{true: "已配置", false: "未配置"}[a.cfg.GitHub.ClientSecret != ""],
-		"Announcements":      announcements,
-		"ResourceAttributes": attributes,
-		"Action":             r.URL.Query().Get("action"),
-	})
-}
-
 func (a *App) handleAdminResourceAttribute(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Redirect(w, r, "/admin/settings", http.StatusFound)
@@ -496,24 +321,6 @@ func (a *App) handleAdminDeleteResourceAttribute(w http.ResponseWriter, r *http.
 	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "resource_attribute.disable", "success", a.clientIP(r), r.UserAgent(), id)
 	http.Redirect(w, r, "/admin/settings?action=attribute_deleted", http.StatusFound)
 }
-
-func (a *App) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
-	query := adminAuditQuery(r)
-	page, err := a.store.AdminAuditLogs(r.Context(), query)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	exportQuery := r.URL.Query()
-	exportQuery.Del("page")
-	exportQuery.Del("per_page")
-	exportURL := "/admin/audit.csv"
-	if encoded := exportQuery.Encode(); encoded != "" {
-		exportURL += "?" + encoded
-	}
-	a.render(w, r, "admin_audit", map[string]any{"Title": "审计日志", "Logs": page.Items, "Page": page, "Query": page.Query, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "ExportURL": exportURL, "Pager": web.NewPagination("/admin/audit", r.URL.Query(), page.Page, page.PerPage, page.Total)})
-}
-
 func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
 	from, to := adminTimeRange(r.URL.Query())
 	return store.AdminAuditLogQuery{
@@ -521,25 +328,6 @@ func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
 		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
 	}
 }
-
-func (a *App) handleAdminAuditDetail(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("audit"), 10, 64)
-	if err != nil || id < 1 {
-		http.NotFound(w, r)
-		return
-	}
-	item, err := a.store.AdminAuditLog(r.Context(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_audit_detail", map[string]any{"Title": "审计详情", "Item": item})
-}
-
 func (a *App) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.AdminAuditLogsForExport(r.Context(), adminAuditQuery(r))
 	if err != nil {

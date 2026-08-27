@@ -5,13 +5,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 func TestAdminOAuthReturnIsLimitedToDashboardGET(t *testing.T) {
@@ -165,97 +163,40 @@ func TestInternalErrorsDoNotLeakHandlerDetails(t *testing.T) {
 	}
 }
 
-func TestAdminSettingsTemplateDoesNotReceiveOAuthSecrets(t *testing.T) {
+func TestAdminSettingsJSONDoesNotLeakOAuthSecrets(t *testing.T) {
 	t.Parallel()
 	app := &App{
 		cfg: config.Config{
 			BandBBS: config.BandBBSConfig{ClientID: "bandbbs-id", ClientSecret: "bandbbs-secret"},
 			GitHub:  config.GitHubConfig{ClientID: "github-id", ClientSecret: "github-secret"},
 		},
-		templates: web.NewTemplates(),
 	}
 	recorder := httptest.NewRecorder()
-
-	app.handleAdminSettings(recorder, httptest.NewRequest(http.MethodGet, "/admin/settings", nil))
-
+	app.handleAdminAPISettings(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
 	}
 	body := recorder.Body.String()
 	for _, secret := range []string{"bandbbs-secret", "github-secret"} {
 		if strings.Contains(body, secret) {
-			t.Fatalf("settings page exposed OAuth secret %q", secret)
+			t.Fatalf("settings JSON leaked OAuth secret %q", secret)
 		}
 	}
 	for _, clientID := range []string{"bandbbs-id", "github-id"} {
 		if !strings.Contains(body, clientID) {
-			t.Fatalf("settings page is missing client ID %q", clientID)
+			t.Fatalf("settings JSON is missing client ID %q", clientID)
 		}
 	}
 }
 
-func TestReviewItemsDropsBlankLinesAndNormalizesCRLF(t *testing.T) {
+func TestAdminAPIRequiresLogin(t *testing.T) {
 	t.Parallel()
-	got := reviewItems("  missing preview  \r\n\r\ninvalid metadata\n \t\n")
-	want := []string{"missing preview", "invalid metadata"}
-	if len(got) != len(want) {
-		t.Fatalf("reviewItems() = %#v, want %#v", got, want)
+	recorder := httptest.NewRecorder()
+	(&App{cfg: config.Config{PublicURL: "https://admin.example"}}).Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/session", nil))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
 	}
-	for index := range want {
-		if got[index] != want[index] {
-			t.Fatalf("reviewItems()[%d] = %q, want %q", index, got[index], want[index])
-		}
-	}
-}
-
-func TestMergeReviewItemsDedupesCheckedAndExtras(t *testing.T) {
-	t.Parallel()
-	got := mergeReviewItems([]string{"图片齐全", " 图片齐全 ", "设备匹配"}, []string{"设备匹配\n", "补充说明", ""})
-	want := []string{"图片齐全", "设备匹配", "补充说明"}
-	if len(got) != len(want) {
-		t.Fatalf("mergeReviewItems() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("mergeReviewItems()[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestReviewChecklistFromFormMergesCheckboxesAndTextarea(t *testing.T) {
-	t.Parallel()
-	r := httptest.NewRequest(http.MethodPost, "/admin/review/r1/checklist", strings.NewReader("item="+url.QueryEscape("图片齐全")+"&item="+url.QueryEscape("设备匹配")+"&items="+url.QueryEscape("设备匹配\n补充说明")))
-	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if err := r.ParseForm(); err != nil {
-		t.Fatal(err)
-	}
-	got := reviewChecklistFromForm(r)
-	want := []string{"图片齐全", "设备匹配", "补充说明"}
-	if len(got) != len(want) {
-		t.Fatalf("reviewChecklistFromForm() = %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("reviewChecklistFromForm()[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestAdminReviewReturnOnlyAllowsReviewList(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct{ value, want string }{
-		{"/admin/review?q=music&page=3", "/admin/review?q=music&page=3"},
-		{"https://evil.example/admin/review", "/admin/review"},
-		{"/admin/users", "/admin/review"},
-		{"//evil.example/admin/review", "/admin/review"},
-	} {
-		r := httptest.NewRequest(http.MethodPost, "/admin/review/bulk", strings.NewReader("return_to="+url.QueryEscape(test.value)))
-		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		if got := adminReviewReturn(r); got != test.want {
-			t.Errorf("adminReviewReturn(%q) = %q, want %q", test.value, got, test.want)
-		}
+	if !strings.Contains(recorder.Body.String(), "unauthenticated") {
+		t.Fatalf("body = %s", recorder.Body.String())
 	}
 }

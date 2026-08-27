@@ -6,34 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func (a *App) handleAdminCoinsPage(w http.ResponseWriter, r *http.Request) {
-	stats, err := a.store.AdminCoinStats(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	page, perPage := positiveInt(r.URL.Query().Get("page"), 1), positiveInt(r.URL.Query().Get("per_page"), 25)
-	if perPage > 100 {
-		perPage = 100
-	}
-	from, to := adminTimeRange(r.URL.Query())
-	ledger, err := a.store.AdminCoinLedgerPage(r.Context(), store.AdminCoinQuery{Search: r.URL.Query().Get("q"), User: r.URL.Query().Get("user"), Kind: r.URL.Query().Get("kind"), ReferenceType: r.URL.Query().Get("reference_type"), Sort: r.URL.Query().Get("sort"), From: from, To: to, Page: page, PerPage: perPage})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	users, err := a.store.AdminCoinUserOptions(r.Context(), r.URL.Query().Get("user_search"), 30)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_coins", map[string]any{"Title": "硬币管理", "Stats": stats, "Ledger": ledger.Items, "Page": ledger, "Query": ledger.Query, "Users": users, "From": r.URL.Query().Get("from"), "To": r.URL.Query().Get("to"), "Pager": web.NewPagination("/admin/coins", r.URL.Query(), ledger.Page, ledger.PerPage, ledger.Total), "Action": r.URL.Query().Get("action")})
-}
 
 func (a *App) applyAdminCoinUserAction(ctx context.Context, userID, action string, deltaUnits int64, reason string, actorID string) (any, error) {
 	switch action {

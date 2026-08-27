@@ -20,7 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 	_ "golang.org/x/image/webp"
 )
 
@@ -45,10 +44,7 @@ func (a *App) renderAdminFormErrorRequest(w http.ResponseWriter, r *http.Request
 		fields = append(fields, adminFormField{Name: name, Values: copied})
 	}
 	sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
-	w.WriteHeader(status)
-	a.render(w, r, "admin_form_error", map[string]any{
-		"Title": title, "Message": message, "BackURL": backURL, "RetryURL": retryURL, "Fields": fields,
-	})
+	http.Error(w, message, status)
 }
 
 func blogUploadMediaType(contentType string) bool {
@@ -118,51 +114,6 @@ func (a *App) handleAdminBlobUpload(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.RecordAudit(r.Context(), actor, "home.blob.upload", "success", a.clientIP(r), r.UserAgent(), "sha256="+object.SHA256)
 	writeJSON(w, http.StatusOK, map[string]any{"sha256": object.SHA256})
 }
-
-func (a *App) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
-	banners, err := a.store.ListHomeBanners(r.Context(), false)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sections, err := a.store.ListHomeSections(r.Context(), false)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	cards := make(map[string][]store.HomeSectionCard, len(sections))
-	for _, section := range sections {
-		items, err := a.store.ListHomeSectionCards(r.Context(), section.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		cards[section.ID] = items
-	}
-	posts, err := a.store.ListBlogPosts(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	selectorPage, selectorSize := positiveInt(r.URL.Query().Get("selector_page"), 1), positiveInt(r.URL.Query().Get("selector_per_page"), 25)
-	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Search: r.URL.Query().Get("selector_q"), Moderation: "visible", CurrentRevisionState: "approved", Page: selectorPage, PerPage: selectorSize, Sort: "updated_desc"})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	publishedPosts := make([]store.BlogPost, 0, len(posts))
-	for _, post := range posts {
-		if post.Published {
-			publishedPosts = append(publishedPosts, post)
-		}
-	}
-	a.render(w, r, "admin_home", map[string]any{
-		"Title": "首页编排", "Banners": banners, "Sections": sections, "Cards": cards,
-		"Posts": publishedPosts, "Resources": resources.Items, "SelectorQ": r.URL.Query().Get("selector_q"), "SelectorPager": map[string]any{"Pager": web.NewNamedPagination("/admin/home", r.URL.Query(), resources.Page, resources.PerPage, resources.Total, "selector_page", "selector_per_page"), "PageSizes": []int{25, 50, 100}},
-		"Action": r.URL.Query().Get("action"),
-	})
-}
-
 func validBannerForm(r *http.Request) (store.HomeBanner, string) {
 	banner := store.HomeBanner{
 		Type:        strings.TrimSpace(r.FormValue("type")),
@@ -500,16 +451,6 @@ func (a *App) handleAdminCardMove(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.RecordAudit(r.Context(), actor, "home.card.move", "success", a.clientIP(r), r.UserAgent(), "card="+id+" section="+section+" delta="+strconv.Itoa(delta))
 	http.Redirect(w, r, "/admin/home?action=card", http.StatusFound)
 }
-
-func (a *App) handleAdminBlogList(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminBlogPosts(r.Context(), store.AdminBlogQuery{Search: r.URL.Query().Get("q"), Published: r.URL.Query().Get("published"), Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/blog", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
-}
-
 func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -546,20 +487,6 @@ func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
 	_ = a.store.RecordAudit(r.Context(), actor, "blog.create", "success", a.clientIP(r), r.UserAgent(), "slug="+slug)
 	http.Redirect(w, r, "/admin/blog/"+slug, http.StatusFound)
 }
-
-func (a *App) handleAdminBlogEdit(w http.ResponseWriter, r *http.Request) {
-	post, err := a.store.BlogPost(r.Context(), r.PathValue("slug"))
-	if errors.Is(err, store.ErrBlogPostNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_blog_edit", map[string]any{"Title": "编辑文章", "Post": post, "Action": r.URL.Query().Get("action")})
-}
-
 func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)

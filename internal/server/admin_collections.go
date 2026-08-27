@@ -7,23 +7,9 @@ import (
 	"strings"
 
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 var errCollectionRejectReasonRequired = errors.New("拒绝合集修订必须填写理由，创作者需要知道要改什么")
-
-func (a *App) handleAdminCollectionDetail(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.AdminCollection(r.Context(), r.PathValue("collection"))
-	if errors.Is(err, store.ErrAdminResourceNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_collection_detail", map[string]any{"Title": detail.Collection.LatestRevisionName, "Detail": detail, "Action": r.URL.Query().Get("action")})
-}
 
 func (a *App) handleAdminCollectionDraft(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -84,39 +70,4 @@ func (a *App) handleAdminCollectionReviewDecision(w http.ResponseWriter, r *http
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "success", a.clientIP(r), r.UserAgent(), "revision="+r.PathValue("revision"))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (a *App) handleAdminCollectionsPage(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminCollections(r.Context(), store.AdminCollectionQuery{
-		Search: r.URL.Query().Get("q"), Owner: r.URL.Query().Get("owner"), Kind: r.URL.Query().Get("kind"),
-		State: r.URL.Query().Get("state"), Sort: r.URL.Query().Get("sort"),
-		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_collections", map[string]any{"Title": "合集管理", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/collections", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
-}
-
-func (a *App) handleAdminCollectionReviewForm(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	approve := r.FormValue("decision") == "approve"
-	note := strings.TrimSpace(r.FormValue("note"))
-	err := a.applyCollectionReview(r.Context(), r.PathValue("revision"), actor, approve, note)
-	if errors.Is(err, errCollectionRejectReasonRequired) {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "collection.review", "success", a.clientIP(r), r.UserAgent(), "revision="+r.PathValue("revision"))
-	http.Redirect(w, r, "/admin/collections?action=reviewed", http.StatusFound)
 }

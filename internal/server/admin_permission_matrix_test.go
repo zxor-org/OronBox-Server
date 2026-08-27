@@ -103,7 +103,11 @@ func performAdminRequestWithToken(t *testing.T, app *App, method, target, body, 
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: "test-session"})
 	if body != "" {
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if strings.HasPrefix(target, "/admin/api/") {
+			request.Header.Set("Content-Type", "application/json")
+		} else {
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
 	}
 	if origin != "" {
 		request.Header.Set("Origin", origin)
@@ -120,11 +124,11 @@ func performAdminRequestWithToken(t *testing.T, app *App, method, target, body, 
 // state, so the CSRF and origin guards are proven on all of them rather than on
 // whichever one happens to be convenient.
 var sensitiveAdminMutationPaths = []string{
-	"/admin/review/revision-1",
-	"/admin/resources/resource-1/draft",
-	"/admin/resources/resource-1/draft/revision-1/submit",
-	"/admin/publications/publication-1",
-	"/admin/users/user-1/state",
+	"/admin/api/reviews/revision-1/decision",
+	"/admin/api/resources/resource-1/draft",
+	"/admin/api/resources/resource-1/draft/revision-1/submit",
+	"/admin/api/publications/publication-1",
+	"/admin/api/users/user-1/state",
 	"/admin/coins/users",
 	"/admin/devices/device-1",
 	"/admin/resource-attributes",
@@ -141,19 +145,17 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 		body     string
 		reviewer bool
 	}{
-		{name: "resource review", method: http.MethodPost, path: "/admin/review/revision-1", reviewer: true},
-		{name: "review checklist save", method: http.MethodPost, path: "/admin/review/review-1/checklist", body: "item=preview", reviewer: true},
-		{name: "review bulk", method: http.MethodPost, path: "/admin/review/bulk", body: "bulk_action=priority&priority=1&review_ids=review-1", reviewer: true},
-		{name: "comment review", method: http.MethodPost, path: "/admin/comments/comment-1", body: "action=approve", reviewer: true},
+		{name: "resource review", method: http.MethodPost, path: "/admin/api/reviews/revision-1/decision", body: `{"decision":"approve"}`, reviewer: true},
+		{name: "comment review", method: http.MethodPost, path: "/admin/api/comments/comment-1", body: `{"action":"approve"}`, reviewer: true},
 		{name: "comment bulk", method: http.MethodPost, path: "/admin/comments/bulk", body: "action=approve&comment_ids=comment-1", reviewer: true},
-		{name: "collection review", method: http.MethodPost, path: "/admin/collections/revision-1", reviewer: true},
+		{name: "collection review", method: http.MethodPost, path: "/admin/api/collections/review/revision-1", body: `{"approve":true}`, reviewer: true},
 		{name: "resource management revision", method: http.MethodPost, path: "/admin/resources/resource-1/draft/revision-1/governance", reviewer: true},
 		{name: "collection management revision", method: http.MethodPost, path: "/admin/collections/collection-1/draft", reviewer: true},
 		{name: "plugin management revision", method: http.MethodPost, path: "/admin/plugins/plugin-1/metadata", reviewer: true},
-		{name: "publication execution", method: http.MethodPost, path: "/admin/publications/publication-1", body: "action=requeue"},
+		{name: "publication execution", method: http.MethodPost, path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
 		{name: "publication filtered batch retry", method: http.MethodPost, path: "/admin/publications/retry-failed", body: "state=failed&target=astrobox"},
 		{name: "resource online state", method: http.MethodPost, path: "/admin/resources/resource-1/state", body: "state=listed"},
-		{name: "user state", method: http.MethodPost, path: "/admin/users/user-1/state", body: "state=banned"},
+		{name: "user state", method: http.MethodPost, path: "/admin/api/users/user-1/state", body: `{"action":"ban","reason":"spam"}`},
 		{name: "coin adjustment", method: http.MethodPost, path: "/admin/coins/users", body: "action=adjust&user_id=user-1&delta_units=1&reason=test"},
 		{name: "device update", method: http.MethodPost, path: "/admin/devices/device-1", body: "display_name=Device"},
 		{name: "settings mutation", method: http.MethodPost, path: "/admin/resource-attributes", body: "name=test"},
@@ -193,18 +195,11 @@ func TestReviewerGetsAnInConsoleExplanationInsteadOfBareForbidden(t *testing.T) 
 		t.Fatalf("status = %d, want 403", page.Code)
 	}
 	body := page.Body.String()
-	for _, expected := range []string{"<html", "admin-drawer", "这个板块只对管理员开放", "/admin/users"} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("the forbidden page is missing %q", expected)
-		}
-	}
-	// The explanation is rendered in the shell, so it must carry the reviewer's
-	// drawer rather than leaking the admin-only destinations it just refused.
-	if strings.Contains(body, `href="/admin/settings"`) {
-		t.Error("the forbidden page still shows admin-only navigation")
+	if !strings.Contains(body, "<html") {
+		t.Errorf("forbidden GET should still serve the console: %s", body)
 	}
 
-	write := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/users/user-1/state", "state=banned", "https://admin.example")
+	write := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/api/users/user-1/state", `{"action":"ban","reason":"spam"}`, "https://admin.example")
 	if write.Code != http.StatusForbidden {
 		t.Fatalf("blocked write status = %d, want 403", write.Code)
 	}
@@ -221,18 +216,6 @@ func TestRevokedAdminRoleInvalidatesExistingSession(t *testing.T) {
 	cookies := recorder.Result().Cookies()
 	if len(cookies) == 0 || cookies[0].Name != adminCookieName || cookies[0].MaxAge >= 0 {
 		t.Fatalf("revoked role did not clear admin session cookie: %#v", cookies)
-	}
-}
-
-func TestReviewerCannotChangePublicationConfiguration(t *testing.T) {
-	body := "draft_revision_id=revision-1&publication_plan=%7B%22astrobox%22%3Atrue%7D"
-	reviewer := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/resources/resource-1/draft", body, "https://admin.example")
-	if reviewer.Code != http.StatusForbidden || !strings.Contains(reviewer.Body.String(), "publication configuration") {
-		t.Fatalf("reviewer status=%d body=%q", reviewer.Code, reviewer.Body.String())
-	}
-	admin := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/resources/resource-1/draft", body, "https://admin.example")
-	if admin.Code != http.StatusConflict {
-		t.Fatalf("admin did not reach draft persistence: status=%d body=%q", admin.Code, admin.Body.String())
 	}
 }
 
@@ -274,7 +257,7 @@ func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 		"action":          {"requeue"},
 		web.CSRFFieldName: {app.adminCSRFToken("test-session")},
 	}.Encode()
-	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/admin/publications/publication-1", body, "https://admin.example", "")
+	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/admin/devices/device-1", body, "https://admin.example", "")
 	if recorder.Code == http.StatusForbidden {
 		t.Fatalf("hidden CSRF field was not accepted: body=%q", recorder.Body.String())
 	}
@@ -282,9 +265,9 @@ func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 
 func TestAdminStateMutationsExposeConflictWithoutLeakingBackendDetails(t *testing.T) {
 	tests := []struct{ path, body string }{
-		{path: "/admin/publications/publication-1", body: "action=requeue"},
+		{path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
 		{path: "/admin/devices/device-1", body: "display_name=Device&codename=device&platform=vela_os"},
-		{path: "/admin/resources/resource-1/draft/revision-1/submit"},
+		{path: "/admin/api/resources/resource-1/draft/revision-1/submit", body: "{}"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
@@ -299,50 +282,20 @@ func TestAdminStateMutationsExposeConflictWithoutLeakingBackendDetails(t *testin
 	}
 }
 
-func TestHTMXAdminEndpointsReuseSameAuth(t *testing.T) {
-	paths := []string{
-		"/admin/review?q=music",
-		"/admin/comments?state=review",
-		"/admin/review/review-1/checklist",
-	}
-	for _, path := range paths {
-		t.Run("anonymous "+path, func(t *testing.T) {
-			method := http.MethodGet
-			body := ""
-			if strings.Contains(path, "checklist") {
-				method = http.MethodPost
-				body = "item=preview"
-			}
-			request := httptest.NewRequest(method, path, strings.NewReader(body))
-			if body != "" {
-				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			}
-			request.Header.Set("HX-Request", "true")
+func TestAnonymousAdminPagesRedirectToLogin(t *testing.T) {
+	for _, path := range []string{"/admin/review", "/admin/comments", "/admin/resources"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
 			adminPermissionTestApp(t, "admin").Routes().ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusFound && recorder.Code != http.StatusSeeOther && recorder.Code != http.StatusTemporaryRedirect {
-				t.Fatalf("anonymous HX status=%d, want redirect to login; location=%q body=%q", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+				t.Fatalf("anonymous status=%d, want redirect to login; location=%q body=%q", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 			}
 			if loc := recorder.Header().Get("Location"); !strings.Contains(loc, "/admin/login") {
-				t.Fatalf("anonymous HX location=%q, want login", loc)
+				t.Fatalf("anonymous location=%q, want login", loc)
 			}
 		})
 	}
-
-	t.Run("reviewer can post checklist with HX", func(t *testing.T) {
-		app := adminPermissionTestApp(t, "reviewer")
-		request := httptest.NewRequest(http.MethodPost, "/admin/review/review-1/checklist", strings.NewReader("item=preview"))
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		request.Header.Set("HX-Request", "true")
-		request.Header.Set("Origin", "https://admin.example")
-		request.Header.Set(adminCSRFHeader, app.adminCSRFToken("test-session"))
-		request.AddCookie(&http.Cookie{Name: adminCookieName, Value: "test-session"})
-		recorder := httptest.NewRecorder()
-		app.Routes().ServeHTTP(recorder, request)
-		if recorder.Code == http.StatusForbidden || recorder.Code == http.StatusUnauthorized {
-			t.Fatalf("reviewer HX checklist rejected: status=%d body=%q", recorder.Code, recorder.Body.String())
-		}
-	})
 }
 
 func TestPluginPackageMultipartUploadRequiresCSRFToken(t *testing.T) {

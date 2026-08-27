@@ -9,6 +9,9 @@ type BlobRecord struct {
 	LocalKey  string
 	R2Key     string
 	R2State   string
+	// Artifact is true when this blob is a published installable package.
+	// Preview images, icons, covers, blog art and banners stay false.
+	Artifact bool
 }
 
 func (s *Store) Blob(ctx context.Context, sha256 string) (BlobRecord, error) {
@@ -26,7 +29,13 @@ func (s *Store) PublicBlob(ctx context.Context, sha256 string) (BlobRecord, erro
 	var blob BlobRecord
 	err := s.db.QueryRowContext(ctx, `
 SELECT blob.sha256,blob.size_bytes,blob.media_type,blob.local_key,
-       COALESCE(replica.object_key,''),COALESCE(replica.state,'')
+       COALESCE(replica.object_key,''),COALESCE(replica.state,''),
+       EXISTS (
+         SELECT 1
+         FROM revision_artifacts artifact
+         JOIN resources resource ON resource.current_revision_id=artifact.revision_id
+         WHERE artifact.blob_sha256=blob.sha256 AND resource.moderation_state='visible'
+       )
 FROM blobs blob
 LEFT JOIN blob_replicas replica
   ON replica.blob_sha256=blob.sha256 AND replica.backend='r2'
@@ -64,7 +73,7 @@ WHERE blob.sha256=$1
       WHERE banner.enabled AND banner.cover_sha256=blob.sha256
     )
   )`, sha256).
-		Scan(&blob.SHA256, &blob.Size, &blob.MediaType, &blob.LocalKey, &blob.R2Key, &blob.R2State)
+		Scan(&blob.SHA256, &blob.Size, &blob.MediaType, &blob.LocalKey, &blob.R2Key, &blob.R2State, &blob.Artifact)
 	return blob, err
 }
 

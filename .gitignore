@@ -6,3 +6,5 @@
 /.env
 /tmp/
 /.kimi-code/
+console/node_modules/
+console/dist/

@@ -124,6 +124,24 @@ func postCredentials(t *testing.T, handler http.HandlerFunc) *httptest.ResponseR
 
 // The attempt ceiling is the coarse backstop: it has to stop a flood even from
 // a caller that never produces a failure.
+func TestPublicBlobDownloadBudgetSkipsMedia(t *testing.T) {
+	t.Parallel()
+	app := &App{downloadLimiter: newIPRateLimiter(1)}
+	ip := "203.0.113.8"
+	if !app.allowPublicBlobDownload(ip, false) {
+		t.Fatal("preview image consumed the download budget")
+	}
+	if !app.allowPublicBlobDownload(ip, true) {
+		t.Fatal("first package download should pass")
+	}
+	if !app.allowPublicBlobDownload(ip, false) {
+		t.Fatal("preview image after a package download should still pass")
+	}
+	if app.allowPublicBlobDownload(ip, true) {
+		t.Fatal("second package download should hit the budget")
+	}
+}
+
 func TestCredentialAttemptCeilingStopsFlooding(t *testing.T) {
 	t.Parallel()
 	app := credentialThrottleApp(100)

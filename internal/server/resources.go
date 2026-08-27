@@ -155,39 +155,39 @@ func (a *App) handleDevices(w http.ResponseWriter, r *http.Request) {
 
 var sha256Pattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-// handleBlob is the single choke point for public content downloads. It
-// optionally authenticates the caller, enforces the per-IP rate limit and the
-// per-user daily quota, counts artifact downloads, and then either redirects
-// to a short-lived presigned R2 URL (the bucket stays private) or streams
-// from local storage.
+// handleBlob is the single choke point for public content. Preview images,
+// icons, covers and banners are served without the download budget. Published
+// packages still pay the per-IP rate limit and the per-user daily quota.
 func (a *App) handleBlob(w http.ResponseWriter, r *http.Request) {
 	digest := r.PathValue("sha256")
 	if !sha256Pattern.MatchString(digest) {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_blob", "invalid SHA-256"))
 		return
 	}
-	ip := a.clientIP(r)
-	if !a.downloadLimiter.allow(ip) {
-		writeJSON(w, http.StatusTooManyRequests, errorBody("rate_limited", "too many downloads, slow down"))
-		return
-	}
-	var userID string
-	if header := strings.TrimSpace(r.Header.Get("Authorization")); len(header) >= 8 && strings.EqualFold(header[:7], "Bearer ") {
-		if user, err := a.store.UserByAccessToken(r.Context(), authcore.HashToken(strings.TrimSpace(header[7:]), a.cfg.SessionSecret)); err == nil {
-			userID = user.ID
-		}
-	}
 	record, err := a.store.PublicBlob(r.Context(), digest)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, errorBody("blob_not_found", "blob was not found"))
 		return
 	}
-	ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ip+"|"+a.cfg.SessionSecret)))
-	if err := a.store.RecordDownload(r.Context(), digest, userID, ipHash, a.cfg.Limits.DownloadDailyLimit); errors.Is(err, store.ErrDownloadQuota) {
-		writeJSON(w, http.StatusTooManyRequests, errorBody("quota_exceeded", err.Error()))
+	ip := a.clientIP(r)
+	if !a.allowPublicBlobDownload(ip, record.Artifact) {
+		writeJSON(w, http.StatusTooManyRequests, errorBody("rate_limited", "too many downloads, slow down"))
 		return
-	} else if err != nil {
-		observability.From(r.Context()).With("component", "downloads").Warn("record download failed", "error", err)
+	}
+	if record.Artifact {
+		var userID string
+		if header := strings.TrimSpace(r.Header.Get("Authorization")); len(header) >= 8 && strings.EqualFold(header[:7], "Bearer ") {
+			if user, err := a.store.UserByAccessToken(r.Context(), authcore.HashToken(strings.TrimSpace(header[7:]), a.cfg.SessionSecret)); err == nil {
+				userID = user.ID
+			}
+		}
+		ipHash := fmt.Sprintf("%x", sha256.Sum256([]byte(ip+"|"+a.cfg.SessionSecret)))
+		if err := a.store.RecordDownload(r.Context(), digest, userID, ipHash, a.cfg.Limits.DownloadDailyLimit); errors.Is(err, store.ErrDownloadQuota) {
+			writeJSON(w, http.StatusTooManyRequests, errorBody("quota_exceeded", err.Error()))
+			return
+		} else if err != nil {
+			observability.From(r.Context()).With("component", "downloads").Warn("record download failed", "error", err)
+		}
 	}
 	line := r.URL.Query().Get("line")
 	r2Ready := record.R2State == "ready" && record.R2Key != "" && a.r2 != nil

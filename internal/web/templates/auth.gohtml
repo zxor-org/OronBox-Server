@@ -1,0 +1,54 @@
+{{define "head"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · OronBox</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #000; color: #ededed; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; display: grid; place-items: center; }
+    .card { width: min(400px, calc(100% - 32px)); border: 1px solid #222; border-radius: 12px; padding: 28px; }
+    h1 { margin: 0 0 8px; font-size: 18px; font-weight: 590; }
+    p { color: #888; margin: 0 0 20px; }
+    .btn { display: inline-flex; background: #fff; color: #000; border-radius: 8px; padding: 8px 14px; text-decoration: none; font-weight: 560; }
+    .err { color: #ff5c5c; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+{{end}}
+
+{{define "tail"}}</body></html>{{end}}
+
+{{define "admin_login"}}
+{{template "head" .}}
+<div class="card">
+  <h1>OronBox 管理</h1>
+  <p>用 BandBBS 账号登录</p>
+  {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+  <a class="btn" href="{{.AuthorizeURL}}">登录</a>
+</div>
+{{template "tail" .}}
+{{end}}
+
+{{define "admin_forbidden"}}
+{{template "head" .}}
+<div class="card">
+  <h1>没有权限</h1>
+  <p>{{.Path}}</p>
+  <a class="btn" href="/admin">返回</a>
+</div>
+{{template "tail" .}}
+{{end}}
+
+{{define "transition_page"}}
+{{template "head" .}}
+<div class="card"{{if .Auto}}{{if .Target}} data-transition-target="{{.Target}}"{{end}}{{end}}>
+  <h1>{{.Heading}}</h1>
+  <p>{{.Description}}</p>
+  {{if .Target}}<p>没有自动打开？ <a class="btn" href="{{.Target}}">点此重试</a></p>{{end}}
+</div>
+{{if .Auto}}<script src="/assets/transition.js" defer></script>{{end}}
+{{template "tail" .}}
+{{end}}

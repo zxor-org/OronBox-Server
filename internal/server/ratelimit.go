@@ -129,6 +129,13 @@ func (a *App) throttleCredentials(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (a *App) allowPublicBlobDownload(ip string, artifact bool) bool {
+	if !artifact {
+		return true
+	}
+	return a.downloadLimiter.allow(ip)
+}
+
 func (a *App) credentialThrottleReason(key string) string {
 	if a.authFailures.exceeded(key) {
 		return "failure_budget"

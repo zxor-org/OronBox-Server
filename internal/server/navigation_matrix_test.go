@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/zxor-org/OronBox-Server/internal/web"
@@ -20,14 +21,19 @@ func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 	}
 	route := regexp.MustCompile(`mux\.HandleFunc\("GET (/admin[^"]*)", a\.(requireAdminRole\("admin"|requireAdmin)`)
 	required := map[string]string{}
+	catchAll := false
 	for _, match := range route.FindAllStringSubmatch(string(source), -1) {
+		if match[1] == "/admin/{path...}" {
+			catchAll = true
+			continue
+		}
 		if match[2] == `requireAdminRole("admin"` {
 			required[match[1]] = web.RoleAdmin
 			continue
 		}
 		required[match[1]] = ""
 	}
-	if len(required) == 0 {
+	if len(required) == 0 && !catchAll {
 		t.Fatal("no admin GET routes were found, the pattern no longer matches")
 	}
 
@@ -35,6 +41,9 @@ func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 		for _, item := range group.Items {
 			role, registered := required[item.Path]
 			if !registered {
+				if catchAll && strings.HasPrefix(item.Path, "/admin/") {
+					continue
+				}
 				t.Errorf("the drawer links to %s, which is not a registered admin GET route", item.Path)
 				continue
 			}

@@ -34,6 +34,14 @@ jobs:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/oronbox_test?sslmode=disable
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Build admin console
+        run: npm ci && npm run build
+        working-directory: console
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

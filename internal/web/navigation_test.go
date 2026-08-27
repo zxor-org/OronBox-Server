@@ -1,32 +1,20 @@
 package web
 
 import (
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
 func TestReviewerNavigationHidesAdminOnlyDestinations(t *testing.T) {
 	t.Parallel()
-	// The point of the split is that a reviewer never sees a link that answers
-	// with a 403, so the check is on the rendered drawer rather than on the
-	// table it comes from.
-	recorder := httptest.NewRecorder()
-	if err := NewTemplates().Render(recorder, "admin_review", map[string]any{
-		"Title": "t", "Items": []any{}, "Page": map[string]any{"Total": 0},
-		"Query": map[string]any{}, "Reviewers": []any{},
-		"Role": "reviewer", "Nav": NavigationFor("reviewer"), "HomePath": HomePathFor("reviewer"),
-	}); err != nil {
-		t.Fatalf("render review queue: %v", err)
-	}
-	body := recorder.Body.String()
-	for _, forbidden := range []string{`href="/admin/users"`, `href="/admin/settings"`, `href="/admin/coins"`, `href="/admin/blog"`, `href="/admin/announcements"`} {
-		if strings.Contains(body, forbidden) {
+	reviewer := NavigationFor("reviewer")
+	for _, forbidden := range []string{"/admin/users", "/admin/settings", "/admin/coins", "/admin/blog", "/admin/announcements"} {
+		if navigationContains(reviewer, forbidden) {
 			t.Errorf("the reviewer drawer still links to %s", forbidden)
 		}
 	}
-	for _, expected := range []string{`href="/admin/review"`, `href="/admin/comments"`, `href="/admin/reports"`} {
-		if !strings.Contains(body, expected) {
+	for _, expected := range []string{"/admin/review", "/admin/comments", "/admin/reports"} {
+		if !navigationContains(reviewer, expected) {
 			t.Errorf("the reviewer drawer is missing %s", expected)
 		}
 	}

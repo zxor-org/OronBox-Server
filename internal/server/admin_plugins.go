@@ -9,21 +9,7 @@ import (
 
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func (a *App) handleAdminPluginDetail(w http.ResponseWriter, r *http.Request) {
-	detail, err := a.store.AdminPluginV2(r.Context(), r.PathValue("plugin"))
-	if errors.Is(err, store.ErrPluginNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	a.render(w, r, "admin_plugin_workspace", map[string]any{"Title": detail.Plugin.Name, "Detail": detail, "Action": r.URL.Query().Get("action")})
-}
 
 func (a *App) handleAdminPluginPackageRevision(w http.ResponseWriter, r *http.Request) {
 	if err := a.parseAdminUpload(w, r, maxPluginPackageBytes); err != nil {
@@ -97,68 +83,6 @@ func (a *App) handleAdminPluginMetadata(w http.ResponseWriter, r *http.Request) 
 	_ = a.store.RecordAudit(r.Context(), actor, "plugin.revision.create", "success", a.clientIP(r), r.UserAgent(), "plugin="+r.PathValue("plugin")+" version="+version.ID)
 	http.Redirect(w, r, "/admin/plugins/"+r.PathValue("plugin")+"?action=drafted", 302)
 }
-
-func (a *App) handleAdminPluginsPage(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminPluginsV2(r.Context(), store.AdminPluginQuery{Search: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"), Uploader: r.URL.Query().Get("uploader"), Runtime: r.URL.Query().Get("runtime"), Sort: r.URL.Query().Get("sort"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25)})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_plugins", map[string]any{"Title": "插件管理", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/plugins", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
-}
-
-func (a *App) handleAdminPluginReview(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	pluginID := r.PathValue("plugin")
-	decision := strings.TrimSpace(r.FormValue("decision"))
-	note := strings.TrimSpace(r.FormValue("note"))
-	var state, reason string
-	switch decision {
-	case "approve":
-		state = "listed"
-	case "reject":
-		if note == "" {
-			http.Error(w, "reject reason is required", http.StatusBadRequest)
-			return
-		}
-		state, reason = "rejected", note
-	default:
-		http.Error(w, "unknown decision", http.StatusBadRequest)
-		return
-	}
-	pluginDetail, err := a.store.AdminPluginV2(r.Context(), pluginID)
-	if errors.Is(err, store.ErrPluginNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if pluginDetail.Plugin.PendingVersionID == "" {
-		http.Error(w, "plugin is not pending review", http.StatusConflict)
-		return
-	}
-	if _, err := a.store.SetPluginState(r.Context(), pluginID, state, reason); err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "plugin.review", "failure", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" error="+err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "plugin.review", "success", a.clientIP(r), r.UserAgent(), "plugin="+pluginID+" decision="+decision+" note="+note)
-	observability.From(r.Context()).With("component", "admin").Info(
-		"admin plugin reviewed",
-		"plugin_id", pluginID,
-		"decision", decision,
-		"admin_user", actor.Username,
-		"reason", note,
-	)
-	http.Redirect(w, r, "/admin/plugins?action=reviewed", http.StatusFound)
-}
-
 func (a *App) handleAdminPluginState(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)

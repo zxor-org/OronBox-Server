@@ -10,7 +10,7 @@ import (
 // batch path have to record why. The rule is enforced on the server because
 // the browser check is only there to save a round trip.
 func TestRejectingACollectionRequiresAReason(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/collections/revision-1", "decision=reject", "https://admin.example")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/api/collections/review/revision-1", `{"approve":false}`, "https://admin.example")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%q", recorder.Code, recorder.Body.String())
 	}
@@ -25,7 +25,7 @@ func TestHidingACommentRequiresAReason(t *testing.T) {
 		path string
 		body string
 	}{
-		{name: "single", path: "/admin/comments/00000000-0000-0000-0000-000000000001", body: "action=hide"},
+		{name: "single", path: "/admin/api/comments/00000000-0000-0000-0000-000000000001", body: `{"action":"hide"}`},
 		{name: "batch", path: "/admin/comments/bulk", body: "bulk_action=hide&comment_ids=00000000-0000-0000-0000-000000000001"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -1,55 +1,11 @@
 package server
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func (a *App) handleAdminDevices(w http.ResponseWriter, r *http.Request) {
-	page, err := a.store.AdminDevices(r.Context(), store.AdminDeviceQuery{
-		Search: r.URL.Query().Get("q"), Platform: r.URL.Query().Get("platform"),
-		Vendor: r.URL.Query().Get("vendor"), State: r.URL.Query().Get("state"), Sort: r.URL.Query().Get("sort"),
-		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_devices", map[string]any{
-		"Title": "设备目录", "Items": page.Items, "Page": page, "Query": page.Query,
-		"Pager": web.NewPagination("/admin/devices", r.URL.Query(), page.Page, page.PerPage, page.Total),
-	})
-}
-
-func (a *App) handleAdminDevice(w http.ResponseWriter, r *http.Request) {
-	item, err := a.store.AdminDevice(r.Context(), r.PathValue("device"))
-	if errors.Is(err, store.ErrAdminDeviceNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	resources, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{Device: item.ID, Page: 1, PerPage: 100})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_device_detail", map[string]any{
-		"Title": item.DisplayName, "Item": item, "Resources": resources.Items, "Action": r.URL.Query().Get("action"),
-	})
-}
-
-func (a *App) handleAdminDeviceNew(w http.ResponseWriter, r *http.Request) {
-	a.render(w, r, "admin_device_detail", map[string]any{
-		"Title": "新增设备", "Item": store.AdminDeviceItem{Enabled: true}, "Resources": []store.AdminResourceItem{}, "New": true,
-	})
-}
 
 func (a *App) handleAdminDeviceSave(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {

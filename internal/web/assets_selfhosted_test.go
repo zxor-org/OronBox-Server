@@ -74,7 +74,7 @@ func TestNoTemplateStillUsesTheIconFont(t *testing.T) {
 			t.Errorf("%s still renders an icon through the webfont", name)
 		}
 	}
-	if strings.Contains(AdminJS, "material-symbols-outlined") {
-		t.Error("admin JS still creates icons through the webfont")
+	if strings.Contains(ThemeJS+TransitionJS, "material-symbols-outlined") {
+		t.Error("login assets still create icons through the webfont")
 	}
 }

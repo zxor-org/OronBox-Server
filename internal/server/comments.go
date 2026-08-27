@@ -11,7 +11,6 @@ import (
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
 	"github.com/zxor-org/OronBox-Server/internal/moderation"
 	"github.com/zxor-org/OronBox-Server/internal/store"
-	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
 const defaultModerationPrompt = `你是 OronBox 社区评论审核器。审核分类仅限 porn、politics、abuse、spam、illegal。明确违规返回 block，无法确定返回 review，正常内容返回 pass。只返回 JSON 对象，格式为 {"action":"pass|review|block","categories":[],"reason":"简短理由"}。`
@@ -117,56 +116,6 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
-
-func (a *App) handleAdminComments(w http.ResponseWriter, r *http.Request) {
-	page := positiveInt(r.URL.Query().Get("page"), 1)
-	perPage := positiveInt(r.URL.Query().Get("per_page"), 25)
-	if perPage > 100 {
-		perPage = 100
-	}
-	result, err := a.store.AdminComments(r.Context(), store.AdminCommentQuery{Search: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"), Resource: r.URL.Query().Get("resource"), User: r.URL.Query().Get("user"), Sort: r.URL.Query().Get("sort"), Page: page, PerPage: perPage})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	prompt, err := a.store.Setting(r.Context(), "moderation.prompt", defaultModerationPrompt)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	a.render(w, r, "admin_comments", map[string]any{
-		"Title": "评论审核", "Items": result.Items, "Total": result.Total, "Page": result.Page, "PerPage": result.PerPage, "Query": result.Query,
-		"Pager": web.NewPagination("/admin/comments", r.URL.Query(), result.Page, result.PerPage, result.Total), "Prompt": prompt,
-		"ReturnTo": r.URL.RequestURI(), "BulkDone": r.URL.Query().Get("bulk") != "",
-	})
-}
-
-func (a *App) handleAdminCommentDecision(w http.ResponseWriter, r *http.Request) {
-	actor := currentAdmin(r)
-	action, note := strings.TrimSpace(r.FormValue("action")), strings.TrimSpace(r.FormValue("note"))
-	// Hiding is the destructive direction, so it carries the same mandatory
-	// reason here as in the batch path. Otherwise the batch rule would just be
-	// a suggestion anyone could sidestep one comment at a time.
-	if action == "hide" && note == "" {
-		http.Error(w, "隐藏评论必须填写理由，处理记录需要说明依据", http.StatusBadRequest)
-		return
-	}
-	err := a.store.AdminModerateComment(r.Context(), r.PathValue("comment"), action, actor.UserID, note)
-	result := "success"
-	if err != nil {
-		result = "failure"
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "comment."+action, result, a.clientIP(r), r.UserAgent(), "comment="+r.PathValue("comment"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	http.Redirect(w, r, adminCommentReturn(r), http.StatusFound)
-}
-
-// handleAdminCommentBulk mirrors the review queue: one decision, many comments,
-// all or nothing. Hiding is destructive from the author's point of view, so it
-// carries the same mandatory reason the individual action does.
 func (a *App) handleAdminCommentBulk(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -243,5 +192,5 @@ func (a *App) handleAdminModerationTest(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, listErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, r, "admin_comments", map[string]any{"Title": "评论管理", "Items": commentPage.Items, "Total": commentPage.Total, "Page": page, "Prompt": prompt, "TestText": text, "TestResult": result})
+	writeJSON(w, http.StatusOK, map[string]any{"prompt": prompt, "text": text, "result": result, "total": commentPage.Total})
 }
