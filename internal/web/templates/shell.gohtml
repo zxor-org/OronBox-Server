@@ -1,0 +1,155 @@
+{{define "head"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{.Title}} · OronBox</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  {{with .CSRFToken}}<meta name="csrf-token" content="{{.}}">{{end}}
+  <script src="/assets/theme.js"></script>
+</head>
+<body>
+{{template "icon_sprite"}}
+<div class="sr-only" id="admin-live-region" role="status" aria-live="polite" aria-atomic="true"></div>
+{{end}}
+
+{{define "tail"}}
+<script src="/assets/admin.js" defer></script>
+</body></html>
+{{end}}
+
+{{define "admin_nav"}}
+<aside class="nav" id="admin-drawer" aria-label="管理后台导航">
+  <nav class="nav-content">
+    {{range .Nav}}<div class="nav-group-label">{{.Label}}</div>
+    {{range .Items}}<a class="nav-link" data-nav-path="{{.Path}}"{{if .Alias}} data-nav-alias="{{.Alias}}"{{end}} href="{{.Path}}"><svg class="icon" aria-hidden="true"><use href="#i-{{.Icon}}"></use></svg><span>{{.Label}}</span></a>
+    {{end}}{{end}}
+  </nav>
+</aside>
+{{end}}
+
+{{define "admin_open"}}
+{{template "head" .}}
+<a class="skip-link" href="#admin-content">跳到主要内容</a>
+<header class="app-header">
+  <div class="header-section">
+    <button class="icon-button menu-button" type="button" data-drawer-toggle aria-label="切换导航" aria-controls="admin-drawer" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-menu"></use></svg></button>
+    <a class="header-brand" href="{{.HomePath}}"><span>OronBox</span><span class="brand-badge">SERVER</span></a>
+  </div>
+  <div class="header-section">
+    <button class="icon-button" type="button" data-theme-toggle aria-label="切换主题"><svg class="icon" aria-hidden="true"><use href="#i-dark_mode"></use></svg></button>
+    <form class="header-logout" method="post" action="/admin/logout"><button class="icon-button" type="submit" aria-label="退出登录"><svg class="icon" aria-hidden="true"><use href="#i-logout"></use></svg></button></form>
+  </div>
+</header>
+<div class="drawer-overlay" aria-hidden="true"></div>
+<div class="admin-layout">
+  {{template "admin_nav" .}}
+  <main class="admin-main" id="admin-content" tabindex="-1">
+{{end}}
+
+{{define "admin_close"}}
+  </main>
+</div>
+<dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-description">
+  <form method="dialog">
+    <div class="dialog-icon"><svg class="icon" aria-hidden="true"><use href="#i-warning"></use></svg></div>
+    <h2 id="confirm-dialog-title">确认操作</h2>
+    <p id="confirm-dialog-description" data-confirm-text></p>
+    <div class="dialog-actions">
+      <button class="outlined-button" type="submit" value="cancel">取消</button>
+      <button class="filled-button" type="button" data-confirm-action>确认</button>
+    </div>
+  </form>
+</dialog>
+{{template "tail" .}}
+{{end}}
+
+{{define "page_header"}}
+<header class="page-header">
+  <div><h1 class="page-title">{{.Title}}</h1>{{if .Description}}<p>{{.Description}}</p>{{end}}</div>
+</header>
+{{end}}
+
+{{define "pagination"}}
+{{with $pager := .Pager}}{{if gt $pager.Total 0}}
+<nav class="pagination" aria-label="分页">
+  <div class="pagination-summary"><span>第 {{$pager.From}}–{{$pager.To}} 条，共 {{$pager.Total}} 条</span><span>每页</span>{{range $size := $.PageSizes}}<a class="page-size {{if eq $pager.PerPage $size}}active{{end}}" href="{{$pager.PerPageURL $size}}">{{$size}}</a>{{end}}</div>
+  {{if gt $pager.TotalPages 1}}<div class="pagination-pages">
+    <a class="icon-button pagination-edge {{if eq $pager.Page 1}}disabled{{end}}" href="{{$pager.URL 1}}" aria-label="第一页"><svg class="icon" aria-hidden="true"><use href="#i-first_page"></use></svg></a>
+    <a class="outlined-button {{if eq $pager.Page 1}}disabled{{end}}" href="{{$pager.URL (sub1 $pager.Page)}}">上一页</a>
+    {{range $page := $pager.Pages}}<a class="page-number {{if eq $pager.Page $page}}active{{end}}" href="{{$pager.URL $page}}" {{if eq $pager.Page $page}}aria-current="page"{{end}}>{{$page}}</a>{{end}}
+    <a class="outlined-button {{if eq $pager.Page $pager.TotalPages}}disabled{{end}}" href="{{$pager.URL (add1 $pager.Page)}}">下一页</a>
+    <a class="icon-button pagination-edge {{if eq $pager.Page $pager.TotalPages}}disabled{{end}}" href="{{$pager.URL $pager.TotalPages}}" aria-label="最后一页"><svg class="icon" aria-hidden="true"><use href="#i-last_page"></use></svg></a>
+  </div>{{end}}
+</nav>
+{{end}}{{end}}
+{{end}}
+
+{{define "empty_state"}}
+<section class="empty-state">
+  <div class="empty-mark">Z</div>
+  <h2>{{.Title}}</h2>
+  {{if .Description}}<p>{{.Description}}</p>{{end}}
+</section>
+{{end}}
+
+{{define "admin_form_error"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><a class="back-link" href="{{.BackURL}}">← 返回表单</a><h1>{{.Title}}</h1><p>提交未完成，原数据没有写入</p></div></header>
+<section class="panel form-failure"><div class="notice danger" role="alert"><strong>{{.Message}}</strong><p>已保留本次提交的文本内容，可以直接重试或返回表单</p></div>{{if .RetryURL}}<form method="post" action="{{.RetryURL}}" class="form-retry">{{range .Fields}}{{ $field := . }}{{range .Values}}<input type="hidden" name="{{$field.Name}}" value="{{.}}">{{end}}{{end}}<button class="filled-button" type="submit">使用已填写内容重试</button><a class="outlined-button" href="{{.BackURL}}">返回表单</a></form>{{else}}<a class="filled-button" href="{{.BackURL}}">返回继续编辑</a>{{end}}</section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_login"}}
+{{template "head" .}}
+<main class="standalone-page">
+  <section class="standalone-card login-card">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></div>
+    <h1>OronBox 管理后台</h1>
+    <p>使用已授权的米坛账号验证管理员身份</p>
+    {{if .Error}}<div class="notice danger" role="alert">{{.Error}}</div>{{end}}
+    <div class="standalone-actions"><a class="filled-button full-button" href="{{.AuthorizeURL}}"><span>使用米坛账号登录</span><svg class="icon" aria-hidden="true"><use href="#i-arrow_forward"></use></svg></a></div>
+  </section>
+</main>
+{{template "tail" .}}
+{{end}}
+
+{{define "transition_page"}}
+{{template "head" .}}
+<main class="standalone-page">
+  <section class="standalone-card transition-card {{.Tone}}">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-{{if eqs .Tone "danger"}}error{{else if eqs .Tone "info"}}open_in_new{{else}}check_circle{{end}}"></use></svg></div>
+    <h1>{{.Heading}}</h1>
+    <p>{{.Description}}</p>
+    {{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" id="continue-action" href="{{.Target}}">{{.ButtonLabel}}</a></div>{{end}}
+    {{if and .Target (not .ButtonLabel)}}<a class="transition-retry" id="continue-action" href="{{.Target}}">没有自动打开？<span>点此重试</span></a>{{end}}
+    {{if and .Auto .Target}}<div hidden data-transition-target="{{.Target}}"></div><script src="/assets/transition.js" defer></script>{{end}}
+  </section>
+</main>
+{{template "tail" .}}
+{{end}}
+
+{{define "server_home"}}
+{{template "head" .}}
+<main class="standalone-page">
+  <section class="standalone-card server-card">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-dns"></use></svg></div>
+    <h1>OronBox Server</h1>
+    <p>为 OronBox 提供账号授权、资源服务和创作者工作流</p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="/admin">进入管理后台</a></div>
+  </section>
+</main>
+{{template "tail" .}}
+{{end}}
+
+{{define "admin_forbidden"}}{{template "admin_open" .}}
+<header class="page-header"><div><h1>这个板块只对管理员开放</h1><p>你的账号是审核员，可以处理审核、评论、举报与内容，但平台管理页面需要管理员权限。</p></div></header>
+<section class="empty-state">
+  <span class="empty-mark"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></span>
+  <h2>无法打开 <code>{{.Path}}</code></h2>
+  <p>如果确实需要这个权限，请联系管理员调整你的账号角色；左侧导航只会列出你能打开的板块。</p>
+  <div class="actions"><a class="filled-button" href="{{.HomePath}}">回到工作台</a></div>
+</section>
+{{template "admin_close" .}}{{end}}

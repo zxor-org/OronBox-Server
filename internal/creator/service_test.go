@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+func TestReviewCollectionRejectRequiresANote(t *testing.T) {
+	service := New(nil, nil, Limits{})
+	err := service.ReviewCollection(context.Background(), "revision", "reviewer", false, "  ")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ReviewCollection(reject, empty note) error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestCreateRequiresDisplayName(t *testing.T) {
 	service := New(nil, nil, Limits{})
 	for _, name := range []string{"  ", "line one\nline two"} {

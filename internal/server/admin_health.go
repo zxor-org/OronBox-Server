@@ -110,7 +110,7 @@ func (a *App) renderAdminHealth(w http.ResponseWriter, r *http.Request, preview 
 		data["CleanupToken"] = token
 		data["CleanupConfirmation"] = cleanupConfirmation(*preview)
 	}
-	a.render(w, "admin_health", data)
+	a.render(w, r, "admin_health", data)
 }
 
 func (a *App) handleAdminCleanupPreview(w http.ResponseWriter, r *http.Request) {

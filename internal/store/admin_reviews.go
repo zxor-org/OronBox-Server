@@ -35,16 +35,20 @@ type AdminReviewQuery struct {
 }
 
 type AdminReviewItem struct {
-	ID             string
-	State          string
-	Note           string
-	Items          []string
-	ReviewerID     string
-	Reviewer       string
-	ResourceID     string
-	ResourceSlug   string
-	ResourceKind   string
-	ResourceState  string
+	ID               string
+	State            string
+	Note             string
+	Items            []string
+	ReviewerID       string
+	Reviewer         string
+	ResourceID       string
+	ResourceSlug     string
+	ResourceKind     string
+	ResourceState    string
+	ResourcePlatform string
+	// CurationGrade is the grade the resource carries today. The decision form
+	// preselects it so approving a featured resource cannot silently demote it.
+	CurationGrade  string
 	RevisionID     string
 	RevisionNumber int
 	RevisionName   string
@@ -54,6 +58,49 @@ type AdminReviewItem struct {
 	Targets        []string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+
+	// Priority is 0..3, highest last, and DueAt is the SLA deadline the queue
+	// sorts by. FirstSubmittedAt survives resubmission so a case that has been
+	// bounced back and forth does not look freshly filed.
+	Priority         int
+	DueAt            time.Time
+	FirstSubmittedAt time.Time
+	// OwnerRejections and Reports are the risk signals a reviewer needs before
+	// opening a case: a creator with a long rejection history and a resource
+	// that is already being reported deserve a closer look.
+	OwnerRejections int
+	Reports         int
+}
+
+// Overdue reports whether a pending case has passed its SLA deadline.
+func (item AdminReviewItem) Overdue() bool {
+	return item.State == "pending" && !item.DueAt.IsZero() && time.Now().After(item.DueAt)
+}
+
+// WaitingFor is how long the case has been in the queue, used for the "waiting
+// 3 days" style badge rather than making the reviewer subtract timestamps.
+func (item AdminReviewItem) WaitingFor() time.Duration {
+	since := item.CreatedAt
+	if !item.FirstSubmittedAt.IsZero() {
+		since = item.FirstSubmittedAt
+	}
+	if since.IsZero() {
+		return 0
+	}
+	return time.Since(since)
+}
+
+func (item AdminReviewItem) PriorityLabel() string {
+	switch item.Priority {
+	case 3:
+		return "紧急"
+	case 2:
+		return "高"
+	case 1:
+		return "关注"
+	default:
+		return "普通"
+	}
 }
 
 type AdminReviewPage struct {
@@ -90,15 +137,36 @@ type AdminReviewDiffCount struct {
 	Changed int
 }
 
+type AdminReviewFieldChange struct {
+	Field  string
+	Label  string
+	Before string
+	After  string
+}
+
+type AdminReviewItemChange struct {
+	Key    string
+	Label  string
+	Change string
+	Before string
+	After  string
+}
+
 type AdminReviewDiff struct {
 	HasBase         bool
 	MetadataChanged bool
 	MetadataFields  []string
+	Metadata        []AdminReviewFieldChange
 	Attributes      AdminReviewDiffCount
 	Links           AdminReviewDiffCount
 	Media           AdminReviewDiffCount
 	Artifacts       AdminReviewDiffCount
 	Devices         AdminReviewDiffCount
+	AttributeItems  []AdminReviewItemChange
+	LinkItems       []AdminReviewItemChange
+	MediaItems      []AdminReviewItemChange
+	ArtifactItems   []AdminReviewItemChange
+	DeviceItems     []AdminReviewItemChange
 }
 
 type AdminReviewDetail struct {
@@ -143,19 +211,28 @@ func normalizeReviewChecklist(items []string) []string {
 	return result
 }
 
-func (s *Store) AdminSaveReviewChecklist(ctx context.Context, reviewID string, items []string) error {
+func (s *Store) AdminSaveReviewChecklist(ctx context.Context, reviewID, actorID string, items []string) error {
 	if _, err := uuid.Parse(reviewID); err != nil {
 		return ErrAdminReviewNotFound
 	}
-	raw, _ := json.Marshal(normalizeReviewChecklist(items))
-	result, err := s.db.ExecContext(ctx, `UPDATE review_cases SET items=$2,updated_at=now() WHERE id=$1 AND state='pending'`, reviewID, raw)
+	checklist := normalizeReviewChecklist(items)
+	raw, _ := json.Marshal(checklist)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE review_cases SET items=$2,updated_at=now() WHERE id=$1 AND state='pending'`, reviewID, raw)
 	if err != nil {
 		return err
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return ErrAdminReviewConflict
 	}
-	return nil
+	if err := AppendReviewCaseEvent(ctx, tx, reviewID, actorID, "checklist_saved", "", checklist, nil); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func normalizeReviewIDs(ids []string) ([]string, error) {
@@ -177,7 +254,7 @@ func normalizeReviewIDs(ids []string) ([]string, error) {
 	return result, nil
 }
 
-func (s *Store) AdminAssignReviews(ctx context.Context, ids []string, reviewerID string) error {
+func (s *Store) AdminAssignReviews(ctx context.Context, ids []string, reviewerID, actorID string) error {
 	ids, err := normalizeReviewIDs(ids)
 	if err != nil {
 		return err
@@ -206,6 +283,46 @@ func (s *Store) AdminAssignReviews(ctx context.Context, ids []string, reviewerID
 	if count, _ := result.RowsAffected(); int(count) != len(ids) {
 		return ErrAdminReviewConflict
 	}
+	event := "assigned"
+	if reviewerID == "" {
+		event = "unassigned"
+	}
+	for _, id := range ids {
+		if err := AppendReviewCaseEvent(ctx, tx, id, actorID, event, "", nil, map[string]any{"reviewer_id": reviewerID}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// AdminSetReviewPriority retunes the queue. The SLA deadline moves with the
+// priority so an urgent case does not keep a deadline set for a routine one.
+func (s *Store) AdminSetReviewPriority(ctx context.Context, ids []string, priority int, actorID string) error {
+	ids, err := normalizeReviewIDs(ids)
+	if err != nil {
+		return err
+	}
+	if priority < 0 || priority > 3 {
+		return ErrAdminReviewConflict
+	}
+	hours := map[int]int{0: 48, 1: 24, 2: 12, 3: 4}[priority]
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE review_cases SET priority=$2,due_at=COALESCE(first_submitted_at,created_at)+make_interval(hours=>$3),updated_at=now() WHERE id=ANY($1::uuid[]) AND state='pending'`, ids, priority, hours)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); int(count) != len(ids) {
+		return ErrAdminReviewConflict
+	}
+	for _, id := range ids {
+		if err := AppendReviewCaseEvent(ctx, tx, id, actorID, "priority_changed", "", nil, map[string]any{"priority": priority, "sla_hours": hours}); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -225,7 +342,7 @@ func (query AdminReviewQuery) normalized() AdminReviewQuery {
 		query.From, query.To = nil, nil
 	}
 	switch query.Sort {
-	case "updated_asc", "created_desc", "created_asc", "revision_desc", "owner":
+	case "updated_asc", "created_desc", "created_asc", "revision_desc", "owner", "sla", "priority":
 	default:
 		query.Sort = "updated_desc"
 	}
@@ -253,6 +370,12 @@ func adminReviewOrder(value string) string {
 		return "revision.revision_no DESC,review.updated_at DESC,review.id DESC"
 	case "owner":
 		return "owner.username ASC,review.updated_at DESC,review.id DESC"
+	case "sla":
+		// Cases without a deadline sort last so the ones actually at risk stay
+		// at the top of the queue.
+		return "review.due_at ASC NULLS LAST,review.priority DESC,review.created_at ASC,review.id ASC"
+	case "priority":
+		return "review.priority DESC,review.due_at ASC NULLS LAST,review.created_at ASC,review.id ASC"
 	default:
 		return "review.updated_at DESC,review.id DESC"
 	}
@@ -300,11 +423,14 @@ WHERE ` + strings.Join(where, " AND ")
 	args = append(args, query.PerPage, (query.Page-1)*query.PerPage)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT
  review.id::text,review.state,review.note,review.items,COALESCE(review.reviewer_id::text,''),COALESCE(reviewer.username,''),
- resource.id::text,resource.slug,resource.kind,resource.moderation_state,
+ resource.id::text,resource.slug,resource.kind,resource.moderation_state,resource.platform,resource.curation_grade,
  revision.id::text,revision.revision_no,revision.name,revision.state,
  owner.id::text,owner.username,
  COALESCE((SELECT jsonb_agg(publication.target ORDER BY publication.target) FROM publications publication WHERE publication.revision_id=revision.id),'[]'::jsonb),
- review.created_at,review.updated_at
+ review.created_at,review.updated_at,
+ review.priority,review.due_at,review.first_submitted_at,
+ (SELECT count(*) FROM review_cases history JOIN resource_revisions history_revision ON history_revision.id=history.revision_id JOIN resources history_resource ON history_resource.id=history_revision.resource_id WHERE history_resource.owner_id=resource.owner_id AND history.state='rejected'),
+ (SELECT count(*) FROM feedback_tickets report WHERE report.kind='resource_report' AND report.target_id=resource.id::text AND report.status IN ('open','investigating'))
 %s ORDER BY %s LIMIT $%d OFFSET $%d`, base, adminReviewOrder(query.Sort), len(args)-1, len(args)), args...)
 	if err != nil {
 		return AdminReviewPage{}, err
@@ -335,9 +461,10 @@ func scanAdminReview(scanner adminReviewScanner) (AdminReviewItem, error) {
 	var reviewItems, targets []byte
 	if err := scanner.Scan(
 		&item.ID, &item.State, &item.Note, &reviewItems, &item.ReviewerID, &item.Reviewer,
-		&item.ResourceID, &item.ResourceSlug, &item.ResourceKind, &item.ResourceState,
+		&item.ResourceID, &item.ResourceSlug, &item.ResourceKind, &item.ResourceState, &item.ResourcePlatform, &item.CurationGrade,
 		&item.RevisionID, &item.RevisionNumber, &item.RevisionName, &item.RevisionState,
 		&item.OwnerID, &item.Owner, &targets, &item.CreatedAt, &item.UpdatedAt,
+		&item.Priority, &item.DueAt, &item.FirstSubmittedAt, &item.OwnerRejections, &item.Reports,
 	); err != nil {
 		return AdminReviewItem{}, err
 	}
@@ -356,11 +483,14 @@ func (s *Store) AdminReview(ctx context.Context, id string) (AdminReviewDetail, 
 	}
 	row := s.db.QueryRowContext(ctx, `SELECT
  review.id::text,review.state,review.note,review.items,COALESCE(review.reviewer_id::text,''),COALESCE(reviewer.username,''),
- resource.id::text,resource.slug,resource.kind,resource.moderation_state,
+ resource.id::text,resource.slug,resource.kind,resource.moderation_state,resource.platform,resource.curation_grade,
  revision.id::text,revision.revision_no,revision.name,revision.state,
  owner.id::text,owner.username,
  COALESCE((SELECT jsonb_agg(publication.target ORDER BY publication.target) FROM publications publication WHERE publication.revision_id=revision.id),'[]'::jsonb),
- review.created_at,review.updated_at
+ review.created_at,review.updated_at,
+ review.priority,review.due_at,review.first_submitted_at,
+ (SELECT count(*) FROM review_cases history JOIN resource_revisions history_revision ON history_revision.id=history.revision_id JOIN resources history_resource ON history_resource.id=history_revision.resource_id WHERE history_resource.owner_id=resource.owner_id AND history.state='rejected'),
+ (SELECT count(*) FROM feedback_tickets report WHERE report.kind='resource_report' AND report.target_id=resource.id::text AND report.status IN ('open','investigating'))
 FROM review_cases review
 JOIN resource_revisions revision ON revision.id=review.revision_id
 JOIN resources resource ON resource.id=revision.resource_id
@@ -453,21 +583,25 @@ FROM resource_revisions revision WHERE revision.id=$1`, id).Scan(
 }
 
 func summarizeAdminReviewDiff(base, current AdminReviewRevisionSnapshot) AdminReviewDiff {
-	diff := AdminReviewDiff{HasBase: base.ID != "", MetadataFields: []string{}}
+	diff := AdminReviewDiff{HasBase: base.ID != "", MetadataFields: []string{}, Metadata: []AdminReviewFieldChange{}}
 	metadata := []struct {
-		name          string
+		name, label   string
 		base, current any
+		pretty        bool
 	}{
-		{"name", base.Name, current.Name}, {"summary", base.Summary, current.Summary}, {"paid_type", base.PaidType, current.PaidType},
-		{"publication_plan", base.PublicationPlan, current.PublicationPlan},
-		{"governance", base.Governance, current.Governance},
+		{"name", "名称", base.Name, current.Name, false},
+		{"summary", "简介", base.Summary, current.Summary, false},
+		{"paid_type", "付费类型", base.PaidType, current.PaidType, false},
+		{"publication_plan", "发布计划", base.PublicationPlan, current.PublicationPlan, true},
+		{"governance", "治理信息", base.Governance, current.Governance, true},
 	}
 	for _, field := range metadata {
-		left, _ := json.Marshal(field.base)
-		right, _ := json.Marshal(field.current)
-		if string(left) != string(right) {
-			diff.MetadataFields = append(diff.MetadataFields, field.name)
+		before, after := stringifyReviewValue(field.base, field.pretty), stringifyReviewValue(field.current, field.pretty)
+		if before == after {
+			continue
 		}
+		diff.MetadataFields = append(diff.MetadataFields, field.name)
+		diff.Metadata = append(diff.Metadata, AdminReviewFieldChange{Field: field.name, Label: field.label, Before: before, After: after})
 	}
 	diff.MetadataChanged = len(diff.MetadataFields) > 0
 	diff.Attributes = diffStringSets(base.Attributes, current.Attributes)
@@ -475,7 +609,94 @@ func summarizeAdminReviewDiff(base, current AdminReviewRevisionSnapshot) AdminRe
 	diff.Media = diffKeyedValues(mediaValues(base.Media), mediaValues(current.Media))
 	diff.Artifacts = diffKeyedValues(artifactValues(base.Artifacts), artifactValues(current.Artifacts))
 	diff.Devices = diffStringSets(artifactDevices(base.Artifacts), artifactDevices(current.Artifacts))
+	diff.AttributeItems = stringSetItemChanges(base.Attributes, current.Attributes)
+	diff.LinkItems = keyedItemChanges(linkValues(base.Links), linkValues(current.Links), func(key, value string) string {
+		title, url, _ := strings.Cut(value, "\x00")
+		if title == "" {
+			return url
+		}
+		return title + " · " + url
+	})
+	diff.MediaItems = keyedItemChanges(mediaValues(base.Media), mediaValues(current.Media), func(key, value string) string {
+		sha, _, _ := strings.Cut(value, ":")
+		return key + " · " + sha
+	})
+	diff.ArtifactItems = keyedItemChanges(artifactValues(base.Artifacts), artifactValues(current.Artifacts), func(key, value string) string {
+		name := key
+		if _, rest, ok := strings.Cut(key, "\x00"); ok {
+			name = rest
+		}
+		sha, _, _ := strings.Cut(value, ":")
+		return name + " · " + sha
+	})
+	diff.DeviceItems = stringSetItemChanges(artifactDevices(base.Artifacts), artifactDevices(current.Artifacts))
 	return diff
+}
+
+func stringifyReviewValue(value any, pretty bool) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	}
+	if pretty {
+		raw, err := json.MarshalIndent(value, "", "  ")
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		text := strings.TrimSpace(string(raw))
+		if text == "null" || text == "\"\"" {
+			return ""
+		}
+		return text
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+	return strings.Trim(strings.TrimSpace(string(raw)), `"`)
+}
+
+func stringSetItemChanges(base, current []string) []AdminReviewItemChange {
+	left, right := map[string]struct{}{}, map[string]struct{}{}
+	for _, value := range base {
+		left[value] = struct{}{}
+	}
+	for _, value := range current {
+		right[value] = struct{}{}
+	}
+	changes := []AdminReviewItemChange{}
+	for _, value := range current {
+		if _, ok := left[value]; !ok {
+			changes = append(changes, AdminReviewItemChange{Key: value, Label: value, Change: "added", After: value})
+		}
+	}
+	for _, value := range base {
+		if _, ok := right[value]; !ok {
+			changes = append(changes, AdminReviewItemChange{Key: value, Label: value, Change: "removed", Before: value})
+		}
+	}
+	return changes
+}
+
+func keyedItemChanges(base, current map[string]string, label func(key, value string) string) []AdminReviewItemChange {
+	changes := []AdminReviewItemChange{}
+	for key, value := range current {
+		old, ok := base[key]
+		switch {
+		case !ok:
+			changes = append(changes, AdminReviewItemChange{Key: key, Label: label(key, value), Change: "added", After: label(key, value)})
+		case old != value:
+			changes = append(changes, AdminReviewItemChange{Key: key, Label: label(key, value), Change: "changed", Before: label(key, old), After: label(key, value)})
+		}
+	}
+	for key, value := range base {
+		if _, ok := current[key]; !ok {
+			changes = append(changes, AdminReviewItemChange{Key: key, Label: label(key, value), Change: "removed", Before: label(key, value)})
+		}
+	}
+	return changes
 }
 
 func diffStringSets(base, current []string) AdminReviewDiffCount {

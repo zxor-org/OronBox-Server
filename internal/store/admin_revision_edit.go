@@ -390,7 +390,9 @@ func (s *Store) AdminSubmitRevisionDraft(ctx context.Context, resourceID, revisi
 	if _, err := tx.ExecContext(ctx, `UPDATE resource_revisions SET state='submitted' WHERE id=$1`, revisionID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id) VALUES($1,$2)`, uuid.NewString(), revisionID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id,first_submitted_at)
+SELECT $1,$2,COALESCE((SELECT min(prior.first_submitted_at) FROM review_cases prior JOIN resource_revisions prior_revision ON prior_revision.id=prior.revision_id WHERE prior_revision.resource_id=revision.resource_id),now())
+FROM resource_revisions revision WHERE revision.id=$2`, uuid.NewString(), revisionID); err != nil {
 		return err
 	}
 	for _, publication := range plan {

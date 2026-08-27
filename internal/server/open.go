@@ -27,7 +27,7 @@ func (a *App) handleOpen(w http.ResponseWriter, r *http.Request) {
 		parameters.Set("authkey", authkey)
 	}
 	deepLink := (&url.URL{Scheme: "oronbox", Host: "open", RawQuery: parameters.Encode()}).String()
-	a.renderTransition(w, web.TransitionPageData{
+	a.renderTransition(w, r, web.TransitionPageData{
 		Title:       "在 OronBox 中打开",
 		Heading:     "在 OronBox 中打开",
 		Description: "正在尝试唤起 OronBox，若没有自动打开，请点击下方按钮",

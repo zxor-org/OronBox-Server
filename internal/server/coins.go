@@ -104,20 +104,12 @@ func (a *App) handleAdminCoinUser(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := currentAdmin(r)
 	userID := r.PathValue("user")
-	var err error
-	var result any = map[string]any{"ok": true}
-	switch request.Action {
-	case "adjust":
-		result, err = a.store.AdminAdjustCoins(r.Context(), userID, request.DeltaUnits, request.Reason, actor.UserID)
-	case "freeze":
-		err = a.store.AdminSetCoinFreeze(r.Context(), userID, true, request.Reason)
-	case "unfreeze":
-		err = a.store.AdminSetCoinFreeze(r.Context(), userID, false, request.Reason)
-	default:
-		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "unknown coin action"))
-		return
-	}
+	result, err := a.applyAdminCoinUserAction(r.Context(), userID, request.Action, request.DeltaUnits, request.Reason, actor.UserID)
 	if err != nil {
+		if err.Error() == "unknown coin action" {
+			writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "unknown coin action"))
+			return
+		}
 		_ = a.store.RecordAudit(r.Context(), actor, "coins."+request.Action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
 		writeJSON(w, http.StatusConflict, errorBody("admin_coin_failed", err.Error()))
 		return

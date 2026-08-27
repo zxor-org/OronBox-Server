@@ -1,0 +1,67 @@
+{{define "admin_users"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>用户</h1><p>管理账号、角色与治理能力，操作会写入审计日志</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>{{if eqs .Action "message_sent"}}管理员消息已发送{{else}}用户操作已完成{{end}}</div>{{end}}
+<section class="panel list-panel">
+<form class="filter-bar" method="get" action="/admin/users">
+  <label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="用户名或米坛用户 ID"></label>
+  <div class="filter-actions"><button class="filled-button" type="submit">应用筛选</button><a class="text-link filter-reset" href="/admin/users">清除</a></div>
+</form>
+<form id="admin-message-form" method="post" action="/admin/users/messages" class="filter-bar">
+  <label class="search-field"><span>消息标题</span><input name="title" required maxlength="200" placeholder="发送给勾选用户"></label>
+  <label class="search-field"><span>消息正文</span><input name="body" required maxlength="2000" placeholder="管理员消息内容"></label>
+  <div class="filter-actions"><button class="filled-button" type="submit">发送消息</button></div>
+</form>
+<div class="table-panel"><div class="table-wrap"><table>
+<thead><tr><th>选择</th><th>用户</th><th>米坛 ID</th><th>角色</th><th>状态</th><th>资源 / 工单</th><th>注册时间</th><th>管理</th></tr></thead>
+<tbody>{{range .Items}}<tr>
+  <td><input type="checkbox" name="user" value="{{.ID}}" form="admin-message-form" aria-label="选择 {{.Username}}"></td>
+  <td class="identity-cell"><a class="resource-name" href="/admin/users/{{.ID}}">{{.Username}}</a><span class="cell-note"><code>{{.ID}}</code></span></td>
+  <td><code>{{.BandBBSUserID}}</code></td>
+  <td><form method="post" action="/admin/users/{{.ID}}/state" class="inline-role-form"><input type="hidden" name="action" value="set_role"><label><span class="sr-only">角色</span><select name="role"><option value="user" {{if eqs .Role "user"}}selected{{end}}>用户</option><option value="reviewer" {{if eqs .Role "reviewer"}}selected{{end}}>审核员</option><option value="admin" {{if eqs .Role "admin"}}selected{{end}}>管理员</option></select></label><button class="text-link" type="submit">保存</button></form></td>
+  <td>{{if .BannedAt}}<span class="status danger">已封禁</span>{{if .BanReason}}<span class="cell-note">{{.BanReason}}</span>{{end}}{{else}}<span class="status success">正常</span>{{end}}{{if .CreatorFrozenAt}}<span class="cell-note">创作者已冻结</span>{{end}}</td>
+  <td>{{.ResourceCount}} / {{.TicketCount}}</td>
+  <td class="secondary nowrap">{{dateTime .CreatedAt}}</td>
+  <td><div class="tag-stack">
+    {{if .BannedAt}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="unban">解封</button></form>
+    {{else}}
+    <form method="post" action="/admin/users/{{.ID}}/state" class="row-form"><label><span class="sr-only">封禁原因</span><input name="reason" placeholder="封禁原因（可选）"></label><button class="outlined-button danger" name="action" value="ban" data-confirm="确定封禁该用户吗？将吊销其全部客户端会话">封禁</button></form>
+    {{end}}
+    {{if .CreatorFrozenAt}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="unfreeze_creator">解冻创作者</button></form>
+    {{else}}
+    <form method="post" action="/admin/users/{{.ID}}/state"><button class="row-action" name="action" value="freeze_creator" data-confirm="确定冻结该用户的创作者功能吗？其将无法提交或管理资源">冻结创作者</button></form>
+    {{end}}
+  </div></td>
+</tr>{{else}}<tr><td class="table-empty" colspan="8">没有匹配的用户</td></tr>{{end}}</tbody>
+</table></div>
+{{template "pagination" .}}
+</div>
+</section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_coins"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>硬币管理</h1><p>查看发行与流转、冻结异常账号、调账并作废异常投币</p></div></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>硬币操作已完成</div>{{end}}
+<div class="metric-grid"><article><span>已发行</span><strong>{{.Stats.IssuedUnits}}</strong><small>0.1 枚 / 单位</small></article><article><span>资源投币</span><strong>{{.Stats.SpentUnits}}</strong><small>支出单位</small></article><article><span>创作者奖励</span><strong>{{.Stats.RewardedUnits}}</strong><small>奖励单位</small></article><article><span>冻结账号</span><strong>{{.Stats.FrozenVoters}}</strong><small>活跃投币用户 {{.Stats.ActiveVoters}}</small></article></div>
+<div class="content-grid"><section class="panel"><div class="section-header"><div><h2>账号操作</h2><p>余额使用 0.1 枚为一个单位；选择用户时可预览当前余额和冻结状态</p></div></div><form method="post" action="/admin/coins/users" class="reply-form"><label><span>用户</span><select name="user_id" required><option value="">选择用户</option>{{range .Users}}<option value="{{.ID}}">{{.Username}} · {{.BalanceUnits}} 单位{{if .Frozen}} · 已冻结{{end}}</option>{{end}}</select></label><label><span>动作</span><select name="action"><option value="adjust">调账</option><option value="freeze">冻结投币</option><option value="unfreeze">解除冻结</option></select></label><label><span>余额变动单位</span><input name="delta_units" type="number" value="0"></label><label><span>原因（调账、冻结必填）</span><textarea name="reason" rows="3" placeholder="解冻可不填；调账和冻结会写入账本"></textarea></label><div class="actions"><button class="filled-button">执行</button></div></form></section><section class="panel"><div class="section-header"><div><h2>作废投币</h2><p>退回投币并回滚可追回的创作者奖励</p></div></div><form method="post" action="/admin/coins/invalidate" class="reply-form"><label><span>资源 UUID</span><input name="resource_id" required></label><label><span>投币用户</span><select name="user_id" required><option value="">选择用户</option>{{range .Users}}<option value="{{.ID}}">{{.Username}}</option>{{end}}</select></label><label><span>原因</span><textarea name="reason" required rows="3"></textarea></label><div class="actions"><button class="outlined-button danger">作废投币</button></div></form></section></div>
+<section class="panel"><div class="section-header"><div><h2>不可变账本</h2><p>全部流水可检索和分页，原始记录不可删除</p></div><span class="count-badge">{{.Page.Total}} 条</span></div><form class="filter-bar embedded" method="get" action="/admin/coins"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="用户、备注、流水或关联 ID"></label><label><span>用户</span><input name="user" value="{{.Query.User}}" placeholder="用户名或 UUID"></label><label><span>类型</span><input name="kind" value="{{.Query.Kind}}" placeholder="admin_adjustment"></label><label><span>关联类型</span><input name="reference_type" value="{{.Query.ReferenceType}}" placeholder="resource"></label><label><span>从</span><input type="date" name="from" value="{{.From}}"></label><label><span>至</span><input type="date" name="to" value="{{.To}}"></label><label><span>排序</span><select name="sort"><option value="newest" {{if eqs .Query.Sort "newest"}}selected{{end}}>最新</option><option value="oldest" {{if eqs .Query.Sort "oldest"}}selected{{end}}>最早</option><option value="delta_desc" {{if eqs .Query.Sort "delta_desc"}}selected{{end}}>变动降序</option><option value="delta_asc" {{if eqs .Query.Sort "delta_asc"}}selected{{end}}>变动升序</option></select></label><div class="filter-actions"><button class="filled-button">应用筛选</button><a class="text-link filter-reset" href="/admin/coins">清除</a></div></form><div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>类型</th><th>变动</th><th>关联</th><th>原因</th></tr></thead><tbody>{{range .Ledger}}<tr><td class="secondary nowrap">{{.CreatedAt}}</td><td><a href="/admin/users/{{.UserID}}">{{.Username}}</a><span class="cell-note"><code>{{.UserID}}</code></span></td><td><code>{{.Kind}}</code></td><td>{{.DeltaUnits}}</td><td>{{.ReferenceType}} <code>{{.ReferenceID}}</code></td><td>{{.Note}}</td></tr>{{else}}<tr><td class="table-empty" colspan="6">暂无硬币流水</td></tr>{{end}}</tbody></table></div>{{template "pagination" .}}</section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_messages"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>系统消息</h1><p>只读查看发送给用户的站内消息与读取状态</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+<section class="panel list-panel"><form class="filter-bar embedded" method="get" action="/admin/messages"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="标题、正文、引用或消息 ID"></label><label><span>类型</span><select name="kind"><option value="">全部</option>{{range $kind := splitMessageKinds}}<option value="{{$kind}}" {{if eqs $.Query.Kind $kind}}selected{{end}}>{{kindLabel $kind}}</option>{{end}}</select></label><label><span>读取状态</span><select name="read"><option value="">全部</option><option value="unread" {{if eqs .Query.Read "unread"}}selected{{end}}>未读</option><option value="read" {{if eqs .Query.Read "read"}}selected{{end}}>已读</option></select></label><label><span>用户</span><input name="user" value="{{.Query.User}}" placeholder="用户名或 UUID"></label><label><span>开始日期</span><input type="date" name="from" value="{{.From}}"></label><label><span>结束日期</span><input type="date" name="to" value="{{.To}}"></label><div class="filter-actions"><button class="filled-button">应用筛选</button><a class="text-link filter-reset" href="/admin/messages">清除</a></div></form><div class="table-wrap"><table><thead><tr><th>消息</th><th>用户</th><th>类型</th><th>读取状态</th><th>发送时间</th><th>到期时间</th><th></th></tr></thead><tbody>{{range .Items}}<tr><td><a class="resource-name" href="/admin/messages/{{.ID}}">{{.Title}}</a><span class="cell-note">{{.Body}}</span></td><td><a href="/admin/users/{{.UserID}}">{{.Username}}</a></td><td>{{kindLabel .Kind}}</td><td>{{if .ReadAt}}<span class="status success">已读</span>{{else}}<span class="status neutral">未读</span>{{end}}</td><td>{{dateTime .CreatedAt}}</td><td>{{dateTime .ExpiresAt}}</td><td><a class="row-action" href="/admin/messages/{{.ID}}">详情</a></td></tr>{{else}}<tr><td class="table-empty" colspan="7">没有符合筛选条件的系统消息</td></tr>{{end}}</tbody></table></div>{{template "pagination" .}}</section>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_message_detail"}}
+{{template "admin_open" .}}
+<header class="page-header detail-header"><div><a class="back-link" href="/admin/messages">← 系统消息</a><div class="title-line"><h1>{{.Item.Title}}</h1>{{if .Item.ReadAt}}<span class="status success">已读</span>{{else}}<span class="status neutral">未读</span>{{end}}</div><p>{{kindLabel .Item.Kind}} · {{dateTime .Item.CreatedAt}}</p></div></header>
+<div class="content-grid detail-grid"><section class="panel span-2"><div class="section-header"><div><h2>消息正文</h2></div></div><div class="ticket-message">{{.Item.Body}}</div></section><section class="panel"><div class="section-header"><div><h2>关联用户</h2></div></div><dl class="settings"><dt>用户名</dt><dd><a href="/admin/users/{{.Item.UserID}}">{{.Item.Username}}</a></dd><dt>用户 ID</dt><dd><code data-copy="{{.Item.UserID}}">{{.Item.UserID}}</code></dd></dl></section><section class="panel"><div class="section-header"><div><h2>消息信息</h2></div></div><dl class="settings"><dt>消息 ID</dt><dd><code data-copy="{{.Item.ID}}">{{.Item.ID}}</code></dd><dt>类型</dt><dd>{{kindLabel .Item.Kind}}</dd><dt>引用</dt><dd>{{if .Item.Ref}}<code>{{.Item.Ref}}</code>{{else}}—{{end}}</dd><dt>发送时间</dt><dd>{{dateTime .Item.CreatedAt}}</dd><dt>读取时间</dt><dd>{{if .Item.ReadAt}}{{dateTime .Item.ReadAt}}{{else}}未读{{end}}</dd><dt>到期时间</dt><dd>{{dateTime .Item.ExpiresAt}}</dd></dl></section></div>
+{{template "admin_close" .}}
+{{end}}

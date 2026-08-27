@@ -46,7 +46,7 @@ func (a *App) renderAdminFormErrorRequest(w http.ResponseWriter, r *http.Request
 	}
 	sort.Slice(fields, func(i, j int) bool { return fields[i].Name < fields[j].Name })
 	w.WriteHeader(status)
-	a.render(w, "admin_form_error", map[string]any{
+	a.render(w, r, "admin_form_error", map[string]any{
 		"Title": title, "Message": message, "BackURL": backURL, "RetryURL": retryURL, "Fields": fields,
 	})
 }
@@ -62,7 +62,11 @@ func blogUploadMediaType(contentType string) bool {
 // handleAdminBlobUpload stores a single image for blog covers, banner covers
 // and markdown inline media. Returns the SHA-256 used to reference it.
 func (a *App) handleAdminBlobUpload(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
+	if err := a.parseAdminUpload(w, r, 8<<20); err != nil {
+		if errors.Is(err, errAdminCSRF) {
+			writeJSON(w, http.StatusForbidden, errorBody("forbidden", "admin request rejected"))
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_upload", "multipart form is invalid or too large"))
 		return
 	}
@@ -152,7 +156,7 @@ func (a *App) handleAdminHomePage(w http.ResponseWriter, r *http.Request) {
 			publishedPosts = append(publishedPosts, post)
 		}
 	}
-	a.render(w, "admin_home", map[string]any{
+	a.render(w, r, "admin_home", map[string]any{
 		"Title": "首页编排", "Banners": banners, "Sections": sections, "Cards": cards,
 		"Posts": publishedPosts, "Resources": resources.Items, "SelectorQ": r.URL.Query().Get("selector_q"), "SelectorPager": map[string]any{"Pager": web.NewNamedPagination("/admin/home", r.URL.Query(), resources.Page, resources.PerPage, resources.Total, "selector_page", "selector_per_page"), "PageSizes": []int{25, 50, 100}},
 		"Action": r.URL.Query().Get("action"),
@@ -503,7 +507,7 @@ func (a *App) handleAdminBlogList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/blog", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
+	a.render(w, r, "admin_blog", map[string]any{"Title": "Blog 管理", "Posts": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/blog", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminBlogCreate(w http.ResponseWriter, r *http.Request) {
@@ -553,7 +557,7 @@ func (a *App) handleAdminBlogEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_blog_edit", map[string]any{"Title": "编辑文章", "Post": post, "Action": r.URL.Query().Get("action")})
+	a.render(w, r, "admin_blog_edit", map[string]any{"Title": "编辑文章", "Post": post, "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminBlogSave(w http.ResponseWriter, r *http.Request) {

@@ -343,32 +343,72 @@ ORDER BY comment.created_at LIMIT $1 OFFSET $2`, perPage, (page-1)*perPage)
 	return items, total, nil
 }
 
+// commentModerationState maps a human decision onto the comment state, and
+// reports whether the action is one this store accepts at all.
+func commentModerationState(action string) (string, bool) {
+	switch action {
+	case "approve":
+		return "visible", true
+	case "hide":
+		return "hidden", true
+	default:
+		return "", false
+	}
+}
+
 // AdminModerateComment applies a human decision: "approve" makes the comment
 // visible, "hide" keeps or makes it hidden. Either way the queue entry is
-// marked as human-reviewed.
-func (s *Store) AdminModerateComment(ctx context.Context, commentID, action string) error {
-	if _, err := uuid.Parse(commentID); err != nil {
+// marked as human-reviewed, and who decided plus why is recorded so a disputed
+// removal can be traced back to a person rather than to "the system".
+func (s *Store) AdminModerateComment(ctx context.Context, commentID, action, actorID, note string) error {
+	return s.moderateComments(ctx, []string{commentID}, action, actorID, note)
+}
+
+// AdminModerateCommentsBatch applies one decision to many comments in a single
+// transaction. Like the review queue, it is all-or-nothing: a batch that would
+// partly fail changes nothing, so the operator never has to work out which
+// half of a hundred-comment action went through.
+func (s *Store) AdminModerateCommentsBatch(ctx context.Context, commentIDs []string, action, actorID, note string) error {
+	if len(commentIDs) == 0 {
+		return errors.New("没有选择任何评论")
+	}
+	if len(commentIDs) > 100 {
+		return errors.New("一次最多处理 100 条评论")
+	}
+	return s.moderateComments(ctx, commentIDs, action, actorID, note)
+}
+
+func (s *Store) moderateComments(ctx context.Context, commentIDs []string, action, actorID, note string) error {
+	state, ok := commentModerationState(action)
+	if !ok {
 		return ErrCommentNotFound
 	}
-	state := "visible"
-	if action == "hide" {
-		state = "hidden"
-	} else if action != "approve" {
-		return ErrCommentNotFound
+	for _, id := range commentIDs {
+		if _, err := uuid.Parse(id); err != nil {
+			return ErrCommentNotFound
+		}
+	}
+	var reviewer any
+	if _, err := uuid.Parse(actorID); err == nil {
+		reviewer = actorID
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE resource_comments SET moderation_state=$2 WHERE id=$1`, commentID, state)
+	result, err := tx.ExecContext(ctx, `UPDATE resource_comments SET moderation_state=$2 WHERE id=ANY($1::uuid[])`, commentIDs, state)
 	if err != nil {
 		return err
 	}
-	if rows, _ := result.RowsAffected(); rows != 1 {
+	// Anything short of a full match means at least one id was wrong, so the
+	// whole batch is abandoned rather than silently applied to the rest.
+	if rows, _ := result.RowsAffected(); rows != int64(len(commentIDs)) {
 		return ErrCommentNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE comment_moderation SET human_reviewed_at=now(),human_action=$2 WHERE comment_id=$1`, commentID, action); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE comment_moderation SET human_reviewed_at=now(),human_action=$2,human_reviewer_id=$3,human_note=$4,recheck_state='done' WHERE comment_id=ANY($1::uuid[])`,
+		commentIDs, action, reviewer, note); err != nil {
 		return err
 	}
 	return tx.Commit()

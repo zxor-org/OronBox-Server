@@ -93,6 +93,15 @@ func TestSummarizeAdminReviewDiff(t *testing.T) {
 	if diff.Devices.Added != 1 || diff.Devices.Removed != 0 {
 		t.Fatalf("device diff is incomplete: %#v", diff)
 	}
+	if len(diff.Metadata) != 2 || diff.Metadata[0].Before == "" || diff.Metadata[0].After == "" {
+		t.Fatalf("field-level metadata diff is incomplete: %#v", diff.Metadata)
+	}
+	if len(diff.MediaItems) != 1 || diff.MediaItems[0].Change != "changed" {
+		t.Fatalf("field-level media diff is incomplete: %#v", diff.MediaItems)
+	}
+	if len(diff.DeviceItems) != 1 || diff.DeviceItems[0].Change != "added" {
+		t.Fatalf("field-level device diff is incomplete: %#v", diff.DeviceItems)
+	}
 }
 
 func TestSummarizeAdminReviewDiffWithoutBaseMarksCurrentAsAdded(t *testing.T) {

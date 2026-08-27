@@ -20,7 +20,7 @@ func (a *App) handleAdminPublications(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_publications", map[string]any{"Title": "发布任务", "Page": page, "Items": page.Items, "Query": page.Query, "Pager": web.NewPagination("/admin/publications", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action"), "Retried": r.URL.Query().Get("retried")})
+	a.render(w, r, "admin_publications", map[string]any{"Title": "发布任务", "Page": page, "Items": page.Items, "Query": page.Query, "Pager": web.NewPagination("/admin/publications", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action"), "Retried": r.URL.Query().Get("retried")})
 }
 
 func (a *App) handleAdminPublicationBatchRetry(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +63,7 @@ func (a *App) handleAdminPublication(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_publication_detail", map[string]any{"Title": item.RevisionName, "Item": item, "Action": r.URL.Query().Get("action")})
+	a.render(w, r, "admin_publication_detail", map[string]any{"Title": item.RevisionName, "Item": item, "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminPublicationAction(w http.ResponseWriter, r *http.Request) {

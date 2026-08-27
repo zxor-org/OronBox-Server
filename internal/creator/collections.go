@@ -269,6 +269,10 @@ func (s *Service) DeleteCollection(ctx context.Context, ownerID, collectionID st
 }
 
 func (s *Service) ReviewCollection(ctx context.Context, revisionID, reviewerID string, approve bool, note string) error {
+	note = strings.TrimSpace(note)
+	if !approve && note == "" {
+		return fmt.Errorf("%w: rejection reason is required", ErrInvalid)
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err

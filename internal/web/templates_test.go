@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,17 @@ import (
 
 func TestAdminTemplatesRender(t *testing.T) {
 	templates := NewTemplates()
+	for name, data := range renderableTemplateCases() {
+		recorder := httptest.NewRecorder()
+		if err := templates.Render(recorder, name, data); err != nil {
+			t.Errorf("render %s: %v", name, err)
+		}
+	}
+}
+
+// renderableTemplateCases is the shared corpus of every page template with data
+// good enough to execute, so page-wide invariants can be asserted in one place.
+func renderableTemplateCases() map[string]any {
 	config := map[string]any{
 		"BandBBS": map[string]any{
 			"ClientID": "id", "RedirectURI": "uri",
@@ -84,7 +96,11 @@ func TestAdminTemplatesRender(t *testing.T) {
 		"admin_release_detail":    map[string]any{"Title": "t", "Item": store.AdminReleaseItem{}},
 		"admin_resources":         map[string]any{"Title": "t", "Items": resourcePage.Items, "Page": resourcePage, "Query": resourcePage.Query},
 		"admin_users":             map[string]any{"Title": "t", "Items": []store.AdminUserItem{}, "Page": store.AdminUserPage{}, "Query": store.AdminUserQuery{}},
-		"admin_user_workspace":    map[string]any{"Title": "t", "Detail": store.AdminUserDetail{}},
+		"admin_coins": map[string]any{
+			"Title": "t", "Stats": store.AdminCoinStats{}, "Ledger": []store.AdminCoinEntry{},
+			"Page": store.AdminCoinPage{}, "Query": store.AdminCoinQuery{}, "Users": []store.AdminCoinUserOption{},
+		},
+		"admin_user_workspace": map[string]any{"Title": "t", "Detail": store.AdminUserDetail{}},
 		"admin_resource_detail": map[string]any{
 			"Title": "t", "Item": resourceItem, "Detail": resourceDetail,
 			"Publications": []store.AdminPublication{}, "Artifacts": []store.AdminArtifact{},
@@ -101,19 +117,36 @@ func TestAdminTemplatesRender(t *testing.T) {
 		"admin_report_detail": map[string]any{
 			"Title": "t", "Item": store.FeedbackTicket{}, "Ticket": store.FeedbackTicket{},
 		},
-		"server_home": map[string]any{"Title": "Server"},
+		"admin_messages": map[string]any{"Title": "t", "Items": []store.AdminMessage{},
+			"Page": store.AdminMessagePage{}, "Query": store.AdminMessageQuery{}},
+		"admin_message_detail": map[string]any{"Title": "t", "Item": store.AdminMessage{}},
+		"admin_home": map[string]any{"Title": "t", "Banners": []store.HomeBanner{},
+			"Sections": []store.HomeSection{}, "Cards": map[string][]store.HomeSectionCard{},
+			"Posts": []store.BlogPost{}, "Resources": []store.AdminResourceItem{}},
+		"admin_blog":       map[string]any{"Title": "t", "Posts": []store.BlogPost{}, "Page": store.AdminBlogPage{}, "Query": store.AdminBlogQuery{}},
+		"admin_blog_edit":  map[string]any{"Title": "t", "Post": store.BlogPost{Slug: "hello", Title: "Hello"}},
+		"admin_form_error": map[string]any{"Title": "t", "Message": "m", "BackURL": "/admin", "RetryURL": "/admin/blog", "Fields": []any{}},
+		"admin_forbidden":  map[string]any{"Title": "t", "Path": "/admin/users"},
+		"server_home":      map[string]any{"Title": "Server"},
 		"transition_page": TransitionPageData{
 			Title: "授权完成", Heading: "授权完成", Description: "可以返回 OronBox 继续使用",
 			Target: template.URL("oronbox://oauth?ticket=test"),
 			Auto:   true, Tone: "success",
 		},
 	}
-	for name, data := range cases {
-		recorder := httptest.NewRecorder()
-		if err := templates.Render(recorder, name, data); err != nil {
-			t.Errorf("render %s: %v", name, err)
+	// The shell reads the drawer and the role-aware home path off the page data
+	// because the server injects them for every render, so the fixtures have to
+	// do the same or every page would render without navigation.
+	for _, data := range cases {
+		values, ok := data.(map[string]any)
+		if !ok {
+			continue
 		}
+		values["Role"] = RoleAdmin
+		values["Nav"] = NavigationFor(RoleAdmin)
+		values["HomePath"] = HomePathFor(RoleAdmin)
 	}
+	return cases
 }
 
 func TestAdminRevisionEditorExposesManagementRevisionFields(t *testing.T) {
@@ -275,18 +308,19 @@ func TestAdminNavigationGroupsModulesAndDisambiguatesClientStats(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	if err := NewTemplates().Render(recorder, "admin_dashboard", map[string]any{
 		"Title": "概览", "Stats": model.Stats{}, "Events": []any{}, "Clients": []any{},
+		"Role": RoleAdmin, "Nav": NavigationFor(RoleAdmin), "HomePath": HomePathFor(RoleAdmin),
 	}); err != nil {
 		t.Fatalf("render dashboard: %v", err)
 	}
 	body := recorder.Body.String()
-	for _, expected := range []string{"内容与发布", "社区与用户", "内容运营", "系统与诊断", "客户端统计"} {
+	for _, expected := range []string{"审核工作台", "内容与发布", "社区与用户", "内容运营", "系统与诊断", "客户端统计"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("admin navigation is missing %q", expected)
 		}
 	}
 }
 
-func TestTransitionPageUsesLoliFontsAndEscapesJavaScriptTarget(t *testing.T) {
+func TestTransitionPageIsSelfHostedAndEscapesJavaScriptTarget(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
 	err := NewTemplates().Render(recorder, "transition_page", TransitionPageData{
@@ -303,17 +337,64 @@ func TestTransitionPageUsesLoliFontsAndEscapesJavaScriptTarget(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		`https://fonts.loli.net/css2`,
-		`https://gstatic.loli.net`,
 		`class="standalone-card transition-card success"`,
-		`location.replace("oronbox://oauth?ticket=a\"b\u0026next=\u003cscript\u003e")`,
+		`data-transition-target="oronbox://oauth?ticket=a&#34;b&amp;next=&lt;script&gt;"`,
+		`<script src="/assets/transition.js" defer></script>`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("transition page is missing %q\n%s", expected, body)
 		}
 	}
-	if strings.Contains(body, `fonts.googleapis.com`) || strings.Contains(body, `<script>`) && strings.Contains(body, `next=<script>`) {
-		t.Errorf("transition page contains an unsafe or disallowed asset value")
+	if strings.Contains(body, `next=<script>`) {
+		t.Errorf("transition page reflected an unescaped target")
+	}
+}
+
+// Resource links, release download URLs and publication pages all come out of
+// the database, so an operator-visible href must never carry a scheme that
+// executes on click.
+func TestSafeURLDropsExecutableSchemes(t *testing.T) {
+	t.Parallel()
+	for _, dangerous := range []string{
+		"javascript:alert(1)",
+		"  JavaScript:alert(1)",
+		"JAVASCRIPT:alert(1)",
+		"data:text/html;base64,PHNjcmlwdD4=",
+		"vbscript:msgbox(1)",
+		"file:///etc/passwd",
+		"",
+	} {
+		if got := safeURL(dangerous); got != "" {
+			t.Errorf("safeURL(%q) = %q, want it dropped", dangerous, got)
+		}
+	}
+	for _, allowed := range []string{"https://example.com/a?b=c", "http://example.com"} {
+		if got := safeURL(allowed); got != allowed {
+			t.Errorf("safeURL(%q) = %q", allowed, got)
+		}
+	}
+}
+
+func TestDatabaseSourcedLinksAreFiltered(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	if err := NewTemplates().Render(recorder, "admin_release_detail", map[string]any{
+		"Title": "客户端版本",
+		"Item":  store.AdminReleaseItem{AppRelease: store.AppRelease{ID: "release-id", DownloadURL: "javascript:alert(1)"}},
+	}); err != nil {
+		t.Fatalf("render release detail: %v", err)
+	}
+	if body := recorder.Body.String(); strings.Contains(body, `href="javascript:`) {
+		t.Errorf("release download URL reached an href unfiltered: %s", body)
+	}
+}
+
+// The redirect target reaches location.replace() from a data attribute, so the
+// script has to refuse schemes that would execute instead of navigate.
+func TestTransitionScriptRefusesExecutableSchemes(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(TransitionJS, `/^\s*(javascript|data|vbscript):/i`) {
+		t.Error("transition script does not screen the redirect target")
 	}
 }
 
@@ -580,6 +661,13 @@ func TestAdminShellProvidesAccessibleInteractionPrimitives(t *testing.T) {
 		`id="admin-live-region" role="status" aria-live="polite"`,
 		`aria-labelledby="confirm-dialog-title"`,
 		`aria-describedby="confirm-dialog-description"`,
+		`<script src="/assets/admin.js" defer></script>`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("admin shell is missing accessibility primitive %q", expected)
+		}
+	}
+	for _, expected := range []string{
 		`confirmAction?.focus()`,
 		`dialogTrigger?.focus()`,
 		`event.key === 'Escape'`,
@@ -587,20 +675,39 @@ func TestAdminShellProvidesAccessibleInteractionPrimitives(t *testing.T) {
 		`className = 'form-error-summary'`,
 		`cell.dataset.label = labels[index]`,
 	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("admin shell is missing accessibility primitive %q", expected)
+		if !strings.Contains(AdminJS, expected) {
+			t.Errorf("admin script is missing accessibility primitive %q", expected)
 		}
 	}
-	if strings.Contains(body, "alert(") || strings.Contains(body, "confirm(") {
+	if strings.Contains(AdminJS, "alert(") || strings.Contains(AdminJS, "confirm(") {
 		t.Error("admin shell must not use native alert/confirm dialogs")
+	}
+}
+
+// The console runs under a Content-Security-Policy without 'unsafe-inline', so
+// a rendered page that carries executable script would silently stop working.
+func TestRenderedPagesCarryNoInlineScript(t *testing.T) {
+	t.Parallel()
+	inlineScript := regexp.MustCompile(`(?i)<script(?:\s[^>]*)?>[^<]`)
+	for name, data := range renderableTemplateCases() {
+		recorder := httptest.NewRecorder()
+		if err := NewTemplates().Render(recorder, name, data); err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		if match := inlineScript.FindString(recorder.Body.String()); match != "" {
+			t.Errorf("%s carries an inline script near %q", name, match)
+		}
 	}
 }
 
 func TestAdminCSSSupportsResponsiveAccessiblePresentation(t *testing.T) {
 	t.Parallel()
 	for _, expected := range []string{
-		`:root.dark-theme`,
-		`@media (prefers-color-scheme: dark)`,
+		// Dark is the baseline palette, so light is what has to be opted into
+		// either explicitly or by the system preference.
+		`:root.light-theme`,
+		`@media (prefers-color-scheme: light)`,
+		`:root:not(.dark-theme):not(.light-theme)`,
 		`@media (prefers-reduced-motion: reduce)`,
 		`@media (forced-colors: active)`,
 		`.table-wrap tbody td[data-label]::before`,
@@ -661,12 +768,47 @@ func TestBlogCreateDialogHasAccessibleNameAndFocusLifecycle(t *testing.T) {
 		`aria-labelledby="create-blog-title"`,
 		`aria-describedby="create-blog-description"`,
 		`aria-label="关闭新建文章对话框"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("blog dialog is missing %q", expected)
+		}
+	}
+	for _, expected := range []string{
 		`dialog.querySelector('input, select, button').focus()`,
 		`dialog.addEventListener('close'`,
 		`trigger.focus()`,
 	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("blog dialog is missing %q", expected)
+		if !strings.Contains(AdminJS, expected) {
+			t.Errorf("blog dialog script is missing %q", expected)
+		}
+	}
+}
+
+// Every rendered POST form must carry the session token; the hidden field is
+// injected at parse time precisely so no form can be forgotten.
+func TestEveryPostFormCarriesCSRFField(t *testing.T) {
+	t.Parallel()
+	openingForm := regexp.MustCompile(`(?i)<form[^>]*method="post"[^>]*>`)
+	for name, data := range renderableTemplateCases() {
+		values, ok := data.(map[string]any)
+		if !ok {
+			continue
+		}
+		values["CSRFToken"] = "token-value"
+		recorder := httptest.NewRecorder()
+		if err := NewTemplates().Render(recorder, name, values); err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+		body := recorder.Body.String()
+		forms := openingForm.FindAllStringIndex(body, -1)
+		for _, form := range forms {
+			field := `<input type="hidden" name="csrf_token" value="token-value">`
+			if !strings.HasPrefix(body[form[1]:], field) {
+				t.Errorf("%s has a POST form without the CSRF field: %s", name, body[form[0]:form[1]])
+			}
+		}
+		if name == "admin_dashboard" && len(forms) == 0 {
+			t.Error("admin shell no longer renders the logout form, the assertion above is vacuous")
 		}
 	}
 }

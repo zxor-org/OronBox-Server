@@ -15,7 +15,7 @@ func (a *App) handleAdminReleases(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_releases", map[string]any{"Title": "客户端版本", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/releases", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
+	a.render(w, r, "admin_releases", map[string]any{"Title": "客户端版本", "Items": page.Items, "Page": page, "Query": page.Query, "Pager": web.NewPagination("/admin/releases", r.URL.Query(), page.Page, page.PerPage, page.Total), "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminPublishRelease(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +57,7 @@ func (a *App) handleAdminRelease(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	a.render(w, "admin_release_detail", map[string]any{"Title": item.Version, "Item": item, "Action": r.URL.Query().Get("action")})
+	a.render(w, r, "admin_release_detail", map[string]any{"Title": item.Version, "Item": item, "Action": r.URL.Query().Get("action")})
 }
 
 func (a *App) handleAdminReleaseNotes(w http.ResponseWriter, r *http.Request) {

@@ -20,7 +20,7 @@ func (a *App) handleAdminRevision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_revision_detail", map[string]any{"Title": detail.Revision.Name, "Detail": detail})
+	a.render(w, r, "admin_revision_detail", map[string]any{"Title": detail.Revision.Name, "Detail": detail})
 }
 
 func (a *App) handleAdminResourceDraft(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +112,7 @@ func (a *App) handleAdminResourceDraft(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_revision_editor", map[string]any{
+	a.render(w, r, "admin_revision_editor", map[string]any{
 		"Title": "编辑 " + detail.Revision.Name, "Detail": detail, "Attributes": attributes,
 		"Devices": devices.Items, "Governance": governance, "Collections": collections.Items,
 		"IsDraft": isAdminDraft, "CanEditAssets": isAdminDraft || isPendingReview,

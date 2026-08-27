@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) handleAuthSuccess(w http.ResponseWriter, r *http.Request) {
-	a.renderTransition(w, web.TransitionPageData{
+	a.renderTransition(w, r, web.TransitionPageData{
 		Title:       "授权完成",
 		Heading:     "授权完成",
 		Description: "可以返回 OronBox 继续使用",
@@ -19,7 +19,7 @@ func (a *App) handleAuthSuccess(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAuthFailed(w http.ResponseWriter, r *http.Request) {
-	a.renderTransition(w, web.TransitionPageData{
+	a.renderTransition(w, r, web.TransitionPageData{
 		Title:       "授权失败",
 		Heading:     "授权失败",
 		Description: authErrorMessage(r.URL.Query().Get("error")),
@@ -27,16 +27,13 @@ func (a *App) handleAuthFailed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *App) renderTransition(w http.ResponseWriter, data web.TransitionPageData) {
+func (a *App) renderTransition(w http.ResponseWriter, r *http.Request, data web.TransitionPageData) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
-	w.Header().Set(
-		"Content-Security-Policy",
-		"default-src 'none'; style-src 'self' https://fonts.loli.net; font-src https://gstatic.loli.net data:; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
-	)
-	a.render(w, "transition_page", data)
+	w.Header().Set("Content-Security-Policy", transitionCSP)
+	a.render(w, r, "transition_page", data)
 }
 
 func (a *App) loginTransitionTarget(returnURI string, ticket string) (template.URL, error) {

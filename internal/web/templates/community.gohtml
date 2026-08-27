@@ -1,0 +1,85 @@
+{{define "admin_comments"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>评论审核</h1><p>AI 先判、人工定夺；隐藏必须写明依据，处理人会记入留痕</p></div><span class="count-badge">{{.Total}} 项</span></header>
+{{if .BulkDone}}<div class="notice success toast-notice" data-toast>批量操作已完成</div>{{end}}
+<section class="panel list-panel" id="comment-queue">
+<form class="filter-bar embedded" method="get" action="/admin/comments" hx-get="/admin/comments" hx-target="#comment-queue" hx-select="#comment-queue" hx-push-url="true" hx-swap="outerHTML"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="正文、用户或 ID"></label><label><span>状态</span><select name="state"><option value="">全部</option><option value="review" {{if eqs .Query.State "review"}}selected{{end}}>待人工复审</option><option value="visible" {{if eqs .Query.State "visible"}}selected{{end}}>可见</option><option value="hidden" {{if eqs .Query.State "hidden"}}selected{{end}}>隐藏</option><option value="deleted" {{if eqs .Query.State "deleted"}}selected{{end}}>已删除</option></select></label><label><span>资源 ID</span><input name="resource" value="{{.Query.Resource}}"></label><label><span>用户</span><input name="user" value="{{.Query.User}}" placeholder="用户名或 UUID"></label><label><span>排序</span><select name="sort"><option value="newest" {{if eqs .Query.Sort "newest"}}selected{{end}}>最新</option><option value="oldest" {{if eqs .Query.Sort "oldest"}}selected{{end}}>最早</option><option value="username" {{if eqs .Query.Sort "username"}}selected{{end}}>用户</option><option value="state" {{if eqs .Query.Sort "state"}}selected{{end}}>状态</option></select></label><div class="filter-actions"><button class="filled-button">应用筛选</button><a class="text-link filter-reset" href="/admin/comments">清除</a></div></form>
+<form id="comment-bulk" method="post" action="/admin/comments/bulk" hx-post="/admin/comments/bulk" hx-target="#comment-queue" hx-select="#comment-queue" hx-swap="outerHTML"><input type="hidden" name="return_to" value="{{.ReturnTo}}">
+  <div class="bulk-bar" data-bulk-bar data-bulk-noun="条评论" data-bulk-note-error="批量隐藏必须填写理由，处理记录需要说明依据。">
+    <div class="bulk-selection"><span data-bulk-count>未选择</span><span class="bulk-hint">最多 100 条，全有或全无，不会部分成功</span></div>
+    <label class="bulk-note"><span>处理理由（隐藏必填，会写入处理记录）</span><textarea name="note" rows="2" data-bulk-note placeholder="说明依据，例如命中哪条社区规范"></textarea></label>
+    <div class="bulk-decisions">
+      <button class="filled-button" name="bulk_action" value="approve" data-confirm="确定批量放行所选评论吗？">批量放行</button>
+      <button class="outlined-button danger" name="bulk_action" value="hide" data-bulk-reject data-confirm="确定批量隐藏所选评论吗？">批量隐藏</button>
+    </div>
+  </div>
+</form>
+  <div class="table-wrap"><table><thead><tr><th><span class="sr-only">选择</span></th><th>评论</th><th>用户</th><th>AI 判定</th><th>状态</th><th>时间</th><th></th></tr></thead><tbody>
+  {{range .Items}}<tr>
+    <td>{{if not .Deleted}}<input form="comment-bulk" type="checkbox" name="comment_ids" value="{{.ID}}" data-bulk-item aria-label="选择 {{.Username}} 的评论">{{end}}</td>
+    <td class="wrap-cell">{{.Body}}<span class="cell-note"><a href="/admin/resources/{{.ResourceID}}">查看所属资源</a></span></td>
+    <td class="identity-cell"><a href="/admin/users/{{.UserID}}">{{.Username}}</a><span class="cell-note">米坛 {{.BandBBSUserID}}</span></td>
+    <td class="wrap-cell">{{if .ModerationAction}}<span class="status {{statusClass .ModerationAction}}">{{aiVerdict .ModerationAction}}</span><span class="cell-note">{{.ModerationModel}}{{if .ModerationReason}} · {{.ModerationReason}}{{end}}</span>{{else}}<span class="secondary">—</span>{{end}}</td>
+    <td>{{if .Deleted}}<span class="status neutral">已删除</span>{{else}}<span class="status {{statusClass .ModerationState}}">{{statusLabel .ModerationState}}</span>{{end}}{{if .HumanReviewed}}<span class="cell-note">已人工处理</span>{{end}}</td>
+    <td class="nowrap secondary">{{dateTime .CreatedAt}}</td>
+    <td class="nowrap">{{if not .Deleted}}<details class="inline-editor"><summary class="row-action">处置</summary><form method="post" action="/admin/comments/{{.ID}}"><input type="hidden" name="return_to" value="{{$.ReturnTo}}"><label><span>理由（隐藏必填）</span><textarea name="note" rows="3" data-required-for="hide" placeholder="说明依据"></textarea></label><div class="actions"><button class="filled-button" name="action" value="approve">放行</button><button class="outlined-button danger" name="action" value="hide">隐藏</button></div></form></details>{{end}}</td>
+  </tr>{{else}}<tr><td class="table-empty" colspan="7">没有符合筛选条件的评论</td></tr>{{end}}
+  </tbody></table></div>
+{{template "pagination" .}}
+</section>
+<div class="content-grid">
+  <section class="panel"><div class="section-header"><div><h2>审核提示词</h2><p>决定 AI 初判的口径，改动立即对新评论生效</p></div></div><form method="post" action="/admin/comments/prompt"><label><span>提示词</span><textarea name="prompt" rows="12" required>{{.Prompt}}</textarea></label><div class="actions"><button class="filled-button" type="submit">保存</button></div></form></section>
+  <section class="panel"><div class="section-header"><div><h2>测试台</h2><p>用当前提示词测试任意文本</p></div></div><form method="post" action="/admin/comments/test"><label><span>测试内容</span><textarea name="text" rows="8" required>{{.TestText}}</textarea></label><div class="actions"><button class="filled-button" type="submit">运行审核</button></div></form>{{if .TestResult}}<h3>原始 JSON</h3><pre class="diagnostic">{{.TestResult}}</pre>{{end}}</section>
+</div>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_reports"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>举报</h1><p>受理资源与评论举报并同步处理结果</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+<nav class="subtabs"><a class="active" href="/admin/reports">举报</a><a href="/admin/feedback">全部反馈</a></nav>
+{{if .Action}}<div class="notice success toast-notice" data-toast>举报处理状态已更新</div>{{end}}
+<form class="filter-bar" method="get" action="/admin/reports">
+  <label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标资源"></label>
+  <label><span>来源</span><input name="source" value="{{.Query.TargetSource}}" placeholder="oronbox"></label>
+  <label><span>状态</span><select name="status"><option value="">全部</option><option value="open" {{if eqs .Query.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Query.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Query.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Query.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Query.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Query.Status "closed"}}selected{{end}}>已关闭</option></select></label>
+  <div class="filter-actions"><button class="filled-button">应用筛选</button><a class="text-link filter-reset" href="/admin/reports">清除</a></div>
+</form>
+<div class="ticket-list">
+{{range .Items}}
+<article class="ticket-card">
+  <header><div><div class="title-line"><span class="status danger">{{kindLabel .Kind}}</span><h2><a class="resource-name" href="/admin/reports/{{.ID}}?return_to={{urlquery $.ReturnTo}}">{{.Subject}}</a></h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header>
+  <p class="ticket-excerpt">{{.Message}}</p>
+  <div class="ticket-target">{{if .TargetSource}}{{targetLabel .TargetSource}} · {{end}}{{if .TargetID}}<code>{{.TargetID}}</code>{{else}}未关联资源{{end}}<a class="row-action" href="/admin/reports/{{.ID}}?return_to={{urlquery $.ReturnTo}}">查看并处理</a></div>
+</article>
+{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有举报</h2><p>当前筛选条件下没有举报记录</p></section>{{end}}
+</div>
+{{template "pagination" .}}
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_report_detail"}}
+{{template "admin_open" .}}
+<header class="page-header detail-header"><div><a class="back-link" href="{{.BackURL}}">← 返回筛选结果</a><div class="title-line"><span class="status {{if .IsReport}}danger{{else}}info{{end}}">{{kindLabel .Ticket.Kind}}</span><h1>{{.Ticket.Subject}}</h1></div><p>{{.Ticket.Username}} · {{dateTime .Ticket.CreatedAt}} · <code>{{.Ticket.ID}}</code></p></div><span class="status {{statusClass .Ticket.Status}}">{{statusLabel .Ticket.Status}}</span></header>
+{{if .Action}}<div class="notice success toast-notice" data-toast>{{if eqs .Action "internal_note"}}内部备注已保存{{else if eqs .Action "status"}}状态已更新{{else}}用户可见回复已发送{{end}}</div>{{end}}
+<div class="content-grid detail-grid">
+  <section class="panel span-2"><div class="section-header"><div><h2>用户提交内容</h2></div></div><div class="ticket-message">{{.Ticket.Message}}</div><dl class="target-box">{{if .Ticket.TargetSource}}<div><dt>来源</dt><dd>{{targetLabel .Ticket.TargetSource}}</dd></div>{{end}}{{if .Ticket.TargetID}}<div><dt>目标 ID</dt><dd><code>{{.Ticket.TargetID}}</code></dd></div>{{end}}{{with safeURL .Ticket.TargetURL}}<div><dt>目标链接</dt><dd><a href="{{.}}" target="_blank" rel="noopener noreferrer">{{.}} ↗</a></dd></div>{{end}}</dl></section>
+  <section class="panel"><div class="section-header"><div><h2>目标快照</h2><p>提交时固化，目标后续修改或删除也保留</p></div></div><dl class="settings compact">{{with .Detail.TargetSnapshot}}{{if .Kind}}<dt>类型</dt><dd>{{.Kind}}</dd>{{end}}{{if .Title}}<dt>标题</dt><dd>{{.Title}}</dd>{{end}}{{if .Body}}<dt>内容</dt><dd>{{.Body}}</dd>{{end}}{{if .Owner}}<dt>作者</dt><dd>{{.Owner}}</dd>{{end}}{{if .State}}<dt>当时状态</dt><dd>{{statusLabel .State}}</dd>{{end}}{{if .ID}}<dt>目标</dt><dd><code>{{.ID}}</code></dd>{{end}}{{with safeURL .URL}}<dt>链接</dt><dd><a href="{{.}}" target="_blank" rel="noopener noreferrer">打开 ↗</a></dd>{{end}}{{else}}<dd>无目标快照</dd>{{end}}</dl></section>
+  <section class="panel"><div class="section-header"><div><h2>状态时间线</h2></div></div><div class="reply-thread">{{range .Detail.StatusHistory}}<article><div><strong>{{if .FromStatus}}{{statusLabel .FromStatus}} → {{end}}{{statusLabel .ToStatus}}</strong><time>{{dateTime .CreatedAt}}</time></div><p>{{.Actor}}</p></article>{{else}}<p class="muted">暂无状态记录</p>{{end}}</div></section>
+  <section class="panel"><div class="section-header"><div><h2>公开回复</h2><p>以下内容全部对提交用户可见</p></div></div><div class="reply-thread">{{range .Ticket.Replies}}<article><div><strong>{{.Author}}</strong><time>{{dateTime .CreatedAt}}</time></div><p>{{.Message}}</p></article>{{else}}<p class="muted">尚未公开回复</p>{{end}}</div><form method="post" action="{{if .IsReport}}/admin/reports/{{else}}/admin/feedback/{{end}}{{.Ticket.ID}}" class="reply-form"><input type="hidden" name="action" value="public_reply"><input type="hidden" name="return_to" value="{{.ReturnTo}}"><label><span>发送用户可见回复</span><textarea name="message" rows="4" required maxlength="10000"></textarea></label><button class="filled-button" type="submit">发送回复</button></form></section>
+  <section class="panel"><div class="section-header"><div><h2>内部备注</h2><p>仅后台人员可见，不发送给用户</p></div></div><div class="reply-thread">{{range .Detail.InternalNotes}}<article><div><strong>{{.Author}}</strong><time>{{dateTime .CreatedAt}}</time></div><p>{{.Message}}</p></article>{{else}}<p class="muted">暂无内部备注</p>{{end}}</div><form method="post" action="{{if .IsReport}}/admin/reports/{{else}}/admin/feedback/{{end}}{{.Ticket.ID}}" class="reply-form"><input type="hidden" name="action" value="internal_note"><input type="hidden" name="return_to" value="{{.ReturnTo}}"><label><span>新增内部备注</span><textarea name="internal_note" rows="4" required maxlength="10000"></textarea></label><button class="outlined-button" type="submit">保存内部备注</button></form></section>
+  <section class="panel span-2"><div class="section-header"><div><h2>变更处理状态</h2><p>状态变化会进入永久时间线；举报状态变化仍按现有规则通知用户</p></div></div><form method="post" action="{{if .IsReport}}/admin/reports/{{else}}/admin/feedback/{{end}}{{.Ticket.ID}}" class="report-form"><input type="hidden" name="action" value="status"><input type="hidden" name="return_to" value="{{.ReturnTo}}"><label><span>处理状态</span><select name="status"><option value="open" {{if eqs .Ticket.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Ticket.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Ticket.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Ticket.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Ticket.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Ticket.Status "closed"}}selected{{end}}>已关闭</option></select></label><div class="actions"><button class="filled-button" type="submit">更新状态</button></div></form></section>
+</div>
+{{template "admin_close" .}}
+{{end}}
+
+{{define "admin_feedback"}}
+{{template "admin_open" .}}
+<header class="page-header"><div><h1>举报与反馈</h1><p>查看全部资源举报、评论举报和用户意见</p></div><span class="count-badge">{{.Page.Total}} 项</span></header>
+<nav class="subtabs"><a href="/admin/reports">举报</a><a class="active" href="/admin/feedback">全部反馈</a></nav>
+{{if .Replied}}<div class="notice success toast-notice" data-toast>答复已发送</div>{{end}}
+<form class="filter-bar" method="get" action="/admin/feedback"><label class="search-field"><span>搜索</span><input name="q" value="{{.Query.Search}}" placeholder="主题、用户名、内容或目标"></label><label><span>类型</span><select name="kind"><option value="">全部</option><option value="reports" {{if eqs .Query.Kind "reports"}}selected{{end}}>全部举报</option><option value="resource_report" {{if eqs .Query.Kind "resource_report"}}selected{{end}}>资源举报</option><option value="comment_report" {{if eqs .Query.Kind "comment_report"}}selected{{end}}>评论举报</option><option value="feedback" {{if eqs .Query.Kind "feedback"}}selected{{end}}>意见反馈</option></select></label><label><span>来源</span><input name="source" value="{{.Query.TargetSource}}" placeholder="oronbox"></label><label><span>状态</span><select name="status"><option value="">全部</option><option value="open" {{if eqs .Query.Status "open"}}selected{{end}}>待处理</option><option value="investigating" {{if eqs .Query.Status "investigating"}}selected{{end}}>处理中</option><option value="replied" {{if eqs .Query.Status "replied"}}selected{{end}}>已回复</option><option value="resolved" {{if eqs .Query.Status "resolved"}}selected{{end}}>已解决</option><option value="dismissed" {{if eqs .Query.Status "dismissed"}}selected{{end}}>已驳回</option><option value="closed" {{if eqs .Query.Status "closed"}}selected{{end}}>已关闭</option></select></label><div class="filter-actions"><button class="filled-button">应用筛选</button><a class="text-link filter-reset" href="/admin/feedback">清除</a></div></form>
+<div class="ticket-list">{{range .Items}}<article class="ticket-card"><header><div><div class="title-line"><span class="status {{if reportKind .Kind}}danger{{else}}info{{end}}">{{kindLabel .Kind}}</span><h2><a class="resource-name" href="{{if reportKind .Kind}}/admin/reports/{{else}}/admin/feedback/{{end}}{{.ID}}?return_to={{urlquery $.ReturnTo}}">{{.Subject}}</a></h2></div><p class="ticket-meta">{{.Username}} · {{dateTime .CreatedAt}} · <code>{{.ID}}</code></p></div><span class="status {{statusClass .Status}}">{{statusLabel .Status}}</span></header><div class="ticket-message">{{.Message}}</div><div class="ticket-target">{{if .TargetSource}}{{targetLabel .TargetSource}} · {{end}}{{if .TargetID}}<code>{{.TargetID}}</code>{{end}}<a class="row-action" href="{{if reportKind .Kind}}/admin/reports/{{else}}/admin/feedback/{{end}}{{.ID}}?return_to={{urlquery $.ReturnTo}}">查看完整处理记录</a></div></article>{{else}}<section class="empty-state"><div class="empty-mark">✓</div><h2>没有反馈</h2><p>当前筛选条件下没有记录</p></section>{{end}}</div>
+{{template "pagination" .}}
+{{template "admin_close" .}}
+{{end}}

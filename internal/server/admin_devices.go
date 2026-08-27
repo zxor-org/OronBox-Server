@@ -19,7 +19,7 @@ func (a *App) handleAdminDevices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_devices", map[string]any{
+	a.render(w, r, "admin_devices", map[string]any{
 		"Title": "设备目录", "Items": page.Items, "Page": page, "Query": page.Query,
 		"Pager": web.NewPagination("/admin/devices", r.URL.Query(), page.Page, page.PerPage, page.Total),
 	})
@@ -40,13 +40,13 @@ func (a *App) handleAdminDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_device_detail", map[string]any{
+	a.render(w, r, "admin_device_detail", map[string]any{
 		"Title": item.DisplayName, "Item": item, "Resources": resources.Items, "Action": r.URL.Query().Get("action"),
 	})
 }
 
 func (a *App) handleAdminDeviceNew(w http.ResponseWriter, r *http.Request) {
-	a.render(w, "admin_device_detail", map[string]any{
+	a.render(w, r, "admin_device_detail", map[string]any{
 		"Title": "新增设备", "Item": store.AdminDeviceItem{Enabled: true}, "Resources": []store.AdminResourceItem{}, "New": true,
 	})
 }

@@ -208,6 +208,39 @@ func TestReviewItemsDropsBlankLinesAndNormalizesCRLF(t *testing.T) {
 	}
 }
 
+func TestMergeReviewItemsDedupesCheckedAndExtras(t *testing.T) {
+	t.Parallel()
+	got := mergeReviewItems([]string{"图片齐全", " 图片齐全 ", "设备匹配"}, []string{"设备匹配\n", "补充说明", ""})
+	want := []string{"图片齐全", "设备匹配", "补充说明"}
+	if len(got) != len(want) {
+		t.Fatalf("mergeReviewItems() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("mergeReviewItems()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestReviewChecklistFromFormMergesCheckboxesAndTextarea(t *testing.T) {
+	t.Parallel()
+	r := httptest.NewRequest(http.MethodPost, "/admin/review/r1/checklist", strings.NewReader("item="+url.QueryEscape("图片齐全")+"&item="+url.QueryEscape("设备匹配")+"&items="+url.QueryEscape("设备匹配\n补充说明")))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := r.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	got := reviewChecklistFromForm(r)
+	want := []string{"图片齐全", "设备匹配", "补充说明"}
+	if len(got) != len(want) {
+		t.Fatalf("reviewChecklistFromForm() = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reviewChecklistFromForm()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestAdminReviewReturnOnlyAllowsReviewList(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct{ value, want string }{

@@ -134,16 +134,24 @@ func (a *App) handleAdminComments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_comments", map[string]any{
-		"Title": "评论管理", "Items": result.Items, "Total": result.Total, "Page": result.Page, "PerPage": result.PerPage, "Query": result.Query,
+	a.render(w, r, "admin_comments", map[string]any{
+		"Title": "评论审核", "Items": result.Items, "Total": result.Total, "Page": result.Page, "PerPage": result.PerPage, "Query": result.Query,
 		"Pager": web.NewPagination("/admin/comments", r.URL.Query(), result.Page, result.PerPage, result.Total), "Prompt": prompt,
+		"ReturnTo": r.URL.RequestURI(), "BulkDone": r.URL.Query().Get("bulk") != "",
 	})
 }
 
 func (a *App) handleAdminCommentDecision(w http.ResponseWriter, r *http.Request) {
-	action := strings.TrimSpace(r.FormValue("action"))
-	err := a.store.AdminModerateComment(r.Context(), r.PathValue("comment"), action)
 	actor := currentAdmin(r)
+	action, note := strings.TrimSpace(r.FormValue("action")), strings.TrimSpace(r.FormValue("note"))
+	// Hiding is the destructive direction, so it carries the same mandatory
+	// reason here as in the batch path. Otherwise the batch rule would just be
+	// a suggestion anyone could sidestep one comment at a time.
+	if action == "hide" && note == "" {
+		http.Error(w, "隐藏评论必须填写理由，处理记录需要说明依据", http.StatusBadRequest)
+		return
+	}
+	err := a.store.AdminModerateComment(r.Context(), r.PathValue("comment"), action, actor.UserID, note)
 	result := "success"
 	if err != nil {
 		result = "failure"
@@ -153,7 +161,48 @@ func (a *App) handleAdminCommentDecision(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	http.Redirect(w, r, "/admin/comments", http.StatusFound)
+	http.Redirect(w, r, adminCommentReturn(r), http.StatusFound)
+}
+
+// handleAdminCommentBulk mirrors the review queue: one decision, many comments,
+// all or nothing. Hiding is destructive from the author's point of view, so it
+// carries the same mandatory reason the individual action does.
+func (a *App) handleAdminCommentBulk(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	actor := currentAdmin(r)
+	action, note := r.FormValue("bulk_action"), strings.TrimSpace(r.FormValue("note"))
+	if action == "hide" && note == "" {
+		http.Error(w, "批量隐藏必须填写理由，处理记录需要说明依据", http.StatusBadRequest)
+		return
+	}
+	ids := r.Form["comment_ids"]
+	err := a.store.AdminModerateCommentsBatch(r.Context(), ids, action, actor.UserID, note)
+	if err != nil {
+		_ = a.store.RecordAudit(r.Context(), actor, "comment.bulk."+action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
+		http.Error(w, "批量操作已拒绝，未修改任何评论："+err.Error(), http.StatusConflict)
+		return
+	}
+	_ = a.store.RecordAudit(r.Context(), actor, "comment.bulk."+action, "success", a.clientIP(r), r.UserAgent(), strings.Join(ids, ","))
+	returnTo := adminCommentReturn(r)
+	separator := "?"
+	if strings.Contains(returnTo, "?") {
+		separator = "&"
+	}
+	http.Redirect(w, r, returnTo+separator+"bulk=1", http.StatusFound)
+}
+
+// adminCommentReturn keeps the operator on the filtered page they acted from,
+// but only ever within the comment console, so the redirect target cannot be
+// steered somewhere else by a crafted form.
+func adminCommentReturn(r *http.Request) string {
+	target := strings.TrimSpace(r.FormValue("return_to"))
+	if strings.HasPrefix(target, "/admin/comments") && !strings.HasPrefix(target, "//") {
+		return target
+	}
+	return "/admin/comments"
 }
 
 func (a *App) handleAdminModerationPrompt(w http.ResponseWriter, r *http.Request) {
@@ -194,5 +243,5 @@ func (a *App) handleAdminModerationTest(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, listErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.render(w, "admin_comments", map[string]any{"Title": "评论管理", "Items": commentPage.Items, "Total": commentPage.Total, "Page": page, "Prompt": prompt, "TestText": text, "TestResult": result})
+	a.render(w, r, "admin_comments", map[string]any{"Title": "评论管理", "Items": commentPage.Items, "Total": commentPage.Total, "Page": page, "Prompt": prompt, "TestText": text, "TestResult": result})
 }

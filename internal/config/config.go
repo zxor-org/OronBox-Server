@@ -98,6 +98,13 @@ type LimitsConfig struct {
 	DownloadRatePerMin int
 	DownloadDailyLimit int
 	DownloadPresignTTL time.Duration
+	// Credential endpoints (ticket exchange and session refresh) are capped
+	// per client IP. The attempt ceiling stays generous so shared NAT egress
+	// keeps working, while the failure budget is what actually stops online
+	// guessing.
+	AuthRatePerMin    int
+	AuthFailureBurst  int
+	AuthFailureWindow time.Duration
 }
 
 type AdminConfig struct {
@@ -173,6 +180,9 @@ func Load() Config {
 			DownloadRatePerMin: int(int64Env("DOWNLOAD_RATE_PER_MINUTE", 30)),
 			DownloadDailyLimit: int(int64Env("DOWNLOAD_DAILY_LIMIT", 200)),
 			DownloadPresignTTL: durationEnv("DOWNLOAD_PRESIGN_TTL", 10*time.Minute),
+			AuthRatePerMin:     int(int64Env("AUTH_RATE_PER_MINUTE", 120)),
+			AuthFailureBurst:   int(int64Env("AUTH_FAILURE_BURST", 20)),
+			AuthFailureWindow:  durationEnv("AUTH_FAILURE_WINDOW", 15*time.Minute),
 		},
 		ClientRedirectURI: env("CLIENT_REDIRECT_URI", "oronbox://oauth/bandbbs"),
 		WebClientOrigins:  stringListEnv("WEB_CLIENT_ORIGINS"),
@@ -239,9 +249,20 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("WEB_CLIENT_ORIGINS must contain explicit trusted origins in production"))
 	}
 	for _, value := range c.TrustedProxyCIDRs {
-		if _, _, err := net.ParseCIDR(value); err != nil {
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", value))
+			continue
 		}
+		// A trusted range decides whether forwarding headers may override the
+		// peer address. Anything close to "the whole internet" turns client IP
+		// into an attacker-controlled value for rate limits and audit records.
+		if c.RunningProduction() && overlyBroadProxyRange(network) {
+			errs = append(errs, fmt.Errorf("TRUSTED_PROXY_CIDRS entry %q is too broad to trust in production", value))
+		}
+	}
+	if c.Limits.AuthRatePerMin <= 0 || c.Limits.AuthFailureBurst <= 0 || c.Limits.AuthFailureWindow <= 0 {
+		errs = append(errs, errors.New("authentication rate limits must be positive"))
 	}
 
 	if c.GitHub.ClientID != "" && (c.GitHub.ClientSecret == "" || c.GitHub.RedirectURI == "") {
@@ -277,6 +298,27 @@ func int64ListEnv(key string) []int64 {
 }
 
 func (c Config) RunningProduction() bool { return c.Version != "dev" }
+
+// overlyBroadProxyRange rejects prefixes that cover more addresses than any
+// real reverse proxy fleet needs. The thresholds keep room for a /8 style
+// private range while refusing 0.0.0.0/0 and similar catch-all entries.
+func overlyBroadProxyRange(network *net.IPNet) bool {
+	ones, bits := network.Mask.Size()
+	if bits == 0 {
+		return true
+	}
+	if bits == 32 {
+		return ones < 8
+	}
+	return ones < 32
+}
+
+// ServesHTTPS reports whether the public entrypoint is HTTPS, which gates
+// strict transport security and secure cookies.
+func (c Config) ServesHTTPS() bool {
+	parsed, err := url.Parse(c.PublicURL)
+	return err == nil && strings.EqualFold(parsed.Scheme, "https")
+}
 
 func ParseScopes(input string) []string {
 	scopes := strings.Fields(input)

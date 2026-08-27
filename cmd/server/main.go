@@ -34,6 +34,15 @@ func main() {
 		log.Error("configuration validation failed", "error", err)
 		os.Exit(1)
 	}
+	// The bootstrap admin list bypasses the users.role check, so which BandBBS
+	// accounts it covers has to be visible in the startup record rather than
+	// only in whoever's shell set the variable.
+	log.Info("admin access configured",
+		"bootstrap_bandbbs_user_ids", cfg.Admin.BandBBSUserIDs,
+		"public_url", cfg.PublicURL,
+		"https", cfg.ServesHTTPS(),
+		"trusted_proxy_cidrs", cfg.TrustedProxyCIDRs,
+	)
 
 	db, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -99,7 +108,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           observability.HTTP(server.CORS(cfg.WebClientOrigins, server.SecurityHeaders(app.Routes()))),
+		Handler:           observability.HTTP(server.CORS(cfg.WebClientOrigins, server.SecurityHeaders(cfg, app.Routes()))),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       10 * time.Minute,
 		WriteTimeout:      10 * time.Minute,

@@ -87,15 +87,30 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hiddenReplyMessages int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE ref=$1`, hiddenReply.ID).Scan(&hiddenReplyMessages); err != nil {
+	var hiddenReplyMessages, hiddenModerationMessages int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE ref=$1 AND kind='comment_reply'`, hiddenReply.ID).Scan(&hiddenReplyMessages); err != nil {
 		t.Fatal(err)
 	}
 	if hiddenReplyMessages != 0 {
-		t.Fatalf("hidden reply messages = %d, want 0", hiddenReplyMessages)
+		t.Fatalf("hidden reply parent notifications = %d, want 0 until the reply is visible", hiddenReplyMessages)
 	}
-	if err := s.AdminModerateComment(ctx, hiddenReply.ID, "approve"); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE ref=$1 AND kind='moderation'`, hiddenReply.ID).Scan(&hiddenModerationMessages); err != nil {
 		t.Fatal(err)
+	}
+	if hiddenModerationMessages != 1 {
+		t.Fatalf("hidden reply author notifications = %d, want 1 so automated hides are not silent", hiddenModerationMessages)
+	}
+	if err := s.AdminModerateComment(ctx, hiddenReply.ID, "approve", replierID, "复核后确认无问题"); err != nil {
+		t.Fatal(err)
+	}
+	// A moderation decision has to name the person who made it and why, so a
+	// disputed removal can be traced to someone rather than to "the system".
+	var decidedBy, decidedNote string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(human_reviewer_id::text,''),human_note FROM comment_moderation WHERE comment_id=$1`, hiddenReply.ID).Scan(&decidedBy, &decidedNote); err != nil {
+		t.Fatal(err)
+	}
+	if decidedBy != replierID || decidedNote != "复核后确认无问题" {
+		t.Fatalf("moderation decision recorded reviewer %q note %q, want the acting admin and their reason", decidedBy, decidedNote)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE ref=$1 AND kind='comment_reply'`, hiddenReply.ID).Scan(&hiddenReplyMessages); err != nil {
 		t.Fatal(err)

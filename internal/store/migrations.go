@@ -6,33 +6,107 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 5
+const schemaVersion int64 = 6
 
-const notificationSchema = `
-CREATE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
+// governanceSchema holds the moderation tables introduced in schema v6. It is
+// shared by the fresh install and the upgrade path so the two cannot drift.
+const governanceSchema = `
+CREATE TABLE review_case_events (
+ id uuid PRIMARY KEY, case_id uuid NOT NULL REFERENCES review_cases(id) ON DELETE CASCADE,
+ actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+ event text NOT NULL CHECK (event IN ('assigned','unassigned','checklist_saved','approved','rejected','reopened','priority_changed','appeal_opened','appeal_resolved','note')),
+ note text NOT NULL DEFAULT '', checklist jsonb NOT NULL DEFAULT '[]', detail jsonb NOT NULL DEFAULT '{}',
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX review_case_events_case_idx ON review_case_events(case_id,created_at,id);
+CREATE INDEX review_case_events_actor_idx ON review_case_events(actor_id,created_at DESC);
+CREATE FUNCTION prevent_review_case_event_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'review case history is immutable'; END $$;
+CREATE TRIGGER review_case_events_immutable BEFORE UPDATE ON review_case_events FOR EACH ROW EXECUTE FUNCTION prevent_review_case_event_update();
+CREATE TABLE review_appeals (
+ id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ subject_type text NOT NULL CHECK (subject_type IN ('resource_review','resource_moderation','comment_moderation','plugin_review','collection_review','account')),
+ subject_id text NOT NULL CHECK (subject_id<>''),
+ review_case_id uuid REFERENCES review_cases(id) ON DELETE SET NULL,
+ plugin_version_id uuid REFERENCES plugin_versions(id) ON DELETE SET NULL,
+ comment_id uuid REFERENCES resource_comments(id) ON DELETE SET NULL,
+ message text NOT NULL CHECK (char_length(message) BETWEEN 1 AND 4000),
+ status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','reviewing','upheld','overturned','dismissed')),
+ resolution text NOT NULL DEFAULT '',
+ handled_by uuid REFERENCES users(id) ON DELETE SET NULL, handled_at timestamptz,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX review_appeals_queue_idx ON review_appeals(status,created_at,id);
+CREATE INDEX review_appeals_user_idx ON review_appeals(user_id,created_at DESC);
+-- One open appeal per decision. Without this a creator can reopen the same
+-- dispute repeatedly and bury the queue.
+CREATE UNIQUE INDEX review_appeals_open_unique_idx ON review_appeals(subject_type,subject_id) WHERE status IN ('open','reviewing');
+CREATE TABLE moderation_reason_templates (
+ id uuid PRIMARY KEY,
+ scope text NOT NULL CHECK (scope IN ('resource_review','comment','plugin','collection','report','account')),
+ decision text NOT NULL DEFAULT '' CHECK (decision IN ('','approve','reject','hide','suspend','dismiss')),
+ title text NOT NULL CHECK (title<>''), body text NOT NULL CHECK (body<>''),
+ position integer NOT NULL DEFAULT 0, enabled boolean NOT NULL DEFAULT true,
+ created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+ created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(scope,title)
+);
+CREATE INDEX moderation_reason_templates_pick_idx ON moderation_reason_templates(scope,decision,position,id) WHERE enabled;
+`
+
+// reasonTemplateSeed gives the review console a usable starter library instead
+// of an empty selector on the first deploy.
+const reasonTemplateSeed = `
+INSERT INTO moderation_reason_templates(id,scope,decision,title,body,position) VALUES
+ (md5('tpl-resource-assets')::uuid,'resource_review','reject','素材不完整','截图或图标缺失、模糊，或与实际界面不一致，请补充清晰的预览素材后重新提交。',10),
+ (md5('tpl-resource-metadata')::uuid,'resource_review','reject','信息填写不规范','名称、简介或分类与资源实际内容不符，请按规范修改后重新提交。',20),
+ (md5('tpl-resource-package')::uuid,'resource_review','reject','安装包无法验证','安装包无法在目标设备上正常安装或运行，请自测通过后重新提交。',30),
+ (md5('tpl-resource-copyright')::uuid,'resource_review','reject','版权与授权存疑','未能确认素材或代码的授权来源，请补充授权说明。',40),
+ (md5('tpl-comment-abuse')::uuid,'comment','hide','人身攻击或辱骂','评论包含攻击性言论，已按社区规范隐藏。',10),
+ (md5('tpl-comment-spam')::uuid,'comment','hide','垃圾信息或引流','评论包含广告、外链引流或重复刷屏内容。',20),
+ (md5('tpl-plugin-permission')::uuid,'plugin','reject','权限申请超出功能需要','插件申请的权限明显超出其描述的功能范围，请精简后重新提交。',10),
+ (md5('tpl-collection-scope')::uuid,'collection','reject','合集内容不成主题','合集内资源缺乏一致主题，请调整后重新提交。',10),
+ (md5('tpl-report-nonissue')::uuid,'report','dismiss','未发现违规','经核查未发现被举报内容违反社区规范。',10),
+ (md5('tpl-report-handled')::uuid,'report','','已处理','举报属实，相关内容已按社区规范处理，感谢反馈。',20)
+ON CONFLICT DO NOTHING;
+`
+
+// notificationFunctions is written with CREATE OR REPLACE so the upgrade path
+// can install the same definitions the fresh schema uses. Every message now
+// carries a stable machine-readable event name alongside the human copy, which
+// is what lets the client route a notification without parsing Chinese text.
+const notificationFunctions = `
+CREATE OR REPLACE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF NEW.parent_id IS NOT NULL AND NEW.moderation_state='visible' THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref)
-  SELECT md5(random()::text||clock_timestamp()::text)::uuid,parent.user_id,'comment_reply','评论收到回复',NEW.body,NEW.id::text
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref)
+  SELECT md5(random()::text||clock_timestamp()::text)::uuid,parent.user_id,'comment_reply','comment.replied',
+   jsonb_build_object('comment_id',NEW.id::text,'parent_id',NEW.parent_id::text,'resource_id',NEW.resource_id::text),
+   '评论收到回复',NEW.body,NEW.id::text
   FROM resource_comments parent WHERE parent.id=NEW.parent_id AND parent.user_id<>NEW.user_id;
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER resource_comments_reply_message AFTER INSERT ON resource_comments FOR EACH ROW EXECUTE FUNCTION notify_comment_reply();
-CREATE TRIGGER resource_comments_approved_reply_message AFTER UPDATE OF moderation_state ON resource_comments FOR EACH ROW WHEN (OLD.moderation_state='hidden' AND NEW.moderation_state='visible') EXECUTE FUNCTION notify_comment_reply();
-CREATE FUNCTION notify_comment_hidden() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION notify_comment_hidden() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF OLD.moderation_state<>NEW.moderation_state AND NEW.moderation_state='hidden' THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'moderation','评论已被隐藏','你的评论经人工复审后已被隐藏',NEW.id::text);
+ -- Also fires on INSERT: automated moderation can store a comment as hidden
+ -- from the start, and the author was never told about those.
+ IF NEW.moderation_state='hidden' AND (TG_OP='INSERT' OR OLD.moderation_state<>NEW.moderation_state) THEN
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'moderation','comment.hidden',
+   jsonb_build_object('comment_id',NEW.id::text,'resource_id',NEW.resource_id::text,'automated',TG_OP='INSERT'),
+   '评论已被隐藏',
+   CASE WHEN TG_OP='INSERT' THEN '你的评论未通过内容审核，暂时不可见，可在消息中发起申诉' ELSE '你的评论经人工复审后已被隐藏' END,
+   NEW.id::text);
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER resource_comments_hidden_message AFTER UPDATE OF moderation_state ON resource_comments FOR EACH ROW EXECUTE FUNCTION notify_comment_hidden();
-CREATE FUNCTION notify_review_result() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION notify_review_result() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF OLD.state<>NEW.state AND NEW.state IN ('approved','rejected') THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref)
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref)
   SELECT md5(random()::text||clock_timestamp()::text)::uuid,resource.owner_id,'review_result',
+   CASE NEW.state WHEN 'approved' THEN 'review.approved' ELSE 'review.rejected' END,
+   jsonb_build_object('resource_id',resource.id::text,'revision_id',NEW.revision_id::text,'review_case_id',NEW.id::text,'note',NEW.note),
    CASE NEW.state WHEN 'approved' THEN '资源审核已通过' ELSE '资源审核未通过' END,
    CASE NEW.state WHEN 'approved' THEN '你的资源版本已通过审核' ELSE '你的资源版本需要修改'||CASE WHEN NEW.note='' THEN '' ELSE '：'||NEW.note END END,
    NEW.revision_id::text
@@ -40,40 +114,116 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER review_cases_result_message AFTER UPDATE OF state ON review_cases FOR EACH ROW EXECUTE FUNCTION notify_review_result();
-CREATE FUNCTION notify_resource_moderation() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION notify_resource_moderation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF OLD.moderation_state<>NEW.moderation_state AND (NEW.moderation_by='admin' OR OLD.moderation_by='admin') THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.owner_id,'moderation',
+   CASE NEW.moderation_state WHEN 'suspended' THEN 'resource.suspended' WHEN 'frozen' THEN 'resource.frozen' WHEN 'deleted' THEN 'resource.deleted' ELSE 'resource.restored' END,
+   jsonb_build_object('resource_id',NEW.id::text,'state',NEW.moderation_state,'reason',COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason)),
    CASE NEW.moderation_state WHEN 'suspended' THEN '资源已下架' WHEN 'frozen' THEN '资源已冻结' ELSE '资源已恢复' END,
    CASE NEW.moderation_state WHEN 'suspended' THEN '资源已下架' WHEN 'frozen' THEN '资源已冻结' ELSE '资源已恢复' END||CASE WHEN COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason)='' THEN '' ELSE '：'||COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason) END,
    NEW.id::text);
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER resources_moderation_message AFTER UPDATE OF moderation_state ON resources FOR EACH ROW EXECUTE FUNCTION notify_resource_moderation();
-CREATE FUNCTION notify_report_result() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION notify_report_result() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF NEW.kind IN ('resource_report','comment_report') AND OLD.status<>NEW.status THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','举报处理结果',CASE WHEN NEW.resolution='' THEN '举报处理状态已更新为 '||NEW.status ELSE NEW.resolution END,NEW.id::text);
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','report.updated',
+   jsonb_build_object('ticket_id',NEW.id::text,'status',NEW.status,'resolution',NEW.resolution),
+   '举报处理结果',CASE WHEN NEW.resolution='' THEN '举报处理状态已更新为 '||NEW.status ELSE NEW.resolution END,NEW.id::text);
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER feedback_report_result_message AFTER UPDATE OF status ON feedback_tickets FOR EACH ROW EXECUTE FUNCTION notify_report_result();
-CREATE FUNCTION notify_plugin_moderation() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION notify_plugin_moderation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF OLD.state<>NEW.state AND NEW.state<>'pending' THEN
-  INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.uploader_id,'moderation',
+   CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN 'plugin.approved' ELSE 'plugin.relisted' END WHEN 'rejected' THEN 'plugin.rejected' ELSE 'plugin.delisted' END,
+   jsonb_build_object('plugin_id',NEW.id,'state',NEW.state,'reason',NEW.moderation_reason),
    CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '插件审核已通过' ELSE '插件已恢复上架' END WHEN 'rejected' THEN '插件审核未通过' ELSE '插件已被下架' END,
    CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '你上传的插件已通过审核并上架' ELSE '你上传的插件已恢复上架' END WHEN 'rejected' THEN '你上传的插件未通过审核' ELSE '你上传的插件已被管理员下架' END||CASE WHEN NEW.moderation_reason='' THEN '' ELSE '：'||NEW.moderation_reason END,
    NEW.id);
  END IF;
  RETURN NEW;
 END $$;
-CREATE TRIGGER plugins_moderation_message AFTER UPDATE OF state ON plugins FOR EACH ROW EXECUTE FUNCTION notify_plugin_moderation();
+CREATE OR REPLACE FUNCTION notify_collection_review_result() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.state<>NEW.state AND NEW.state IN ('approved','rejected') THEN
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref)
+  SELECT md5(random()::text||clock_timestamp()::text)::uuid,collection.owner_id,'review_result',
+   CASE NEW.state WHEN 'approved' THEN 'collection.approved' ELSE 'collection.rejected' END,
+   jsonb_build_object('collection_id',collection.id::text,'revision_id',NEW.id::text,'note',NEW.review_note),
+   CASE NEW.state WHEN 'approved' THEN '合集审核已通过' ELSE '合集审核未通过' END,
+   CASE NEW.state WHEN 'approved' THEN '你的合集已通过审核' ELSE '你的合集需要修改'||CASE WHEN NEW.review_note='' THEN '' ELSE '：'||NEW.review_note END END,
+   NEW.id::text
+  FROM resource_collections collection WHERE collection.id=NEW.collection_id;
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION notify_coin_adjustment() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.kind IN ('admin_adjustment','reversal') THEN
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'account',
+   CASE NEW.kind WHEN 'reversal' THEN 'coin.reversed' ELSE 'coin.adjusted' END,
+   jsonb_build_object('ledger_id',NEW.id::text,'delta_units',NEW.delta_units,'kind',NEW.kind,'reference_type',NEW.reference_type,'reference_id',NEW.reference_id,'note',NEW.note),
+   CASE WHEN NEW.kind='reversal' THEN '硬币记录已冲正' WHEN NEW.delta_units>0 THEN '硬币已到账' ELSE '硬币已扣除' END,
+   CASE WHEN NEW.delta_units>0 THEN '账户增加了 '||NEW.delta_units||' 枚硬币' ELSE '账户扣除了 '||abs(NEW.delta_units)||' 枚硬币' END||CASE WHEN NEW.note='' THEN '' ELSE '：'||NEW.note END,
+   NEW.id::text);
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION notify_coin_vote_invalidated() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.invalidated_at IS NULL AND NEW.invalidated_at IS NOT NULL THEN
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'account','coin.vote_revoked',
+   jsonb_build_object('resource_id',NEW.resource_id::text,'coins',NEW.coins,'reason',NEW.invalidation_reason),
+   '投币已作废','你对该资源的投币已被管理员作废'||CASE WHEN NEW.invalidation_reason='' THEN '' ELSE '：'||NEW.invalidation_reason END,
+   NEW.resource_id::text);
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION notify_appeal_result() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.status<>NEW.status AND NEW.status IN ('upheld','overturned','dismissed') THEN
+  INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
+   md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','appeal.'||NEW.status,
+   jsonb_build_object('appeal_id',NEW.id::text,'subject_type',NEW.subject_type,'subject_id',NEW.subject_id,'status',NEW.status,'resolution',NEW.resolution),
+   CASE NEW.status WHEN 'overturned' THEN '申诉已受理' WHEN 'upheld' THEN '申诉未改变原结果' ELSE '申诉已驳回' END,
+   CASE WHEN NEW.resolution<>'' THEN NEW.resolution WHEN NEW.status='overturned' THEN '管理员已撤销原处理结果' WHEN NEW.status='upheld' THEN '复核后维持原处理结果' ELSE '申诉未被受理' END,
+   NEW.id::text);
+ END IF;
+ RETURN NEW;
+END $$;
 `
+
+// notificationTriggers is install-only. Upgrades keep their existing triggers,
+// which pick up the replaced function bodies automatically, and add just the
+// ones listed in notificationTriggersV6.
+const notificationTriggers = `
+CREATE TRIGGER resource_comments_reply_message AFTER INSERT ON resource_comments FOR EACH ROW EXECUTE FUNCTION notify_comment_reply();
+CREATE TRIGGER resource_comments_approved_reply_message AFTER UPDATE OF moderation_state ON resource_comments FOR EACH ROW WHEN (OLD.moderation_state='hidden' AND NEW.moderation_state='visible') EXECUTE FUNCTION notify_comment_reply();
+CREATE TRIGGER resource_comments_hidden_message AFTER UPDATE OF moderation_state ON resource_comments FOR EACH ROW EXECUTE FUNCTION notify_comment_hidden();
+CREATE TRIGGER review_cases_result_message AFTER UPDATE OF state ON review_cases FOR EACH ROW EXECUTE FUNCTION notify_review_result();
+CREATE TRIGGER resources_moderation_message AFTER UPDATE OF moderation_state ON resources FOR EACH ROW EXECUTE FUNCTION notify_resource_moderation();
+CREATE TRIGGER feedback_report_result_message AFTER UPDATE OF status ON feedback_tickets FOR EACH ROW EXECUTE FUNCTION notify_report_result();
+CREATE TRIGGER plugins_moderation_message AFTER UPDATE OF state ON plugins FOR EACH ROW EXECUTE FUNCTION notify_plugin_moderation();
+` + notificationTriggersV6
+
+const notificationTriggersV6 = `
+CREATE TRIGGER resource_comments_hidden_insert_message AFTER INSERT ON resource_comments FOR EACH ROW EXECUTE FUNCTION notify_comment_hidden();
+CREATE TRIGGER collection_revisions_result_message AFTER UPDATE OF state ON resource_collection_revisions FOR EACH ROW EXECUTE FUNCTION notify_collection_review_result();
+CREATE TRIGGER coin_ledger_adjustment_message AFTER INSERT ON coin_ledger FOR EACH ROW EXECUTE FUNCTION notify_coin_adjustment();
+CREATE TRIGGER resource_coin_votes_invalidated_message AFTER UPDATE OF invalidated_at ON resource_coin_votes FOR EACH ROW EXECUTE FUNCTION notify_coin_vote_invalidated();
+CREATE TRIGGER review_appeals_result_message AFTER UPDATE OF status ON review_appeals FOR EACH ROW EXECUTE FUNCTION notify_appeal_result();
+`
+
+const notificationSchema = notificationFunctions + notificationTriggers
 
 // Migrate installs the current schema into an empty database.
 func Migrate(ctx context.Context, db *sql.DB) error {
@@ -96,24 +246,24 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		if installedVersion.Int64 == schemaVersion {
 			return nil
 		}
-		if installedVersion.Int64 >= 1 && installedVersion.Int64 <= 4 {
-			if installedVersion.Int64 == 1 {
-				if err := migrateSchemaV2(ctx, tx); err != nil {
-					return fmt.Errorf("apply PostgreSQL schema v2: %w", err)
-				}
+		if installedVersion.Int64 >= 1 && installedVersion.Int64 < schemaVersion {
+			steps := []struct {
+				from  int64
+				apply func(context.Context, *sql.Tx) error
+			}{
+				{from: 1, apply: migrateSchemaV2},
+				{from: 2, apply: migrateSchemaV3},
+				{from: 3, apply: migrateSchemaV4},
+				{from: 4, apply: migrateSchemaV5},
+				{from: 5, apply: migrateSchemaV6},
 			}
-			if installedVersion.Int64 <= 2 {
-				if err := migrateSchemaV3(ctx, tx); err != nil {
-					return fmt.Errorf("apply PostgreSQL schema v3: %w", err)
+			for _, step := range steps {
+				if installedVersion.Int64 > step.from {
+					continue
 				}
-			}
-			if installedVersion.Int64 <= 3 {
-				if err := migrateSchemaV4(ctx, tx); err != nil {
-					return fmt.Errorf("apply PostgreSQL schema v4: %w", err)
+				if err := step.apply(ctx, tx); err != nil {
+					return fmt.Errorf("apply PostgreSQL schema v%d: %w", step.from+1, err)
 				}
-			}
-			if err := migrateSchemaV5(ctx, tx); err != nil {
-				return fmt.Errorf("apply PostgreSQL schema v5: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("commit PostgreSQL schema v%d: %w", schemaVersion, err)
@@ -368,8 +518,11 @@ CREATE TABLE review_cases (
  id uuid PRIMARY KEY, revision_id uuid NOT NULL UNIQUE REFERENCES resource_revisions(id) ON DELETE CASCADE,
  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','approved','rejected','superseded')),
  reviewer_id uuid REFERENCES users(id) ON DELETE SET NULL, note text NOT NULL DEFAULT '', items jsonb NOT NULL DEFAULT '[]',
+ priority smallint NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 3),
+ due_at timestamptz NOT NULL DEFAULT now()+interval '48 hours', first_submitted_at timestamptz NOT NULL DEFAULT now(),
  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX review_cases_queue_idx ON review_cases(state,priority DESC,due_at,created_at) WHERE state='pending';
 CREATE TABLE publications (
  id uuid PRIMARY KEY, revision_id uuid NOT NULL REFERENCES resource_revisions(id) ON DELETE CASCADE,
  target text NOT NULL CHECK (target IN ('oronbox','bandbbs','astrobox')),
@@ -472,15 +625,23 @@ CREATE TABLE comment_moderation (
  comment_id uuid PRIMARY KEY REFERENCES resource_comments(id) ON DELETE CASCADE,
  provider text NOT NULL, model text NOT NULL, action text NOT NULL,
  categories text[] NOT NULL DEFAULT '{}', reason text NOT NULL DEFAULT '', raw_response jsonb NOT NULL DEFAULT '{}',
- human_reviewed_at timestamptz, human_action text NOT NULL DEFAULT ''
+ human_reviewed_at timestamptz, human_action text NOT NULL DEFAULT '',
+ human_reviewer_id uuid REFERENCES users(id) ON DELETE SET NULL, human_note text NOT NULL DEFAULT '',
+ recheck_state text NOT NULL DEFAULT 'none' CHECK (recheck_state IN ('none','queued','in_review','done')),
+ recheck_requested_at timestamptz, recheck_requested_by uuid REFERENCES users(id) ON DELETE SET NULL
 );
+CREATE INDEX comment_moderation_queue_idx ON comment_moderation(recheck_state,recheck_requested_at) WHERE recheck_state IN ('queued','in_review');
 CREATE TABLE user_messages (
  id uuid PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
  kind text NOT NULL CHECK (kind IN ('review_result','moderation','comment_reply','report_result','admin_message','account','announcement')),
+ -- event and data are the machine-readable pair the client routes on. title
+ -- and body stay because released clients render them directly.
+ event text NOT NULL DEFAULT '', data jsonb NOT NULL DEFAULT '{}',
  title text NOT NULL, body text NOT NULL, ref text NOT NULL DEFAULT '', read_at timestamptz,
  created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL DEFAULT now()+interval '90 days'
 );
 CREATE INDEX user_messages_user_idx ON user_messages(user_id,created_at DESC);
+CREATE INDEX user_messages_event_idx ON user_messages(event,created_at DESC) WHERE event<>'';
 CREATE TABLE announcements (
  id uuid PRIMARY KEY, title text NOT NULL, body text NOT NULL, published_at timestamptz NOT NULL DEFAULT now(), created_by uuid REFERENCES users(id) ON DELETE SET NULL
 );
@@ -523,8 +684,14 @@ CREATE INDEX resource_coin_votes_recent_idx ON resource_coin_votes(resource_id,c
 	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("apply PostgreSQL schema v%d: %w", schemaVersion, err)
 	}
+	if _, err := tx.ExecContext(ctx, governanceSchema); err != nil {
+		return fmt.Errorf("install PostgreSQL moderation tables: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, notificationSchema); err != nil {
 		return fmt.Errorf("install PostgreSQL notification triggers: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, reasonTemplateSeed); err != nil {
+		return fmt.Errorf("seed moderation reason templates: %w", err)
 	}
 	if err := seedDevices(ctx, tx); err != nil {
 		return fmt.Errorf("seed supported devices: %w", err)
@@ -612,6 +779,51 @@ func migrateSchemaV5(ctx context.Context, tx *sql.Tx) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(5)`); err != nil {
 		return fmt.Errorf("record PostgreSQL schema v5: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV6(ctx context.Context, tx *sql.Tx) error {
+	// Additive on purpose. Released OronBox clients read title and body, so
+	// those stay and the structured pair is added beside them.
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE user_messages ADD COLUMN event text NOT NULL DEFAULT '', ADD COLUMN data jsonb NOT NULL DEFAULT '{}'; CREATE INDEX user_messages_event_idx ON user_messages(event,created_at DESC) WHERE event<>''`); err != nil {
+		return fmt.Errorf("add structured message fields: %w", err)
+	}
+	// Existing rows predate the taxonomy, so they get a namespaced marker
+	// rather than a guessed event a client would then mis-route.
+	if _, err := tx.ExecContext(ctx, `UPDATE user_messages SET event='legacy.'||kind WHERE event=''`); err != nil {
+		return fmt.Errorf("backfill message events: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE review_cases ADD COLUMN priority smallint NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 3), ADD COLUMN due_at timestamptz, ADD COLUMN first_submitted_at timestamptz`); err != nil {
+		return fmt.Errorf("add review case scheduling: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE review_cases SET first_submitted_at=created_at WHERE first_submitted_at IS NULL; UPDATE review_cases SET due_at=created_at+interval '48 hours' WHERE due_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill review case scheduling: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE review_cases
+ ALTER COLUMN first_submitted_at SET DEFAULT now(), ALTER COLUMN first_submitted_at SET NOT NULL,
+ ALTER COLUMN due_at SET DEFAULT now()+interval '48 hours', ALTER COLUMN due_at SET NOT NULL`); err != nil {
+		return fmt.Errorf("require review case scheduling: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX review_cases_queue_idx ON review_cases(state,priority DESC,due_at,created_at) WHERE state='pending'`); err != nil {
+		return fmt.Errorf("index the review queue: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE comment_moderation ADD COLUMN human_reviewer_id uuid REFERENCES users(id) ON DELETE SET NULL, ADD COLUMN human_note text NOT NULL DEFAULT '', ADD COLUMN recheck_state text NOT NULL DEFAULT 'none' CHECK (recheck_state IN ('none','queued','in_review','done')), ADD COLUMN recheck_requested_at timestamptz, ADD COLUMN recheck_requested_by uuid REFERENCES users(id) ON DELETE SET NULL; CREATE INDEX comment_moderation_queue_idx ON comment_moderation(recheck_state,recheck_requested_at) WHERE recheck_state IN ('queued','in_review')`); err != nil {
+		return fmt.Errorf("add comment recheck queue: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, governanceSchema); err != nil {
+		return fmt.Errorf("create moderation tables: %w", err)
+	}
+	// Existing triggers keep their names and pick up the replaced bodies, so
+	// only the genuinely new triggers are created here.
+	if _, err := tx.ExecContext(ctx, notificationFunctions+notificationTriggersV6); err != nil {
+		return fmt.Errorf("upgrade notification triggers: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, reasonTemplateSeed); err != nil {
+		return fmt.Errorf("seed moderation reason templates: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(6)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v6: %w", err)
 	}
 	return nil
 }

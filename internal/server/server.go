@@ -59,6 +59,8 @@ type App struct {
 	templates       *web.Templates
 	trustedProxies  []*net.IPNet
 	downloadLimiter *ipRateLimiter
+	authAttempts    *ipRateLimiter
+	authFailures    *ipRateLimiter
 }
 
 func New(deps Dependencies) *App {
@@ -79,6 +81,8 @@ func New(deps Dependencies) *App {
 		moderation:      deps.Moderation,
 		templates:       web.NewTemplates(),
 		downloadLimiter: newIPRateLimiter(deps.Config.Limits.DownloadRatePerMin),
+		authAttempts:    newWindowLimiter(deps.Config.Limits.AuthRatePerMin, time.Minute, 120),
+		authFailures:    newWindowLimiter(deps.Config.Limits.AuthFailureBurst, deps.Config.Limits.AuthFailureWindow, 20),
 	}
 	for _, value := range deps.Config.TrustedProxyCIDRs {
 		if _, network, parseErr := net.ParseCIDR(value); parseErr == nil {
@@ -88,11 +92,24 @@ func New(deps Dependencies) *App {
 	return app
 }
 
-func (a *App) render(w http.ResponseWriter, name string, data any) {
+// render writes a page. The request is required because every rendered POST
+// form carries a session-bound CSRF token, which can only be derived from the
+// admin session attached to the request context.
+func (a *App) render(w http.ResponseWriter, r *http.Request, name string, data any) {
 	if values, ok := data.(map[string]any); ok {
 		if _, exists := values["PageSizes"]; !exists {
 			values["PageSizes"] = []int{25, 50, 100}
 		}
+		if _, exists := values["CSRFToken"]; !exists {
+			values["CSRFToken"] = a.adminCSRFTokenFor(r)
+		}
+		// The drawer is derived from the session rather than passed in by each
+		// handler, so no page can accidentally offer a reviewer a link that
+		// only answers with a 403.
+		role, _ := r.Context().Value(adminRoleContextKey{}).(string)
+		values["Role"] = role
+		values["Nav"] = web.NavigationFor(role)
+		values["HomePath"] = web.HomePathFor(role)
 	}
 	if err := a.templates.Render(w, name, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -112,8 +129,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /oauth2/github/callback", a.handleGitHubWebCallback)
 	mux.HandleFunc("GET /auth/success", a.handleAuthSuccess)
 	mux.HandleFunc("GET /auth/failed", a.handleAuthFailed)
-	mux.HandleFunc("POST /api/oauth/bandbbs/exchange", a.handleTicketExchange)
-	mux.HandleFunc("POST /api/oauth/bandbbs/refresh", a.handleRefresh)
+	mux.HandleFunc("POST /api/oauth/bandbbs/exchange", a.throttleCredentials(a.handleTicketExchange))
+	mux.HandleFunc("POST /api/oauth/bandbbs/refresh", a.throttleCredentials(a.handleRefresh))
 	mux.Handle("POST /api/oauth/bandbbs/token/refresh", a.requireUser(http.HandlerFunc(a.handleBandBBSTokenRefresh)))
 	mux.Handle("GET /api/me", a.requireUser(http.HandlerFunc(a.handleMe)))
 	mux.Handle("GET /api/me/grants", a.requireUser(http.HandlerFunc(a.handleGrants)))
@@ -180,10 +197,19 @@ func (a *App) Routes() http.Handler {
 	mux.Handle("DELETE /api/resources/{resource}/collaboration", a.requireUser(http.HandlerFunc(a.handleCollaboratorDecline)))
 	mux.Handle("GET /api/collaborations", a.requireUser(http.HandlerFunc(a.handleCollaborationInvitations)))
 
-	mux.HandleFunc("GET /assets/app.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		_, _ = w.Write([]byte(web.CSS))
-	})
+	// Self-hosted console assets. Serving the scripts here instead of inlining
+	// them is what lets the CSP forbid inline script entirely.
+	staticAsset := func(contentType, body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	mux.HandleFunc("GET /assets/app.css", staticAsset("text/css; charset=utf-8", web.CSS))
+	mux.HandleFunc("GET /assets/theme.js", staticAsset("text/javascript; charset=utf-8", web.ThemeJS))
+	mux.HandleFunc("GET /assets/admin.js", staticAsset("text/javascript; charset=utf-8", web.AdminJS))
+	mux.HandleFunc("GET /assets/transition.js", staticAsset("text/javascript; charset=utf-8", web.TransitionJS))
 
 	// Admin console
 	mux.HandleFunc("GET /admin/login", a.handleAdminLoginPage)
@@ -245,6 +271,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/users/{user}/sessions", a.requireAdminRole("admin", a.handleAdminUserSessions))
 	mux.HandleFunc("GET /admin/comments", a.requireAdmin(a.handleAdminComments))
 	mux.HandleFunc("POST /admin/comments/{comment}", a.requireAdmin(a.handleAdminCommentDecision))
+	mux.HandleFunc("POST /admin/comments/bulk", a.requireAdmin(a.handleAdminCommentBulk))
 	mux.HandleFunc("POST /admin/comments/prompt", a.requireAdminRole("admin", a.handleAdminModerationPrompt))
 	mux.HandleFunc("POST /admin/comments/test", a.requireAdmin(a.handleAdminModerationTest))
 	mux.HandleFunc("POST /admin/users/{user}/state", a.requireAdminRole("admin", a.handleAdminUserState))
@@ -310,15 +337,6 @@ func (a *App) Routes() http.Handler {
 	return mux
 }
 
-func SecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(w, r)
-	})
-}
-
 func CORS(origins []string, next http.Handler) http.Handler {
 	allowed := make(map[string]bool, len(origins))
 	for _, origin := range origins {
@@ -346,7 +364,7 @@ func CORS(origins []string, next http.Handler) http.Handler {
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
-	a.render(w, "server_home", map[string]any{"Title": "Server"})
+	a.render(w, r, "server_home", map[string]any{"Title": "Server"})
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +595,7 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/failed?error=invalid_state", http.StatusFound)
 		return
 	}
-	a.renderTransition(w, web.TransitionPageData{
+	a.renderTransition(w, r, web.TransitionPageData{
 		Title:       "授权完成",
 		Heading:     "授权完成",
 		Description: "可以返回 OronBox 继续使用",

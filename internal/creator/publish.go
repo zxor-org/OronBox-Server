@@ -349,7 +349,9 @@ func (s *Service) saveBundle(ctx context.Context, ownerID, resourceID string, bu
 		}
 	}
 	if submit {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id) VALUES($1,$2)`, uuid.NewString(), revisionID); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id,first_submitted_at)
+SELECT $1,$2,COALESCE((SELECT min(prior.first_submitted_at) FROM review_cases prior JOIN resource_revisions prior_revision ON prior_revision.id=prior.revision_id WHERE prior_revision.resource_id=revision.resource_id),now())
+FROM resource_revisions revision WHERE revision.id=$2`, uuid.NewString(), revisionID); err != nil {
 			return Workspace{}, err
 		}
 	}

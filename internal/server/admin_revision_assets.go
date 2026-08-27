@@ -19,9 +19,8 @@ import (
 )
 
 func (a *App) handleAdminRevisionMediaUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.Limits.PreviewMaxBytes+(1<<20))
-	if err := r.ParseMultipartForm(a.cfg.Limits.PreviewMaxBytes); err != nil {
-		http.Error(w, "invalid image upload", http.StatusBadRequest)
+	if err := a.parseAdminUpload(w, r, a.cfg.Limits.PreviewMaxBytes); err != nil {
+		a.rejectAdminUpload(w, r, err)
 		return
 	}
 	file, _, err := r.FormFile("file")
@@ -73,9 +72,8 @@ func (a *App) handleAdminRevisionMediaMove(w http.ResponseWriter, r *http.Reques
 }
 
 func (a *App) handleAdminRevisionArtifactUpload(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.Limits.UploadMaxBytes+(1<<20))
-	if err := r.ParseMultipartForm(a.cfg.Limits.UploadMaxBytes); err != nil {
-		http.Error(w, "invalid resource upload", http.StatusBadRequest)
+	if err := a.parseAdminUpload(w, r, a.cfg.Limits.UploadMaxBytes); err != nil {
+		a.rejectAdminUpload(w, r, err)
 		return
 	}
 	file, header, err := r.FormFile("file")

@@ -32,11 +32,14 @@ func TestAuthFailedUsesSafeFriendlyMessage(t *testing.T) {
 		"Cache-Control":           "no-store",
 		"Referrer-Policy":         "no-referrer",
 		"X-Robots-Tag":            "noindex, nofollow",
-		"Content-Security-Policy": "fonts.loli.net",
+		"Content-Security-Policy": "script-src 'self'",
 	} {
 		if value := recorder.Header().Get(name); !strings.Contains(value, expected) {
 			t.Errorf("%s = %q, want it to contain %q", name, value, expected)
 		}
+	}
+	if strings.Contains(recorder.Header().Get("Content-Security-Policy"), "fonts.loli.net") {
+		t.Error("transition CSP still allows a third-party font origin")
 	}
 }
 
@@ -72,7 +75,7 @@ func TestLoginSuccessTransitionRendersBeforeDeepLink(t *testing.T) {
 	app := &App{templates: web.NewTemplates()}
 	recorder := httptest.NewRecorder()
 
-	app.renderTransition(recorder, web.TransitionPageData{
+	app.renderTransition(recorder, httptest.NewRequest(http.MethodGet, "/auth/success", nil), web.TransitionPageData{
 		Title:       "授权完成",
 		Heading:     "授权完成",
 		Description: "可以返回 OronBox 继续使用",
@@ -94,7 +97,7 @@ func TestLoginSuccessTransitionRendersBeforeDeepLink(t *testing.T) {
 		"没有自动打开？",
 		"点此重试",
 		"oronbox://oauth/callback?ticket=one-time",
-		"location.replace",
+		`<script src="/assets/transition.js" defer></script>`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("login transition is missing %q", expected)
