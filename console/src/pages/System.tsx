@@ -56,9 +56,9 @@ export function CollectionsPage() {
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={item.id} className="clickable" onClick={() => (window.location.hash = "")}>
+              <tr key={item.id} className="clickable" onClick={() => (window.location.href = `/admin/collections/${item.id}`)}>
                 <td>
-                  <a href={`/admin/collections/${item.id}`}>{item.name}</a>
+                  {item.name}
                 </td>
                 <td>{item.owner}</td>
                 <td>
@@ -668,6 +668,8 @@ export function SystemPage() {
   const config = map[path] || map["/audit"]
   const { items, total, q, setQ, page, setPage, error, load } = useRows(config.path)
   const [cleanup, setCleanup] = useState<Row | null>(null)
+  const [open, setOpen] = useState<Row | null>(null)
+  const requeue = path === "/storage/blobs"
   return (
     <>
       <PageHeader title={config.title} hint="诊断页以表格为主，危险操作（清理）使用对话框。">
@@ -696,7 +698,7 @@ export function SystemPage() {
             </thead>
             <tbody>
               {items.map((row, index) => (
-                <tr key={String(row.id || row.sha256 || index)}>
+                <tr key={String(row.id || row.sha256 || index)} className="clickable" onClick={() => setOpen(row)}>
                   {config.columns.map((column) => (
                     <td key={column.key}>{String(row[column.key] ?? "—")}</td>
                   ))}
@@ -727,6 +729,36 @@ export function SystemPage() {
         }
       >
         <pre className="summary">{JSON.stringify(cleanup?.preview, null, 2)}</pre>
+      </Dialog>
+      <Dialog
+        open={!!open}
+        title="详情"
+        wide
+        onClose={() => setOpen(null)}
+        footer={
+          <>
+            {requeue && open?.sha256 && (
+              <button
+                className="btn"
+                type="button"
+                onClick={() =>
+                  api.post(`/admin/api/blobs/${open.sha256}/requeue`).then(() => {
+                    toast("已重新入队")
+                    setOpen(null)
+                    load()
+                  })
+                }
+              >
+                重试副本
+              </button>
+            )}
+            <button className="btn" type="button" onClick={() => setOpen(null)}>
+              关闭
+            </button>
+          </>
+        }
+      >
+        <pre className="summary">{JSON.stringify(open, null, 2)}</pre>
       </Dialog>
     </>
   )

@@ -1,41 +1,68 @@
-import { useEffect, useState } from "react";
-import { decideComment, listComments, type CommentItem } from "../api";
+import { useEffect, useState } from "react"
+import { decideComment, listComments, type CommentItem } from "../api"
+import { Dialog, Empty, Field, PageHeader, Pagination, SearchForm, Status, toast } from "../ui"
 
 export function CommentsPage() {
-  const [items, setItems] = useState<CommentItem[]>([]);
-  const [error, setError] = useState("");
-  const [note, setNote] = useState("");
+  const [items, setItems] = useState<CommentItem[]>([])
+  const [total, setTotal] = useState(0)
+  const [q, setQ] = useState("")
+  const [page, setPage] = useState(1)
+  const [state, setState] = useState("review")
+  const [error, setError] = useState("")
+  const [hiding, setHiding] = useState<CommentItem | null>(null)
+  const [note, setNote] = useState("")
 
-  const load = () =>
-    listComments("review")
-      .then((data) => setItems(data.items || []))
-      .catch((err: Error) => setError(err.message));
+  const load = (search = q, next = page, nextState = state) =>
+    listComments(nextState, search, next)
+      .then((data) => {
+        setItems(data.items || [])
+        setTotal(data.total || 0)
+      })
+      .catch((err: Error) => setError(err.message))
 
   useEffect(() => {
-    load();
-  }, []);
+    load(q, page, state)
+  }, [page, state])
 
-  const act = async (id: string, action: string) => {
-    setError("");
+  const approve = async (item: CommentItem) => {
     try {
-      await decideComment(id, action, note);
-      setNote("");
-      await load();
+      await decideComment(item.id, "approve")
+      toast("已通过")
+      await load()
     } catch (err) {
-      setError((err as Error).message);
+      setError((err as Error).message)
     }
-  };
+  }
 
   return (
     <>
-      <header className="page-head">
-        <h1>评论</h1>
-        <p>待人工处理</p>
-      </header>
+      <PageHeader title="评论审核" hint="点通过立刻放行。隐藏必须填写理由。">
+        <SearchForm
+          value={q}
+          onChange={setQ}
+          onSubmit={() => {
+            setPage(1)
+            load(q, 1, state)
+          }}
+          placeholder="搜索评论或用户"
+        />
+      </PageHeader>
+      <div className="toolbar">
+        <select
+          value={state}
+          onChange={(event) => {
+            setState(event.target.value)
+            setPage(1)
+          }}
+        >
+          <option value="review">待审</option>
+          <option value="visible">已通过</option>
+          <option value="hidden">已隐藏</option>
+        </select>
+      </div>
+      {error && <div className="error">{error}</div>}
       <div className="table-wrap">
-        {error && <div className="error">{error}</div>}
-        <input className="search" value={note} onChange={(event) => setNote(event.target.value)} placeholder="隐藏时填写理由" style={{ margin: "0 12px 12px" }} />
-        {items.length === 0 && <div className="empty">没有待处理的评论</div>}
+        {items.length === 0 && <Empty>没有评论</Empty>}
         {items.length > 0 && (
           <table>
             <thead>
@@ -52,15 +79,21 @@ export function CommentsPage() {
                   <td>{item.username}</td>
                   <td>{item.body}</td>
                   <td>
-                    <span className="badge">{item.state}</span>
+                    <Status value={item.state} />
                   </td>
                   <td>
-                    <button className="btn btn-primary" type="button" onClick={() => act(item.id, "approve")}>
-                      通过
-                    </button>{" "}
-                    <button className="btn btn-danger" type="button" onClick={() => act(item.id, "hide")}>
-                      隐藏
-                    </button>
+                    <div className="row-actions">
+                      {item.state !== "visible" && (
+                        <button className="btn btn-primary" type="button" onClick={() => approve(item)}>
+                          通过
+                        </button>
+                      )}
+                      {item.state !== "hidden" && (
+                        <button className="btn btn-danger" type="button" onClick={() => setHiding(item)}>
+                          隐藏
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -68,6 +101,44 @@ export function CommentsPage() {
           </table>
         )}
       </div>
+      <Pagination page={page} total={total} perPage={25} onChange={setPage} />
+      <Dialog
+        open={!!hiding}
+        title="隐藏评论"
+        hint="创作者和用户会看到这条理由。"
+        onClose={() => setHiding(null)}
+        footer={
+          <>
+            <button className="btn" type="button" onClick={() => setHiding(null)}>
+              取消
+            </button>
+            <button
+              className="btn btn-danger"
+              type="button"
+              disabled={!note.trim()}
+              onClick={async () => {
+                if (!hiding) return
+                try {
+                  await decideComment(hiding.id, "hide", note)
+                  toast("已隐藏")
+                  setHiding(null)
+                  setNote("")
+                  await load()
+                } catch (err) {
+                  setError((err as Error).message)
+                }
+              }}
+            >
+              隐藏
+            </button>
+          </>
+        }
+      >
+        <p className="summary">{hiding?.body}</p>
+        <Field label="理由">
+          <textarea value={note} onChange={(event) => setNote(event.target.value)} />
+        </Field>
+      </Dialog>
     </>
-  );
+  )
 }

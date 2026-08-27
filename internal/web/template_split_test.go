@@ -10,7 +10,7 @@ import (
 // partials are rendered through another template rather than by a route, so
 // they have no standalone case in renderableTemplateCases.
 var partials = map[string]bool{
-	"csrf": true, "head": true, "tail": true,
+	"csrf": true, "head": true, "tail": true, "auth_head": true, "auth_tail": true,
 }
 
 func definedTemplateNames(t *testing.T) []string {

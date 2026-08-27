@@ -81,8 +81,8 @@ export function Status({ value, label }: { value: string; label?: string }) {
 }
 
 export function Pagination({ page, total, perPage, onChange }: { page: number; total: number; perPage: number; onChange: (page: number) => void }) {
-  const pages = Math.max(1, Math.ceil(total / perPage))
-  if (total <= perPage) return null
+  const pages = Math.max(1, Math.ceil((total || 0) / perPage))
+  if (!total) return <div className="pager">共 0 条</div>
   return (
     <div className="pager">
       <button className="btn" type="button" disabled={page <= 1} onClick={() => onChange(page - 1)}>

@@ -24,6 +24,7 @@ func renderableTemplateCases() map[string]any {
 		"transition_page": TransitionPageData{
 			Title: "t", Heading: "h", Description: "d", Target: "/admin",
 		},
+		"server_home": map[string]any{"Title": "Server"},
 	}
 }
 

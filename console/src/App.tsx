@@ -1,4 +1,4 @@
-import { NavLink, Outlet, Route, Routes } from "react-router"
+import { NavLink, Outlet, Route, Routes, useLocation } from "react-router"
 import { useEffect, useState } from "react"
 import { loadSession, logout, type Session } from "./api"
 import { ReviewPage } from "./pages/Review"
@@ -23,6 +23,7 @@ import {
   SystemPage,
 } from "./pages/System"
 import { ToastHost } from "./ui"
+import { applyTheme, readTheme, type Theme } from "./theme"
 
 type NavItem = { to: string; label: string; admin?: boolean; end?: boolean; badge?: boolean }
 
@@ -78,8 +79,40 @@ const groups: { label: string; items: NavItem[] }[] = [
   },
 ]
 
+const titles: Record<string, string> = {
+  "": "概览",
+  review: "待审核",
+  resources: "全部资源",
+  comments: "评论审核",
+  collections: "合集",
+  "collections/review": "合集审核",
+  publications: "发布任务",
+  users: "用户",
+  reports: "举报与反馈",
+  devices: "设备目录",
+  plugins: "插件管理",
+  coins: "硬币管理",
+  messages: "系统消息",
+  home: "首页编排",
+  blog: "Blog 管理",
+  announcements: "公告",
+  releases: "客户端版本",
+  "oauth/events": "OAuth 事件",
+  "oauth/states": "OAuth States",
+  "oauth/tickets": "登录 Tickets",
+  clients: "客户端统计",
+  "storage/blobs": "Blob 与副本",
+  health: "运行状态",
+  audit: "审计日志",
+  settings: "设置",
+}
+
 function Shell({ session }: { session: Session }) {
   const admin = session.role === "admin"
+  const [theme, setTheme] = useState<Theme>(() => readTheme())
+  const location = useLocation()
+  const crumbs = location.pathname.replace(/^\//, "").split("/").filter(Boolean)
+  const keys = crumbs.length ? crumbs.map((_, index) => crumbs.slice(0, index + 1).join("/")) : [""]
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -107,6 +140,16 @@ function Shell({ session }: { session: Session }) {
           <span>{session.user}</span>
           <button
             type="button"
+            onClick={() => {
+              const next = theme === "dark" ? "light" : "dark"
+              applyTheme(next)
+              setTheme(next)
+            }}
+          >
+            {theme === "dark" ? "日间" : "夜间"}
+          </button>
+          <button
+            type="button"
             onClick={async () => {
               await logout()
               window.location.href = "/admin/login"
@@ -117,6 +160,18 @@ function Shell({ session }: { session: Session }) {
         </div>
       </aside>
       <div className="main">
+        <header className="topbar">
+          {keys.map((key, index) => {
+            const last = index === keys.length - 1
+            const label = titles[key] || crumbs[index] || "概览"
+            return (
+              <span key={key || "home"} className="crumb">
+                {index > 0 ? <span className="crumb-sep">/</span> : null}
+                {last ? <span className="current">{label}</span> : <NavLink to={key ? `/${key}` : "/"}>{label}</NavLink>}
+              </span>
+            )
+          })}
+        </header>
         <Outlet context={session} />
       </div>
       <ToastHost />

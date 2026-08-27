@@ -1,54 +1,74 @@
-{{define "head"}}
+{{define "auth_head"}}
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>{{.Title}} · OronBox</title>
-  <style>
-    :root { color-scheme: dark; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: #000; color: #ededed; font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; display: grid; place-items: center; }
-    .card { width: min(400px, calc(100% - 32px)); border: 1px solid #222; border-radius: 12px; padding: 28px; }
-    h1 { margin: 0 0 8px; font-size: 18px; font-weight: 590; }
-    p { color: #888; margin: 0 0 20px; }
-    .btn { display: inline-flex; background: #fff; color: #000; border-radius: 8px; padding: 8px 14px; text-decoration: none; font-weight: 560; }
-    .err { color: #ff5c5c; margin-bottom: 12px; }
-  </style>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/theme.js"></script>
 </head>
 <body>
+{{template "icon_sprite"}}
 {{end}}
 
-{{define "tail"}}</body></html>{{end}}
+{{define "auth_tail"}}
+</body></html>
+{{end}}
 
 {{define "admin_login"}}
-{{template "head" .}}
-<div class="card">
-  <h1>OronBox 管理</h1>
-  <p>用 BandBBS 账号登录</p>
-  {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
-  <a class="btn" href="{{.AuthorizeURL}}">登录</a>
-</div>
-{{template "tail" .}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></div>
+    <h1>OronBox 管理后台</h1>
+    <p>使用已授权的米坛账号验证管理员身份</p>
+    {{if .Error}}<div class="notice danger" role="alert">{{.Error}}</div>{{end}}
+    <div class="standalone-actions"><a class="filled-button full-button" href="{{.AuthorizeURL}}"><span>使用米坛账号登录</span><svg class="icon" aria-hidden="true"><use href="#i-arrow_forward"></use></svg></a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
 {{end}}
 
 {{define "admin_forbidden"}}
-{{template "head" .}}
-<div class="card">
-  <h1>没有权限</h1>
-  <p>{{.Path}}</p>
-  <a class="btn" href="/admin">返回</a>
-</div>
-{{template "tail" .}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card danger">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></div>
+    <h1>这个板块只对管理员开放</h1>
+    <p>你的账号是审核员，可以处理审核、评论、举报与内容，但平台管理页面需要管理员权限。</p>
+    <p>无法打开 <code>{{.Path}}</code></p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="/admin/review">回到工作台</a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
 {{end}}
 
 {{define "transition_page"}}
-{{template "head" .}}
-<div class="card"{{if .Auto}}{{if .Target}} data-transition-target="{{.Target}}"{{end}}{{end}}>
-  <h1>{{.Heading}}</h1>
-  <p>{{.Description}}</p>
-  {{if .Target}}<p>没有自动打开？ <a class="btn" href="{{.Target}}">点此重试</a></p>{{end}}
-</div>
-{{if .Auto}}<script src="/assets/transition.js" defer></script>{{end}}
-{{template "tail" .}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card{{if eqs .Tone "danger"}} danger{{else if eqs .Tone "info"}} info{{end}}">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-{{if eqs .Tone "danger"}}error{{else if eqs .Tone "info"}}open_in_new{{else}}check_circle{{end}}"></use></svg></div>
+    <h1>{{.Heading}}</h1>
+    <p>{{.Description}}</p>
+    {{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" href="{{.Target}}">{{.ButtonLabel}}</a></div>{{end}}
+    {{if and .Target (not .ButtonLabel)}}<a class="transition-retry" href="{{.Target}}">没有自动打开？<span>点此重试</span></a>{{end}}
+  </section>
+</main>
+{{if and .Auto .Target}}<div hidden data-transition-target="{{.Target}}"></div><script src="/assets/transition.js" defer></script>{{end}}
+{{template "auth_tail"}}
+{{end}}
+
+{{define "server_home"}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card server-card">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-dns"></use></svg></div>
+    <h1>OronBox Server</h1>
+    <p>为 OronBox 提供账号授权、资源服务和创作者工作流</p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="/admin">进入管理后台</a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
 {{end}}
