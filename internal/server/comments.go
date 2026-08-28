@@ -1,10 +1,8 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -115,82 +113,4 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.WriteHeader(http.StatusNoContent)
 	}
-}
-func (a *App) handleAdminCommentBulk(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	action, note := r.FormValue("bulk_action"), strings.TrimSpace(r.FormValue("note"))
-	if action == "hide" && note == "" {
-		http.Error(w, "批量隐藏必须填写理由，处理记录需要说明依据", http.StatusBadRequest)
-		return
-	}
-	ids := r.Form["comment_ids"]
-	err := a.store.AdminModerateCommentsBatch(r.Context(), ids, action, actor.UserID, note)
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "comment.bulk."+action, "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, "批量操作已拒绝，未修改任何评论："+err.Error(), http.StatusConflict)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "comment.bulk."+action, "success", a.clientIP(r), r.UserAgent(), strings.Join(ids, ","))
-	returnTo := adminCommentReturn(r)
-	separator := "?"
-	if strings.Contains(returnTo, "?") {
-		separator = "&"
-	}
-	http.Redirect(w, r, returnTo+separator+"bulk=1", http.StatusFound)
-}
-
-// adminCommentReturn keeps the operator on the filtered page they acted from,
-// but only ever within the comment console, so the redirect target cannot be
-// steered somewhere else by a crafted form.
-func adminCommentReturn(r *http.Request) string {
-	target := strings.TrimSpace(r.FormValue("return_to"))
-	if strings.HasPrefix(target, "/admin/comments") && !strings.HasPrefix(target, "//") {
-		return target
-	}
-	return "/admin/comments"
-}
-
-func (a *App) handleAdminModerationPrompt(w http.ResponseWriter, r *http.Request) {
-	prompt := strings.TrimSpace(r.FormValue("prompt"))
-	if prompt == "" {
-		prompt = defaultModerationPrompt
-	}
-	if err := a.store.SetSetting(r.Context(), "moderation.prompt", prompt); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "moderation.prompt", "success", a.clientIP(r), r.UserAgent(), "")
-	http.Redirect(w, r, "/admin/comments", http.StatusFound)
-}
-
-func (a *App) handleAdminModerationTest(w http.ResponseWriter, r *http.Request) {
-	text := strings.TrimSpace(r.FormValue("text"))
-	prompt, err := a.store.Setting(r.Context(), "moderation.prompt", defaultModerationPrompt)
-	var result string
-	if err == nil && a.moderation != nil && a.moderation.Enabled() {
-		verdict, reviewErr := a.moderation.Review(r.Context(), prompt, text)
-		err = reviewErr
-		if err == nil {
-			raw, _ := json.MarshalIndent(verdict.Raw, "", "  ")
-			result = string(raw)
-		}
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	commentPage, listErr := a.store.AdminComments(r.Context(), store.AdminCommentQuery{Page: page, PerPage: 25})
-	if listErr != nil {
-		http.Error(w, listErr.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"prompt": prompt, "text": text, "result": result, "total": commentPage.Total})
 }

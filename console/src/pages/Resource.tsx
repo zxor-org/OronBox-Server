@@ -19,6 +19,7 @@ export function ResourcePage() {
   const [attributes, setAttributes] = useState<string[]>([])
   const [stateOpen, setStateOpen] = useState("")
   const [reason, setReason] = useState("")
+  const [discarding, setDiscarding] = useState(false)
   const [governance, setGovernance] = useState({ author_name: "", source_url: "", license_name: "", authorization_note: "", collection_id: "", collection_position: 0 })
 
   const load = async () => {
@@ -118,6 +119,11 @@ export function ResourcePage() {
             提交审核
           </button>
         )}
+        {data.revision_id && data.editable ? (
+          <button className="btn" disabled={busy} onClick={() => setDiscarding(true)}>
+            丢弃草稿
+          </button>
+        ) : null}
         <button className="btn" type="button" onClick={() => setStateOpen("suspend")}>
           下架
         </button>
@@ -340,6 +346,35 @@ export function ResourcePage() {
         <Field label="原因">
           <textarea value={reason} onChange={(event) => setReason(event.target.value)} />
         </Field>
+      </Dialog>
+      <Dialog
+        open={discarding}
+        title="丢弃草稿"
+        hint="将删除当前待审草稿，恢复到上一个已批准版本。"
+        onClose={() => setDiscarding(false)}
+        footer={
+          <>
+            <button className="btn" type="button" onClick={() => setDiscarding(false)}>取消</button>
+            <button
+              className="btn btn-danger"
+              type="button"
+              onClick={() =>
+                api
+                  .post(`/admin/api/resources/${id}/draft/${data.revision_id}/discard`)
+                  .then(() => {
+                    toast("已丢弃")
+                    setDiscarding(false)
+                    load()
+                  })
+                  .catch((err: Error) => toast(err.message, "err"))
+              }
+            >
+              丢弃
+            </button>
+          </>
+        }
+      >
+        <p className="summary">此操作不可撤销，待审内容将被删除。</p>
       </Dialog>
     </>
   )

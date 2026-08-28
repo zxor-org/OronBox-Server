@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	resourcecore "github.com/zxor-org/OronBox-Server/internal/resource"
@@ -50,25 +49,6 @@ func (a *App) handleAdminRevisionMediaUpload(w http.ResponseWriter, r *http.Requ
 	}
 	err = a.store.AdminAddRevisionMedia(r.Context(), r.PathValue("resource"), r.PathValue("revision"), store.AdminMediaInput{SHA256: object.SHA256, Role: r.FormValue("role"), Width: config.Width, Height: config.Height})
 	a.adminRevisionAssetResult(w, r, "media.upload", err)
-}
-
-func (a *App) handleAdminRevisionMediaDelete(w http.ResponseWriter, r *http.Request) {
-	err := a.store.AdminDeleteRevisionMedia(r.Context(), r.PathValue("resource"), r.PathValue("revision"), r.PathValue("media"))
-	a.adminRevisionAssetResult(w, r, "media.delete", err)
-}
-
-func (a *App) handleAdminRevisionMediaMove(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	position, err := strconv.Atoi(r.FormValue("position"))
-	if err != nil {
-		http.Error(w, "invalid media position", http.StatusBadRequest)
-		return
-	}
-	err = a.store.AdminMoveRevisionMedia(r.Context(), r.PathValue("resource"), r.PathValue("revision"), r.PathValue("media"), position)
-	a.adminRevisionAssetResult(w, r, "media.move", err)
 }
 
 func (a *App) handleAdminRevisionArtifactUpload(w http.ResponseWriter, r *http.Request) {
@@ -115,20 +95,6 @@ func (a *App) handleAdminRevisionArtifactUpload(w http.ResponseWriter, r *http.R
 	_ = json.Unmarshal(analysisJSON, &analysisValue)
 	err = a.store.AdminAddRevisionArtifact(r.Context(), r.PathValue("resource"), r.PathValue("revision"), store.AdminArtifactInput{SHA256: object.SHA256, OriginalName: filepath.Base(header.Filename), PackageFormat: analysis.PackageFormat, PackageID: analysis.PackageID, Version: analysis.Version, Analysis: analysisValue, DeviceIDs: r.Form["device_ids"]})
 	a.adminRevisionAssetResult(w, r, "artifact.upload", err)
-}
-
-func (a *App) handleAdminRevisionArtifactDelete(w http.ResponseWriter, r *http.Request) {
-	err := a.store.AdminDeleteRevisionArtifact(r.Context(), r.PathValue("resource"), r.PathValue("revision"), r.PathValue("artifact"))
-	a.adminRevisionAssetResult(w, r, "artifact.delete", err)
-}
-
-func (a *App) handleAdminRevisionArtifactDevices(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	err := a.store.AdminSetArtifactDevices(r.Context(), r.PathValue("resource"), r.PathValue("revision"), r.PathValue("artifact"), r.Form["device_ids"])
-	a.adminRevisionAssetResult(w, r, "artifact.devices", err)
 }
 
 func (a *App) adminRevisionAssetResult(w http.ResponseWriter, r *http.Request, action string, err error) {

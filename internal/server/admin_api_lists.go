@@ -248,6 +248,26 @@ func (a *App) handleAdminAPIReleases(w http.ResponseWriter, r *http.Request) {
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "releases_failed")
 }
 
+func (a *App) handleAdminAPIRelease(w http.ResponseWriter, r *http.Request) {
+	item, err := a.store.AdminRelease(r.Context(), r.PathValue("release"))
+	if err != nil {
+		if errors.Is(err, store.ErrAdminReleaseNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("release_not_found", "app release was not found"))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorBody("releases_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": item.ID, "version": item.Version, "minimum_version": item.MinimumVersion,
+		"channel": item.Channel, "platform": item.Platform, "arch": item.Arch,
+		"download_url": item.DownloadURL, "published_at": item.PublishedAt,
+		"enabled": item.Enabled, "revoked_at": item.RevokedAt, "state": item.State(),
+		"updated_at": item.UpdatedAt, "created_by": item.CreatedBy, "creator": item.Creator,
+		"notes_zh": item.NotesZH, "notes_en": item.NotesEN,
+	})
+}
+
 func (a *App) handleAdminAPIBlog(w http.ResponseWriter, r *http.Request) {
 	page, err := a.store.AdminBlogPosts(r.Context(), store.AdminBlogQuery{
 		Search: r.URL.Query().Get("q"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
@@ -328,6 +348,10 @@ func (a *App) handleAdminAPISettings(w http.ResponseWriter, r *http.Request) {
 	if a.creator != nil {
 		attributes, _ = a.creator.Attributes(r.Context(), true)
 	}
+	moderationPrompt := defaultModerationPrompt
+	if a.store != nil {
+		moderationPrompt, _ = a.store.Setting(r.Context(), "moderation.prompt", defaultModerationPrompt)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": []map[string]any{{
 			"bandbbs_client_id": a.cfg.BandBBS.ClientID,
@@ -335,6 +359,7 @@ func (a *App) handleAdminAPISettings(w http.ResponseWriter, r *http.Request) {
 			"public_url":        a.cfg.PublicURL,
 		}},
 		"total": 1, "page": 1, "per_page": 1, "attributes": attributes,
+		"moderation_prompt": moderationPrompt,
 	})
 }
 

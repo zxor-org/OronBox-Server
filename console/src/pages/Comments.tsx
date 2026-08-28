@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { decideComment, listComments, type CommentItem } from "../api"
+import { api, decideComment, listComments, type CommentItem } from "../api"
 import { Dialog, Empty, Field, PageHeader, Pagination, SearchForm, Status, TableState, toast } from "../ui"
 
 export function CommentsPage() {
@@ -12,6 +12,9 @@ export function CommentsPage() {
   const [loading, setLoading] = useState(true)
   const [hiding, setHiding] = useState<CommentItem | null>(null)
   const [note, setNote] = useState("")
+  const [bulkAction, setBulkAction] = useState<"approve" | "hide" | null>(null)
+  const [bulkNote, setBulkNote] = useState("")
+  const [busy, setBusy] = useState(false)
 
   const load = (search = q, next = page, nextState = state) => {
     setLoading(true)
@@ -36,6 +39,22 @@ export function CommentsPage() {
       await load()
     } catch (err) {
       setError((err as Error).message)
+    }
+  }
+
+  const runBulk = async () => {
+    if (!bulkAction || !items.length) return
+    setBusy(true)
+    try {
+      await api.post("/admin/api/comments/bulk", { action: bulkAction, ids: items.map((item) => item.id), note: bulkNote })
+      toast(bulkAction === "approve" ? `已批量通过 ${items.length} 条` : `已批量隐藏 ${items.length} 条`)
+      setBulkAction(null)
+      setBulkNote("")
+      await load()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -64,6 +83,12 @@ export function CommentsPage() {
           <option value="visible">已通过</option>
           <option value="hidden">已隐藏</option>
         </select>
+        {state === "review" && items.length > 0 ? (
+          <div className="actions">
+            <button className="btn" type="button" disabled={busy} onClick={() => setBulkAction("approve")}>批量通过当前页</button>
+            <button className="btn btn-danger" type="button" disabled={busy} onClick={() => setBulkAction("hide")}>批量隐藏当前页</button>
+          </div>
+        ) : null}
       </div>
       <div className="table-wrap">
         <TableState loading={loading} error={error} onRetry={() => void load()} isEmpty={!items.length} empty={q ? "没有匹配的评论" : "没有评论"}>
@@ -141,6 +166,28 @@ export function CommentsPage() {
         <Field label="理由">
           <textarea value={note} onChange={(event) => setNote(event.target.value)} />
         </Field>
+      </Dialog>
+      <Dialog
+        open={!!bulkAction}
+        title={bulkAction === "approve" ? "批量通过" : "批量隐藏"}
+        hint={bulkAction === "approve" ? `将一次通过当前页 ${items.length} 条待审评论。` : `将一次隐藏当前页 ${items.length} 条评论，必须填写理由。`}
+        onClose={() => setBulkAction(null)}
+        footer={
+          <button
+            className={`btn ${bulkAction === "hide" ? "btn-danger" : "btn-primary"}`}
+            type="button"
+            disabled={busy || (bulkAction === "hide" && !bulkNote.trim())}
+            onClick={() => void runBulk()}
+          >
+            确认
+          </button>
+        }
+      >
+        {bulkAction === "hide" ? (
+          <Field label="理由">
+            <textarea value={bulkNote} onChange={(event) => setBulkNote(event.target.value)} />
+          </Field>
+        ) : null}
       </Dialog>
     </>
   )

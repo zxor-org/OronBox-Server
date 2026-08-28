@@ -1,9 +1,7 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
 )
 
 func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -46,25 +44,4 @@ func (a *App) handleReadAnnouncements(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *App) handleAdminUserMessage(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	title := strings.TrimSpace(r.FormValue("title"))
-	body := strings.TrimSpace(r.FormValue("body"))
-	if title == "" || body == "" {
-		http.Error(w, "title and body are required", http.StatusBadRequest)
-		return
-	}
-	count, err := a.store.CreateAdminMessages(r.Context(), r.Form["user"], title, body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	_ = a.store.RecordAudit(r.Context(), actor, "message.send", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("recipients=%d title=%s", count, title))
-	http.Redirect(w, r, "/admin/users?action=message_sent", http.StatusFound)
 }

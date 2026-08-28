@@ -8,18 +8,6 @@ import (
 	"time"
 )
 
-func (a *App) handleAdminBlobRequeue(w http.ResponseWriter, r *http.Request) {
-	actor := currentAdmin(r)
-	detail, err := a.store.AdminRequeueBlobReplica(r.Context(), r.PathValue("sha256"))
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "blob.replica.requeue", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, err.Error(), 409)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "blob.replica.requeue", "success", a.clientIP(r), r.UserAgent(), "sha256="+detail.Blob.SHA256)
-	http.Redirect(w, r, "/admin/storage/blobs/"+detail.Blob.SHA256+"?action=requeued", 302)
-}
-
 func (a *App) handleAdminBlob(w http.ResponseWriter, r *http.Request) {
 	digest := strings.TrimSpace(r.PathValue("sha256"))
 	if !sha256Pattern.MatchString(digest) {

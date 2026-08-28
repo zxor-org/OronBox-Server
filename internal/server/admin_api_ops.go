@@ -22,6 +22,19 @@ func (a *App) audit(r *http.Request, action, result, detail string) {
 	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), action, result, a.clientIP(r), r.UserAgent(), detail)
 }
 
+func (a *App) handleAdminAPIAnalytics(w http.ResponseWriter, r *http.Request) {
+	rangeName := r.URL.Query().Get("range")
+	if rangeName != "90d" && rangeName != "12m" {
+		rangeName = "30d"
+	}
+	data, err := a.store.AdminAnalytics(r.Context(), rangeName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("analytics_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
+}
+
 func (a *App) handleAdminAPIOverview(w http.ResponseWriter, r *http.Request) {
 	reviews, err := a.store.AdminReviews(r.Context(), store.AdminReviewQuery{State: "pending", Sort: "sla", Page: 1, PerPage: 40})
 	if err != nil {

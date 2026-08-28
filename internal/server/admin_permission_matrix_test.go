@@ -129,12 +129,12 @@ var sensitiveAdminMutationPaths = []string{
 	"/admin/api/resources/resource-1/draft/revision-1/submit",
 	"/admin/api/publications/publication-1",
 	"/admin/api/users/user-1/state",
-	"/admin/coins/users",
-	"/admin/devices/device-1",
-	"/admin/resource-attributes",
+	"/admin/api/coins/users/user-1",
+	"/admin/api/devices/device-1",
+	"/admin/api/attributes",
 	"/admin/cleanup/preview",
-	"/admin/cleanup/execute",
-	"/admin/plugins/plugin-1/package",
+	"/admin/api/cleanup",
+	"/admin/api/plugins/plugin-1/metadata",
 }
 
 func TestAdminRoutePermissionMatrix(t *testing.T) {
@@ -147,21 +147,21 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 	}{
 		{name: "resource review", method: http.MethodPost, path: "/admin/api/reviews/revision-1/decision", body: `{"decision":"approve"}`, reviewer: true},
 		{name: "comment review", method: http.MethodPost, path: "/admin/api/comments/comment-1", body: `{"action":"approve"}`, reviewer: true},
-		{name: "comment bulk", method: http.MethodPost, path: "/admin/comments/bulk", body: "action=approve&comment_ids=comment-1", reviewer: true},
+		{name: "comment bulk", method: http.MethodPost, path: "/admin/api/comments/bulk", body: `{"action":"approve","ids":["comment-1"]}`, reviewer: true},
 		{name: "collection review", method: http.MethodPost, path: "/admin/api/collections/review/revision-1", body: `{"approve":true}`, reviewer: true},
-		{name: "resource management revision", method: http.MethodPost, path: "/admin/resources/resource-1/draft/revision-1/governance", reviewer: true},
-		{name: "collection management revision", method: http.MethodPost, path: "/admin/collections/collection-1/draft", reviewer: true},
-		{name: "plugin management revision", method: http.MethodPost, path: "/admin/plugins/plugin-1/metadata", reviewer: true},
+		{name: "resource management revision", method: http.MethodPost, path: "/admin/api/resources/resource-1/draft/revision-1/governance", body: `{}`, reviewer: true},
+		{name: "collection management revision", method: http.MethodPost, path: "/admin/api/collections/collection-1", body: `{}`, reviewer: true},
+		{name: "plugin management revision", method: http.MethodPost, path: "/admin/api/plugins/plugin-1/metadata", body: `{}`, reviewer: true},
 		{name: "publication execution", method: http.MethodPost, path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
-		{name: "publication filtered batch retry", method: http.MethodPost, path: "/admin/publications/retry-failed", body: "state=failed&target=astrobox"},
-		{name: "resource online state", method: http.MethodPost, path: "/admin/resources/resource-1/state", body: "state=listed"},
+		{name: "publication filtered batch retry", method: http.MethodPost, path: "/admin/api/publications/retry-failed", body: `{}`},
+		{name: "resource online state", method: http.MethodPost, path: "/admin/api/resources/resource-1/state", body: `{}`},
 		{name: "user state", method: http.MethodPost, path: "/admin/api/users/user-1/state", body: `{"action":"ban","reason":"spam"}`},
-		{name: "coin adjustment", method: http.MethodPost, path: "/admin/coins/users", body: "action=adjust&user_id=user-1&delta_units=1&reason=test"},
-		{name: "device update", method: http.MethodPost, path: "/admin/devices/device-1", body: "display_name=Device"},
-		{name: "settings mutation", method: http.MethodPost, path: "/admin/resource-attributes", body: "name=test"},
-		{name: "moderation prompt", method: http.MethodPost, path: "/admin/comments/prompt", body: "prompt=test"},
-		{name: "release publishing", method: http.MethodPost, path: "/admin/releases"},
-		{name: "blob retry", method: http.MethodPost, path: "/admin/storage/blobs/sha/requeue"},
+		{name: "coin adjustment", method: http.MethodPost, path: "/admin/api/coins/users/user-1", body: `{}`},
+		{name: "device update", method: http.MethodPost, path: "/admin/api/devices/device-1", body: `{}`},
+		{name: "settings mutation", method: http.MethodPost, path: "/admin/api/attributes", body: `{}`},
+		{name: "moderation prompt", method: http.MethodPost, path: "/admin/api/moderation/prompt", body: `{}`},
+		{name: "release publishing", method: http.MethodPost, path: "/admin/api/releases", body: `{}`},
+		{name: "blob retry", method: http.MethodPost, path: "/admin/api/blobs/sha/requeue", body: `{}`},
 		{name: "maintenance preview", method: http.MethodPost, path: "/admin/cleanup/preview"},
 	}
 
@@ -185,18 +185,18 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 	}
 }
 
-// A reviewer who reaches an admin-only page should get an explanation inside
-// the console, not a bare "forbidden" that reads like the console is broken.
-// A blocked write still gets a plain status, because nobody reads the body of
-// a rejected form post as a document.
-func TestReviewerGetsAnInConsoleExplanationInsteadOfBareForbidden(t *testing.T) {
+// The console is one SPA shell, so every page URL serves the same HTML and
+// the client routes reviewers away from admin-only pages. The write API
+// remains the enforcement point, so a reviewer's blocked mutation is a plain
+// 403 rather than a document that could be mistaken for a page.
+func TestReviewerPageLoadsTheConsoleAndMutationsStayBlocked(t *testing.T) {
 	page := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodGet, "/admin/users", "", "")
-	if page.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", page.Code)
+	if page.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", page.Code)
 	}
 	body := page.Body.String()
 	if !strings.Contains(body, "<html") {
-		t.Errorf("forbidden GET should still serve the console: %s", body)
+		t.Errorf("SPA page load should serve the console: %s", body)
 	}
 
 	write := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/api/users/user-1/state", `{"action":"ban","reason":"spam"}`, "https://admin.example")
@@ -204,7 +204,7 @@ func TestReviewerGetsAnInConsoleExplanationInsteadOfBareForbidden(t *testing.T) 
 		t.Fatalf("blocked write status = %d, want 403", write.Code)
 	}
 	if strings.Contains(write.Body.String(), "<html") {
-		t.Error("a blocked form post should not render a full page")
+		t.Error("a blocked API write should not render a full page")
 	}
 }
 
@@ -249,15 +249,14 @@ func TestEverySensitiveAdminMutationRequiresCSRFToken(t *testing.T) {
 	}
 }
 
-// Server-rendered forms cannot set a header, so the hidden field has to be
-// accepted on exactly the same terms.
+// The console SPA sends its token in a header, but the remaining form-style
+// route (cleanup preview) still carries it as a hidden field.
 func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 	app := adminPermissionTestApp(t, "admin")
 	body := url.Values{
-		"action":          {"requeue"},
 		web.CSRFFieldName: {app.adminCSRFToken("test-session")},
 	}.Encode()
-	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/admin/devices/device-1", body, "https://admin.example", "")
+	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/admin/cleanup/preview", body, "https://admin.example", "")
 	if recorder.Code == http.StatusForbidden {
 		t.Fatalf("hidden CSRF field was not accepted: body=%q", recorder.Body.String())
 	}
@@ -266,7 +265,6 @@ func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 func TestAdminStateMutationsExposeConflictWithoutLeakingBackendDetails(t *testing.T) {
 	tests := []struct{ path, body string }{
 		{path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
-		{path: "/admin/devices/device-1", body: "display_name=Device&codename=device&platform=vela_os"},
 		{path: "/admin/api/resources/resource-1/draft/revision-1/submit", body: "{}"},
 	}
 	for _, test := range tests {
@@ -311,13 +309,13 @@ func TestPluginPackageMultipartUploadRequiresCSRFToken(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/admin/plugins/plugin-1/package", &body)
+	request := httptest.NewRequest(http.MethodPost, "/admin/resources/resource-1/draft/revision-1/media", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	request.Header.Set("Origin", "https://admin.example")
 	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: "test-session"})
 	recorder := httptest.NewRecorder()
 	adminPermissionTestApp(t, "admin").Routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("multipart plugin upload without CSRF token: status=%d body=%q", recorder.Code, recorder.Body.String())
+		t.Fatalf("multipart upload without CSRF token: status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 }

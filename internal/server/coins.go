@@ -1,13 +1,28 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
+
+func (a *App) applyAdminCoinUserAction(ctx context.Context, userID, action string, deltaUnits int64, reason string, actorID string) (any, error) {
+	switch action {
+	case "adjust":
+		return a.store.AdminAdjustCoins(ctx, userID, deltaUnits, reason, actorID)
+	case "freeze":
+		return map[string]any{"ok": true}, a.store.AdminSetCoinFreeze(ctx, userID, true, reason)
+	case "unfreeze":
+		return map[string]any{"ok": true}, a.store.AdminSetCoinFreeze(ctx, userID, false, reason)
+	default:
+		return nil, fmt.Errorf("unknown coin action")
+	}
+}
 
 func (a *App) handleCoinAccount(w http.ResponseWriter, r *http.Request) {
 	account, err := a.store.CoinAccount(r.Context(), currentUser(r).ID)

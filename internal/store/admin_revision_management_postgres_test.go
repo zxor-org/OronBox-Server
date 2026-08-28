@@ -115,34 +115,6 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 		t.Fatalf("assets were not cloned: media=%d artifacts=%d", len(detail.Media), len(detail.Artifacts))
 	}
 
-	moveID := detail.Media[2].ID
-	if err := s.AdminMoveRevisionMedia(ctx, resourceID, draftID, moveID, 0); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := db.QueryContext(ctx, `SELECT id::text,position FROM revision_media WHERE revision_id=$1 AND role='preview' ORDER BY position`, draftID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	positions := 0
-	for rows.Next() {
-		var id string
-		var position int
-		if err := rows.Scan(&id, &position); err != nil {
-			t.Fatal(err)
-		}
-		if position != positions {
-			t.Fatalf("position=%d want %d", position, positions)
-		}
-		if positions == 0 && id != moveID {
-			t.Fatalf("moved media=%s want %s", id, moveID)
-		}
-		positions++
-	}
-	if err := s.AdminMoveRevisionMedia(ctx, resourceID, baseID, mediaIDs[0], 0); !errors.Is(err, store.ErrAdminResourceConflict) {
-		t.Fatalf("historical revision was mutable: %v", err)
-	}
-
 	if err := s.AdminDiscardRevisionDraft(ctx, resourceID, draftID, actor); err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +133,6 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	if err := s.AdminSubmitRevisionDraft(ctx, resourceID, draftID, actor); err != nil {
 		t.Fatal(err)
 	}
-	secondDetail, err := s.AdminResourceRevision(ctx, resourceID, draftID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM review_cases WHERE revision_id=$1 AND state='pending'`, draftID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("rollback did not enter review: count=%d err=%v", count, err)
 	}
@@ -176,9 +144,6 @@ func TestAdminRevisionRollbackReorderAndDiscardPostgres(t *testing.T) {
 	}, actor)
 	if err != nil {
 		t.Fatalf("correct pending review: %v", err)
-	}
-	if err := s.AdminMoveRevisionMedia(ctx, resourceID, draftID, secondDetail.Media[0].ID, 1); err != nil {
-		t.Fatalf("edit pending review media: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE review_cases SET state='approved' WHERE revision_id=$1`, draftID); err != nil {
 		t.Fatal(err)

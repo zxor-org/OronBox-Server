@@ -40,18 +40,16 @@ import { PublicationsPage } from "./pages/Publications"
 import { CollectionReviewPage } from "./pages/CollectionReview"
 import { UsersPage } from "./pages/Users"
 import { PluginsPage } from "./pages/Plugins"
-import {
-  AnnouncementsPage,
-  BlogPage,
-  CoinsPage,
-  CollectionsPage,
-  DevicesPage,
-  HomeComposerPage,
-  MessagesPage,
-  ReleasesPage,
-  ReportsPage,
-  SystemPage,
-} from "./pages/System"
+import { AnnouncementsPage } from "./pages/Announcements"
+import { BlogPage } from "./pages/Blog"
+import { CoinsPage } from "./pages/Coins"
+import { CollectionsPage } from "./pages/Collections"
+import { DevicesPage } from "./pages/Devices"
+import { HomeComposerPage } from "./pages/HomeComposer"
+import { MessagesPage } from "./pages/Messages"
+import { ReleasesPage } from "./pages/Releases"
+import { ReportsPage } from "./pages/Reports"
+import { SettingsPage, SystemPage } from "./pages/System"
 import { ToastHost } from "./ui"
 import { applyTheme, readTheme, type Theme } from "./theme"
 
@@ -273,7 +271,7 @@ export function App() {
         <Route path="storage/blobs" element={<SystemPage />} />
         <Route path="health" element={<SystemPage />} />
         <Route path="audit" element={<SystemPage />} />
-        <Route path="settings" element={<SystemPage />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>
   )

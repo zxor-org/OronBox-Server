@@ -16,7 +16,6 @@ import (
 	"time"
 
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
-	"github.com/zxor-org/OronBox-Server/internal/creator"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 	"github.com/zxor-org/OronBox-Server/internal/web"
@@ -282,45 +281,7 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	a.serveAdminSPA(w, r)
 }
-func (a *App) handleAdminResourceAttribute(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/admin/settings", http.StatusFound)
-		return
-	}
-	coefficient, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("coefficient")), 64)
-	if err != nil {
-		http.Error(w, "invalid coefficient", http.StatusBadRequest)
-		return
-	}
-	position := 0
-	if raw := strings.TrimSpace(r.FormValue("position")); raw != "" {
-		position, err = strconv.Atoi(raw)
-		if err != nil || position < 0 {
-			http.Error(w, "invalid position", http.StatusBadRequest)
-			return
-		}
-	}
-	item := creator.ResourceAttribute{
-		ID: strings.TrimSpace(r.FormValue("id")), NameZH: r.FormValue("name_zh"), NameEN: r.FormValue("name_en"),
-		Coefficient: coefficient, Enabled: r.FormValue("enabled") == "on", Position: position,
-	}
-	if err := a.creator.UpsertAttribute(r.Context(), item); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "resource_attribute.save", "success", a.clientIP(r), r.UserAgent(), item.ID)
-	http.Redirect(w, r, "/admin/settings?action=attribute_saved", http.StatusFound)
-}
 
-func (a *App) handleAdminDeleteResourceAttribute(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimSpace(r.PathValue("attribute"))
-	if err := a.creator.DisableAttribute(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), "resource_attribute.disable", "success", a.clientIP(r), r.UserAgent(), id)
-	http.Redirect(w, r, "/admin/settings?action=attribute_deleted", http.StatusFound)
-}
 func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
 	from, to := adminTimeRange(r.URL.Query())
 	return store.AdminAuditLogQuery{

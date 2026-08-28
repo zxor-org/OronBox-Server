@@ -93,31 +93,3 @@ func (a *App) handleAdminCleanupPreview(w http.ResponseWriter, r *http.Request) 
 	_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("cutoff=%s total=%d %s", preview.Cutoff.Format(time.RFC3339Nano), preview.Total(), cleanupSummary(store.CleanupStats{OAuthStates: preview.OAuthStates, LoginTickets: preview.LoginTickets, AdminSessions: preview.AdminSessions, UserMessages: preview.UserMessages})))
 	writeJSON(w, http.StatusOK, map[string]any{"preview": preview, "token": token, "confirmation": cleanupConfirmation(preview)})
 }
-
-func (a *App) handleAdminCleanupExecute(w http.ResponseWriter, r *http.Request) {
-	actor := currentAdmin(r)
-	if err := r.ParseForm(); err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), "invalid form")
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	preview, err := a.verifyCleanupPreview(strings.TrimSpace(r.FormValue("preview_token")), actor.UserID, time.Now().UTC())
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, "清理预览无效或已过期，请重新预览", http.StatusBadRequest)
-		return
-	}
-	if r.FormValue("confirmation") != cleanupConfirmation(preview) {
-		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), fmt.Sprintf("confirmation mismatch cutoff=%s total=%d", preview.Cutoff.Format(time.RFC3339Nano), preview.Total()))
-		writeJSON(w, http.StatusBadRequest, errorBody("cleanup_confirmation_mismatch", "危险操作确认短语不匹配，未执行任何清理"))
-		return
-	}
-	stats, err := a.store.ExecuteExpiredCleanup(r.Context(), preview)
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_failed", err.Error()))
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "cleanup.execute", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("cutoff=%s preview_total=%d deleted_total=%d %s", preview.Cutoff.Format(time.RFC3339Nano), preview.Total(), stats.OAuthStates+stats.LoginTickets+stats.AdminSessions+stats.UserMessages, cleanupSummary(stats)))
-	http.Redirect(w, r, "/admin/health?action=cleanup_complete", http.StatusFound)
-}

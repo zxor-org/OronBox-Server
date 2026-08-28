@@ -437,6 +437,12 @@ export function FieldList({ row, prefer }: { row: Record<string, unknown> | null
   const labels: Record<string, string> = {
     id: "ID",
     sha256: "SHA256",
+    version: "版本",
+    channel: "通道",
+    arch: "架构",
+    minimum_version: "最低版本",
+    download_url: "下载地址",
+    creator: "发布者",
     created_at: "创建时间",
     updated_at: "更新时间",
     published_at: "发布时间",

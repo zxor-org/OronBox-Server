@@ -24,6 +24,12 @@ export function PluginsPage() {
   const [loading, setLoading] = useState(true)
   const [rejecting, setRejecting] = useState<Plugin | null>(null)
   const [note, setNote] = useState("")
+  const [managing, setManaging] = useState<Plugin | null>(null)
+  const [metaForm, setMetaForm] = useState({ name: "", author: "", description: "" })
+  const [stateTarget, setStateTarget] = useState<Plugin | null>(null)
+  const [stateAction, setStateAction] = useState("delisted")
+  const [stateReason, setStateReason] = useState("")
+  const [busy, setBusy] = useState(false)
 
   const load = (search = q, next = page) => {
     setLoading(true)
@@ -41,6 +47,40 @@ export function PluginsPage() {
   useEffect(() => {
     load(q, page)
   }, [page])
+
+  const openManage = (item: Plugin) => {
+    setManaging(item)
+    setMetaForm({ name: item.name || "", author: item.author || "", description: item.description || "" })
+  }
+
+  const saveMetadata = () => {
+    if (!managing) return
+    setBusy(true)
+    api
+      .post(`/admin/api/plugins/${encodeURIComponent(managing.id)}/metadata`, metaForm)
+      .then(() => {
+        toast("已提交信息修订")
+        setManaging(null)
+        load()
+      })
+      .catch((err: Error) => toast(err.message, "err"))
+      .finally(() => setBusy(false))
+  }
+
+  const changeState = () => {
+    if (!stateTarget) return
+    setBusy(true)
+    api
+      .post(`/admin/api/plugins/${encodeURIComponent(stateTarget.id)}/state`, { state: stateAction, reason: stateReason })
+      .then(() => {
+        toast("已更新")
+        setStateTarget(null)
+        setStateReason("")
+        load()
+      })
+      .catch((err: Error) => toast(err.message, "err"))
+      .finally(() => setBusy(false))
+  }
 
   return (
     <>
@@ -84,7 +124,7 @@ export function PluginsPage() {
                   </td>
                   <td>{formatRelative(item.updated_at)}</td>
                   <td>
-                    {item.pending_version_id && (
+                    {item.pending_version_id ? (
                       <div className="row-actions">
                         <button
                           className="btn btn-primary"
@@ -103,6 +143,15 @@ export function PluginsPage() {
                         <button className="btn btn-danger" type="button" onClick={() => setRejecting(item)}>
                           退回
                         </button>
+                      </div>
+                    ) : (
+                      <div className="row-actions">
+                        <button className="btn" type="button" onClick={() => openManage(item)}>编辑信息</button>
+                        {item.state === "listed" ? (
+                          <button className="btn" type="button" onClick={() => { setStateTarget(item); setStateAction("delisted"); setStateReason("") }}>下架</button>
+                        ) : item.state === "delisted" ? (
+                          <button className="btn" type="button" onClick={() => { setStateTarget(item); setStateAction("listed"); setStateReason("") }}>重新上架</button>
+                        ) : null}
                       </div>
                     )}
                   </td>
@@ -146,6 +195,42 @@ export function PluginsPage() {
       >
         <Field label="理由">
           <textarea value={note} onChange={(event) => setNote(event.target.value)} />
+        </Field>
+      </Dialog>
+      <Dialog
+        open={!!managing}
+        title={`编辑 ${managing?.name || "插件"} 信息`}
+        hint="提交后进入待审版本，通过后生效。"
+        onClose={() => setManaging(null)}
+        footer={
+          <button className="btn btn-primary" type="button" disabled={busy} onClick={saveMetadata}>
+            提交修订
+          </button>
+        }
+      >
+        <Field label="名称">
+          <input value={metaForm.name} onChange={(event) => setMetaForm({ ...metaForm, name: event.target.value })} />
+        </Field>
+        <Field label="作者">
+          <input value={metaForm.author} onChange={(event) => setMetaForm({ ...metaForm, author: event.target.value })} />
+        </Field>
+        <Field label="描述">
+          <textarea value={metaForm.description} onChange={(event) => setMetaForm({ ...metaForm, description: event.target.value })} />
+        </Field>
+      </Dialog>
+      <Dialog
+        open={!!stateTarget}
+        title={stateAction === "delisted" ? "下架插件" : "重新上架插件"}
+        hint={stateAction === "delisted" ? "下架后用户将无法发现该插件。" : "重新上架该插件。"}
+        onClose={() => setStateTarget(null)}
+        footer={
+          <button className={`btn ${stateAction === "delisted" ? "btn-danger" : "btn-primary"}`} type="button" disabled={busy} onClick={changeState}>
+            确认
+          </button>
+        }
+      >
+        <Field label="原因（可选）">
+          <textarea value={stateReason} onChange={(event) => setStateReason(event.target.value)} />
         </Field>
       </Dialog>
     </>

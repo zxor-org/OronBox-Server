@@ -37,19 +37,6 @@ func TestAdminOAuthReturnIsLimitedToDashboardGET(t *testing.T) {
 	}
 }
 
-func TestAdminFeedbackReturnURLStaysInsideMatchingList(t *testing.T) {
-	t.Parallel()
-	if got := adminFeedbackReturnURL("/admin/reports?status=open&page=3", true); got != "/admin/reports?status=open&page=3" {
-		t.Fatalf("report return URL = %q", got)
-	}
-	if got := adminFeedbackReturnURL("https://example.com/admin/reports", true); got != "/admin/reports" {
-		t.Fatalf("external return URL = %q", got)
-	}
-	if got := adminFeedbackReturnURL("/admin/feedback?kind=feedback", true); got != "/admin/reports" {
-		t.Fatalf("cross-list return URL = %q", got)
-	}
-}
-
 func TestAdminMutationRequiresConfiguredOrigin(t *testing.T) {
 	t.Parallel()
 	app := &App{cfg: config.Config{PublicURL: "https://ob-api.zxor.org"}}

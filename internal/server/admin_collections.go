@@ -11,26 +11,6 @@ import (
 
 var errCollectionRejectReasonRequired = errors.New("拒绝合集修订必须填写理由，创作者需要知道要改什么")
 
-func (a *App) handleAdminCollectionDraft(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	actor := currentAdmin(r)
-	memberText := strings.NewReplacer(",", " ", "\r", " ", "\n", " ").Replace(r.FormValue("resource_ids"))
-	revision, err := a.store.AdminUpdateCollectionMetadata(r.Context(), r.PathValue("collection"), store.AdminCollectionMetadataInput{
-		Name: r.FormValue("name"), Summary: r.FormValue("summary"), Enabled: r.FormValue("enabled") == "on",
-		RepresentativeResourceID: r.FormValue("representative_resource_id"), ResourceIDs: strings.Fields(memberText), CreatedBy: actor.UserID,
-	})
-	if err != nil {
-		_ = a.store.RecordAudit(r.Context(), actor, "collection.draft", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	_ = a.store.RecordAudit(r.Context(), actor, "collection.draft", "success", a.clientIP(r), r.UserAgent(), "collection="+r.PathValue("collection")+" revision="+revision.ID)
-	http.Redirect(w, r, "/admin/collections/"+r.PathValue("collection")+"?action=drafted", http.StatusFound)
-}
-
 func (a *App) handleAdminCollectionReviewQueue(w http.ResponseWriter, r *http.Request) {
 	items, err := a.creator.CollectionReviewQueue(r.Context())
 	if err != nil {
