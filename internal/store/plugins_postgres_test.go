@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"os"
 	"strings"
@@ -102,14 +103,19 @@ func TestPluginModerationLifecycle(t *testing.T) {
 		}
 		return plugins
 	}
-	lastMessage := func() (string, string) {
+	lastMessage := func() (string, map[string]any) {
 		t.Helper()
-		var title, body string
-		err := db.QueryRowContext(ctx, `SELECT title,body FROM user_messages WHERE user_id=$1 AND kind='moderation' ORDER BY created_at DESC LIMIT 1`, uploaderID).Scan(&title, &body)
+		var event string
+		var data []byte
+		err := db.QueryRowContext(ctx, `SELECT event,data FROM user_messages WHERE user_id=$1 AND kind='moderation' ORDER BY created_at DESC LIMIT 1`, uploaderID).Scan(&event, &data)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return title, body
+		var metadata map[string]any
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			t.Fatalf("invalid notification metadata: %v", err)
+		}
+		return event, metadata
 	}
 	setState := func(state, reason string) {
 		t.Helper()
@@ -133,8 +139,15 @@ func TestPluginModerationLifecycle(t *testing.T) {
 	if got := publicCount(); got != 1 {
 		t.Fatalf("approved plugin missing from public catalog: %d entries", got)
 	}
-	if title, _ := lastMessage(); title != "插件审核已通过" {
-		t.Fatalf("unexpected approval message: %s", title)
+	if event, data := lastMessage(); event != "plugin.approved" || data["plugin_id"] != record.ID {
+		t.Fatalf("unexpected approval message: %s %#v", event, data)
+	}
+	var moderationMessages int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1 AND kind='moderation'`, uploaderID).Scan(&moderationMessages); err != nil {
+		t.Fatal(err)
+	}
+	if moderationMessages != 1 {
+		t.Fatalf("initial approval notifications = %d, want 1", moderationMessages)
 	}
 
 	upload()
@@ -149,8 +162,8 @@ func TestPluginModerationLifecycle(t *testing.T) {
 	if plugin := pluginState(); plugin.State != "listed" || plugin.PendingVersionID != "" || plugin.ModerationReason != "contains malware" {
 		t.Fatalf("rejection not recorded: %+v", plugin)
 	}
-	if title, body := lastMessage(); title != "插件审核未通过" || !strings.Contains(body, "contains malware") {
-		t.Fatalf("unexpected rejection message: %s %s", title, body)
+	if event, data := lastMessage(); event != "plugin.rejected" || data["reason"] != "contains malware" {
+		t.Fatalf("unexpected rejection message: %s %#v", event, data)
 	}
 
 	setState("listed", "")
@@ -161,16 +174,16 @@ func TestPluginModerationLifecycle(t *testing.T) {
 	if entries := viewerEntries(); len(entries) != 1 || entries[0].State != "delisted" || entries[0].ModerationReason != "abuse report" {
 		t.Fatalf("uploader must see own delisted plugin with reason: %+v", entries)
 	}
-	if title, body := lastMessage(); title != "插件已被下架" || !strings.Contains(body, "abuse report") {
-		t.Fatalf("unexpected delist message: %s %s", title, body)
+	if event, data := lastMessage(); event != "plugin.delisted" || data["reason"] != "abuse report" {
+		t.Fatalf("unexpected delist message: %s %#v", event, data)
 	}
 
 	setState("listed", "")
 	if got := publicCount(); got != 1 {
 		t.Fatalf("restored plugin missing from public catalog: %d entries", got)
 	}
-	if title, _ := lastMessage(); title != "插件已恢复上架" {
-		t.Fatalf("unexpected restore message: %s", title)
+	if event, _ := lastMessage(); event != "plugin.relisted" {
+		t.Fatalf("unexpected restore message: %s", event)
 	}
 
 	if _, err := s.SetPluginState(ctx, "com.example.missing", "listed", ""); err == nil {

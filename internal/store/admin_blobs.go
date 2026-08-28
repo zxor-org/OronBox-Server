@@ -32,20 +32,20 @@ type AdminBlobQuery struct {
 }
 
 type AdminBlobItem struct {
-	SHA256          string
-	SizeBytes       int64
-	MediaType       string
-	LocalKey        string
-	LocalAvailable  bool
-	R2ObjectKey     string
-	R2State         string
-	R2ErrorMessage  string
-	R2Attempts      int
-	R2NextAttemptAt *time.Time
-	R2UpdatedAt     *time.Time
-	Referenced      bool
-	ReferenceCount  int
-	CreatedAt       time.Time
+	SHA256          string     `json:"sha256"`
+	SizeBytes       int64      `json:"size_bytes"`
+	MediaType       string     `json:"media_type"`
+	LocalKey        string     `json:"local_key"`
+	LocalAvailable  bool       `json:"local_available"`
+	R2ObjectKey     string     `json:"r2_object_key"`
+	R2State         string     `json:"r2_state"`
+	R2ErrorMessage  string     `json:"r2_error_message,omitempty"`
+	R2Attempts      int        `json:"r2_attempts"`
+	R2NextAttemptAt *time.Time `json:"r2_next_attempt_at,omitempty"`
+	R2UpdatedAt     *time.Time `json:"r2_updated_at,omitempty"`
+	Referenced      bool       `json:"referenced"`
+	ReferenceCount  int        `json:"reference_count"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type AdminBlobPage struct {
@@ -58,43 +58,43 @@ type AdminBlobPage struct {
 }
 
 type AdminBlobResourceReference struct {
-	ID       string
-	Slug     string
-	Kind     string
-	Platform string
-	Name     string
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Kind     string `json:"kind"`
+	Platform string `json:"platform"`
+	Name     string `json:"name"`
 }
 
 type AdminBlobRevisionReference struct {
-	ID             string
-	ResourceID     string
-	ResourceSlug   string
-	RevisionNumber int
-	Name           string
-	State          string
-	Usages         string
+	ID             string `json:"id"`
+	ResourceID     string `json:"resource_id"`
+	ResourceSlug   string `json:"resource_slug"`
+	RevisionNumber int    `json:"revision_number"`
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	Usages         string `json:"usages"`
 }
 
 type AdminBlobBlogReference struct {
-	Slug      string
-	Title     string
-	Published bool
-	Usage     string
+	Slug      string `json:"slug"`
+	Title     string `json:"title"`
+	Published bool   `json:"published"`
+	Usage     string `json:"usage"`
 }
 
 type AdminBlobBannerReference struct {
-	ID       string
-	Title    string
-	Enabled  bool
-	Position int
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Enabled  bool   `json:"enabled"`
+	Position int    `json:"position"`
 }
 
 type AdminBlobDetail struct {
-	Blob      AdminBlobItem
-	Resources []AdminBlobResourceReference
-	Revisions []AdminBlobRevisionReference
-	Blogs     []AdminBlobBlogReference
-	Banners   []AdminBlobBannerReference
+	Blob      AdminBlobItem                `json:"blob"`
+	Resources []AdminBlobResourceReference `json:"resources"`
+	Revisions []AdminBlobRevisionReference `json:"revisions"`
+	Blogs     []AdminBlobBlogReference     `json:"blogs"`
+	Banners   []AdminBlobBannerReference   `json:"banners"`
 }
 
 func (query AdminBlobQuery) normalized() AdminBlobQuery {

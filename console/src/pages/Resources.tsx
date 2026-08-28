@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { listResources, type ResourceItem } from "../api";
-import { Pagination, SearchForm, Status, TargetChips, formatRelative, kindLabel, stateLabel } from "../ui";
+import { PageHeader, Pagination, SearchForm, Status, TableState, TargetChips, formatRelative, kindLabel, stateLabel } from "../ui";
 
 export function ResourcesPage() {
   const navigate = useNavigate();
@@ -17,6 +17,7 @@ export function ResourcesPage() {
 
   const load = (search = q, nextPage = page) => {
     setLoading(true);
+    setError("");
     listResources(search, kind, state, nextPage, target)
       .then((data) => {
         setItems(data.items || []);
@@ -32,8 +33,7 @@ export function ResourcesPage() {
 
   return (
     <>
-      <header className="page-head">
-        <p>点行进入工作区。发布目标来自当前版本的发布计划。</p>
+      <PageHeader title="全部资源" hint="点行进入工作区，发布目标来自当前版本的发布计划">
         <SearchForm
           value={q}
           onChange={setQ}
@@ -43,7 +43,7 @@ export function ResourcesPage() {
           }}
           placeholder="搜索名称或作者"
         />
-      </header>
+      </PageHeader>
       <div className="toolbar">
         <select value={kind} onChange={(event) => { setKind(event.target.value); setPage(1); }}>
           <option value="">全部类型</option>
@@ -66,10 +66,7 @@ export function ResourcesPage() {
         </select>
       </div>
       <div className="table-wrap">
-        {error && <div className="error">{error}</div>}
-        {loading && <div className="empty">加载中…</div>}
-        {!loading && items.length === 0 && <div className="empty">没有匹配的资源</div>}
-        {!loading && items.length > 0 && (
+        <TableState loading={loading} error={error} onRetry={() => void load()} isEmpty={!items.length} empty={q ? "没有匹配的资源" : "没有资源"}>
           <table>
             <thead>
               <tr>
@@ -98,7 +95,7 @@ export function ResourcesPage() {
               ))}
             </tbody>
           </table>
-        )}
+        </TableState>
       </div>
       <Pagination page={page} total={total} perPage={25} onChange={setPage} />
     </>

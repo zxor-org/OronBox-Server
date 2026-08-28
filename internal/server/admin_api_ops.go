@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -374,7 +375,11 @@ func (a *App) handleAdminAPIModerationPrompt(w http.ResponseWriter, r *http.Requ
 func (a *App) handleAdminAPIUserDetail(w http.ResponseWriter, r *http.Request) {
 	detail, err := a.store.AdminUserDetail(r.Context(), r.PathValue("user"), store.AdminUserDetailQuery{})
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrAdminUserNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorBody("user_detail_failed", err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -569,7 +574,11 @@ func (a *App) handleAdminAPIBlobs(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleAdminAPIBlob(w http.ResponseWriter, r *http.Request) {
 	detail, err := a.store.AdminBlob(r.Context(), r.PathValue("sha256"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrAdminBlobNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", "blob was not found"))
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorBody("blob_failed", err.Error()))
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -598,6 +607,24 @@ func (a *App) handleAdminAPIOAuthEvents(w http.ResponseWriter, r *http.Request) 
 	writeList(w, page.Items, page.Total, page.Page, page.PerPage, nil, "oauth_failed")
 }
 
+func (a *App) handleAdminAPIOAuthEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "invalid OAuth event id"))
+		return
+	}
+	detail, err := a.store.AdminOAuthEvent(r.Context(), id)
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("not_found", "OAuth event was not found"))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("oauth_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func (a *App) handleAdminAPIOAuthStates(w http.ResponseWriter, r *http.Request) {
 	from, to := adminTimeRange(r.URL.Query())
 	page, err := a.store.AdminOAuthStates(r.Context(), store.AdminOAuthStateQuery{
@@ -611,6 +638,19 @@ func (a *App) handleAdminAPIOAuthStates(w http.ResponseWriter, r *http.Request) 
 	writeList(w, page.Items, page.Total, page.Page, page.PerPage, nil, "oauth_failed")
 }
 
+func (a *App) handleAdminAPIOAuthState(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.AdminOAuthState(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("not_found", "OAuth state was not found"))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("oauth_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func (a *App) handleAdminAPIOAuthTickets(w http.ResponseWriter, r *http.Request) {
 	from, to := adminTimeRange(r.URL.Query())
 	page, err := a.store.AdminOAuthTickets(r.Context(), store.AdminOAuthTicketQuery{
@@ -622,6 +662,19 @@ func (a *App) handleAdminAPIOAuthTickets(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeList(w, page.Items, page.Total, page.Page, page.PerPage, nil, "oauth_failed")
+}
+
+func (a *App) handleAdminAPIOAuthTicket(w http.ResponseWriter, r *http.Request) {
+	detail, err := a.store.AdminOAuthTicket(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrAdminDiagnosticNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody("not_found", "OAuth ticket was not found"))
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("oauth_failed", err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func (a *App) handleAdminAPIClients(w http.ResponseWriter, r *http.Request) {
@@ -734,7 +787,11 @@ func (a *App) handleAdminAPIPublicationsRetry(w http.ResponseWriter, r *http.Req
 func (a *App) handleAdminAPICollectionGet(w http.ResponseWriter, r *http.Request) {
 	detail, err := a.store.AdminCollection(r.Context(), r.PathValue("collection"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrAdminResourceNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", "collection was not found"))
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorBody("collection_failed", err.Error()))
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -758,7 +815,11 @@ func (a *App) handleAdminAPICollectionSave(w http.ResponseWriter, r *http.Reques
 func (a *App) handleAdminAPITicketDetail(w http.ResponseWriter, r *http.Request) {
 	detail, err := a.store.AdminFeedbackDetail(r.Context(), r.PathValue("ticket"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrFeedbackNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", "ticket was not found"))
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorBody("ticket_failed", err.Error()))
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -766,13 +827,17 @@ func (a *App) handleAdminAPITicketDetail(w http.ResponseWriter, r *http.Request)
 
 func (a *App) handleAdminAPIAuditDetail(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
+	if err != nil || id < 1 {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "invalid id"))
 		return
 	}
 	item, err := a.store.AdminAuditLog(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrAdminAuditNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", "audit log was not found"))
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorBody("audit_failed", err.Error()))
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -781,7 +846,11 @@ func (a *App) handleAdminAPIAuditDetail(w http.ResponseWriter, r *http.Request) 
 func (a *App) handleAdminAPIPluginGet(w http.ResponseWriter, r *http.Request) {
 	detail, err := a.store.AdminPluginV2(r.Context(), r.PathValue("plugin"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("not_found", err.Error()))
+		if errors.Is(err, store.ErrPluginNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("not_found", "plugin was not found"))
+		} else {
+			writeJSON(w, http.StatusInternalServerError, errorBody("plugin_failed", err.Error()))
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)

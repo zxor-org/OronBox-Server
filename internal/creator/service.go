@@ -948,9 +948,11 @@ func (s *Service) PublicHomeFeed(ctx context.Context, query PublicHomeQuery) (Pu
 		return !excludedID
 	}
 	return PublicHomeFeed{
-		Featured:    selectRow(featured, allow, 0),
-		Recommended: selectRow(recommended, allow, 2),
+		// Match the client-facing order so duplicates stay in the first
+		// section users see.
 		Latest:      selectRow(latest, allow, 2),
+		Recommended: selectRow(recommended, allow, 2),
+		Featured:    selectRow(featured, allow, 0),
 	}, nil
 }
 

@@ -134,8 +134,8 @@ func TestAdminUserGovernance(t *testing.T) {
 	if unread != 7 || len(items) != 7 {
 		t.Fatalf("messages = %d unread = %d, want 7", len(items), unread)
 	}
-	if items[0].Type == "" || items[0].Type != items[0].Kind {
-		t.Fatalf("message type alias = %#v", items[0])
+	if items[0].Event != "announcement.published" || string(items[0].Data) == "{}" {
+		t.Fatalf("structured message = %#v", items[0])
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE user_messages SET expires_at=now()-interval '1 second' WHERE user_id=$1 AND kind='admin_message'`, userID); err != nil {
 		t.Fatal(err)

@@ -5,7 +5,7 @@ export type Session = {
   pending_reviews: number
 }
 
-type List<T> = { items: T[]; total: number; page: number; per_page: number }
+export type List<T> = { items: T[]; total: number; page: number; per_page: number; total_pages?: number }
 
 let csrf = ""
 
@@ -94,19 +94,19 @@ export function decideComment(id: string, action: string, note = "") {
 }
 
 export function setUserState(id: string, action: string, reason = "", role = "") {
-  return api.post(`/admin/api/users/${id}/state`, { action, reason, role })
+  return api.post(`/admin/api/users/${encodeURIComponent(id)}/state`, { action, reason, role })
 }
 
 export function replyTicket(id: string, status: string, reply = "") {
-  return api.post(`/admin/api/tickets/${id}`, { status, reply })
+  return api.post(`/admin/api/tickets/${encodeURIComponent(id)}`, { status, reply })
 }
 
 export function reviewPlugin(id: string, decision: "approve" | "reject", note = "") {
-  return api.post(`/admin/api/plugins/${id}`, { decision, note })
+  return api.post(`/admin/api/plugins/${encodeURIComponent(id)}`, { decision, note })
 }
 
 export function retryPublication(id: string) {
-  return api.post(`/admin/api/publications/${id}`, { action: "requeue" })
+  return api.post(`/admin/api/publications/${encodeURIComponent(id)}`, { action: "requeue" })
 }
 
 export type ResourceItem = Record<string, unknown> & { id: string; name?: string; slug?: string; kind?: string; owner?: string; moderation?: string; revision_name?: string; revision_number?: number; review_state?: string; updated_at?: string; targets?: string[] }

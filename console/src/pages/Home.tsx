@@ -15,31 +15,48 @@ type Overview = {
 
 export function HomePage({ session }: { session: Session }) {
   const [overview, setOverview] = useState<Overview | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+
+  const load = async () => {
+    setLoading(true)
+    setError("")
+    try {
+      setOverview(await api.get<Overview>("/admin/api/overview"))
+    } catch (err) {
+      setOverview(null)
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    api.get<Overview>("/admin/api/overview").then(setOverview).catch(() => setOverview({
-      pending_reviews: session.pending_reviews,
-      overdue_reviews: 0,
-      pending_comments: 0,
-      open_reports: 0,
-      failed_publications: 0,
-      pending_plugins: 0,
-    }))
+    void load()
   }, [session.pending_reviews])
 
+  const number = (value: number, fallback = "—") => overview ? value : loading ? "…" : fallback
   const cards = [
-    { to: "/review", num: overview?.pending_reviews ?? session.pending_reviews, label: "待审核", hint: overview?.overdue_reviews ? `${overview.overdue_reviews} 条已超时` : "", icon: ClipboardTextIcon },
-    { to: "/comments", num: overview?.pending_comments ?? "…", label: "待处理评论", icon: ChatCircleIcon },
-    { to: "/reports", num: overview?.open_reports ?? "…", label: "未关闭举报", icon: FlagIcon },
-    { to: "/publications", num: overview?.failed_publications ?? "…", label: "失败的发布", icon: CloudArrowUpIcon },
-    { to: "/plugins", num: overview?.pending_plugins ?? "…", label: "待审插件", icon: PuzzlePieceIcon },
+    { to: "/review", num: overview?.pending_reviews ?? (loading ? session.pending_reviews : "—"), label: "待审核", hint: overview?.overdue_reviews ? `${overview.overdue_reviews} 条已超时` : "", icon: ClipboardTextIcon },
+    { to: "/comments", num: number(overview?.pending_comments || 0), label: "待处理评论", icon: ChatCircleIcon },
+    { to: "/reports", num: number(overview?.open_reports || 0), label: "未关闭举报", icon: FlagIcon },
+    { to: "/publications", num: number(overview?.failed_publications || 0), label: "失败的发布", icon: CloudArrowUpIcon },
+    { to: "/plugins", num: number(overview?.pending_plugins || 0), label: "待审插件", icon: PuzzlePieceIcon },
     { to: "/resources", num: "→", label: "进入全部资源", icon: PackageIcon },
   ]
 
   return (
     <>
-      <PageHeader hint={`你好，${session.user}。先处理超时审核和失败发布。`} />
+      <PageHeader title="概览" hint={`你好，${session.user}。先处理超时审核和失败发布`}>
+        <button className="btn" type="button" onClick={() => void load()} disabled={loading}>刷新</button>
+      </PageHeader>
       <div className="page-body">
+        {error ? (
+          <div className="table-state error page-error">
+            <span>概览加载失败：{error}</span>
+            <button className="btn small-btn" type="button" onClick={() => void load()}>重试</button>
+          </div>
+        ) : null}
         <div className="stats">
           {cards.map((card) => {
             const Icon = card.icon

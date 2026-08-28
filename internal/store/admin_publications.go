@@ -40,31 +40,31 @@ type AdminPublicationDevice struct {
 
 type AdminPublicationItem struct {
 	AdminPublication
-	ResourceID       string
-	ResourceSlug     string
-	ResourceKind     string
-	ResourcePlatform string
-	RevisionID       string
-	RevisionNumber   int
-	RevisionName     string
-	RevisionState    string
-	OwnerID          string
-	Owner            string
-	Devices          []AdminPublicationDevice
-	CreatedAt        time.Time
-	History          []AdminPublicationAttempt
+	ResourceID       string                    `json:"resource_id"`
+	ResourceSlug     string                    `json:"resource_slug"`
+	ResourceKind     string                    `json:"resource_kind"`
+	ResourcePlatform string                    `json:"resource_platform"`
+	RevisionID       string                    `json:"revision_id"`
+	RevisionNumber   int                       `json:"revision_number"`
+	RevisionName     string                    `json:"revision_name"`
+	RevisionState    string                    `json:"revision_state"`
+	OwnerID          string                    `json:"owner_id"`
+	Owner            string                    `json:"owner"`
+	Devices          []AdminPublicationDevice  `json:"devices"`
+	CreatedAt        time.Time                 `json:"created_at"`
+	History          []AdminPublicationAttempt `json:"history"`
 }
 
 type AdminPublicationAttempt struct {
-	ID            int64
-	AttemptNumber int
-	Phase         string
-	Event         string
-	StateFrom     string
-	StateTo       string
-	ErrorMessage  string
-	Detail        json.RawMessage
-	CreatedAt     time.Time
+	ID            int64           `json:"id"`
+	AttemptNumber int             `json:"attempt_number"`
+	Phase         string          `json:"phase"`
+	Event         string          `json:"event"`
+	StateFrom     string          `json:"state_from"`
+	StateTo       string          `json:"state_to"`
+	ErrorMessage  string          `json:"error_message,omitempty"`
+	Detail        json.RawMessage `json:"detail"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 type AdminPublicationPage struct {

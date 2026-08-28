@@ -12,17 +12,19 @@ import (
 )
 
 type AdminUserItem struct {
-	ID              string
-	BandBBSUserID   int64
-	Username        string
-	AvatarURL       string
-	Role            string
-	BannedAt        *time.Time
-	BanReason       string
-	CreatorFrozenAt *time.Time
-	ResourceCount   int
-	TicketCount     int
-	CreatedAt       time.Time
+	ID              string     `json:"id"`
+	BandBBSUserID   int64      `json:"bandbbs_user_id"`
+	Username        string     `json:"username"`
+	AvatarURL       string     `json:"avatar_url"`
+	Role            string     `json:"role"`
+	BannedAt        *time.Time `json:"banned_at,omitempty"`
+	BanReason       string     `json:"ban_reason,omitempty"`
+	CreatorFrozenAt *time.Time `json:"creator_frozen_at,omitempty"`
+	ResourceCount   int        `json:"resource_count"`
+	TicketCount     int        `json:"ticket_count"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	LastSeenAt      *time.Time `json:"last_seen_at,omitempty"`
 }
 
 type AdminUserQuery struct {
@@ -56,19 +58,42 @@ type AdminUserPage struct {
 
 var ErrAdminUserNotFound = errors.New("user was not found")
 
+const adminUserSelect = `u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,
+ (SELECT count(*) FROM resources r WHERE r.owner_id=u.id),
+ (SELECT count(*) FROM feedback_tickets t WHERE t.user_id=u.id),
+ u.created_at,u.updated_at,
+ (SELECT max(s.last_seen_at) FROM sessions s WHERE s.user_id=u.id)`
+
+func scanAdminUser(scanner interface{ Scan(...any) error }) (AdminUserItem, error) {
+	var item AdminUserItem
+	var bannedAt, frozenAt, lastSeenAt sql.NullTime
+	if err := scanner.Scan(
+		&item.ID, &item.BandBBSUserID, &item.Username, &item.AvatarURL, &item.Role,
+		&bannedAt, &item.BanReason, &frozenAt, &item.ResourceCount, &item.TicketCount,
+		&item.CreatedAt, &item.UpdatedAt, &lastSeenAt,
+	); err != nil {
+		return AdminUserItem{}, err
+	}
+	if bannedAt.Valid {
+		item.BannedAt = &bannedAt.Time
+	}
+	if frozenAt.Valid {
+		item.CreatorFrozenAt = &frozenAt.Time
+	}
+	if lastSeenAt.Valid {
+		item.LastSeenAt = &lastSeenAt.Time
+	}
+	return item, nil
+}
+
 func (s *Store) AdminUsers(ctx context.Context, raw AdminUserQuery) (AdminUserPage, error) {
 	query := raw.normalized()
-	filter := `($1='' OR u.username ILIKE '%'||$1||'%' OR CAST(u.bandbbs_user_id AS text)=$1)`
+	filter := `($1='' OR u.username ILIKE '%'||$1||'%' OR CAST(u.id AS text)=$1 OR CAST(u.bandbbs_user_id AS text)=$1)`
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users u WHERE `+filter, query.Search).Scan(&total); err != nil {
 		return AdminUserPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,
- (SELECT count(*) FROM resources r WHERE r.owner_id=u.id),
- (SELECT count(*) FROM feedback_tickets t WHERE t.user_id=u.id),
- u.created_at
-FROM users u WHERE `+filter+` ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`,
+	rows, err := s.db.QueryContext(ctx, `SELECT `+adminUserSelect+` FROM users u WHERE `+filter+` ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`,
 		query.Search, query.PerPage, (query.Page-1)*query.PerPage)
 	if err != nil {
 		return AdminUserPage{}, err
@@ -76,16 +101,9 @@ FROM users u WHERE `+filter+` ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`,
 	defer rows.Close()
 	page := AdminUserPage{Items: []AdminUserItem{}, Total: total, Page: query.Page, PerPage: query.PerPage, Query: query}
 	for rows.Next() {
-		var item AdminUserItem
-		var bannedAt, frozenAt sql.NullTime
-		if err := rows.Scan(&item.ID, &item.BandBBSUserID, &item.Username, &item.AvatarURL, &item.Role, &bannedAt, &item.BanReason, &frozenAt, &item.ResourceCount, &item.TicketCount, &item.CreatedAt); err != nil {
+		item, err := scanAdminUser(rows)
+		if err != nil {
 			return AdminUserPage{}, err
-		}
-		if bannedAt.Valid {
-			item.BannedAt = &bannedAt.Time
-		}
-		if frozenAt.Valid {
-			item.CreatorFrozenAt = &frozenAt.Time
 		}
 		page.Items = append(page.Items, item)
 	}
@@ -153,52 +171,20 @@ func (s *Store) AdminManageUser(ctx context.Context, id, action, reason, role st
 	default:
 		return AdminUserItem{}, fmt.Errorf("%w: unknown action", ErrAdminResourceConflict)
 	}
-	title, body := accountActionMessage(action, reason, role)
-	if title != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body,ref) VALUES(gen_random_uuid(),$1,'account',$2,$3,$4)`, id, title, body, action); err != nil {
-			return AdminUserItem{}, err
-		}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(gen_random_uuid(),$1,'account','account.'||$2,jsonb_build_object('action',$2::text,'reason',$3::text,'role',$4::text),'','',$2)`, id, action, reason, role); err != nil {
+		return AdminUserItem{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return AdminUserItem{}, err
 	}
 	var item AdminUserItem
-	row := s.db.QueryRowContext(ctx, `
-SELECT u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,
- (SELECT count(*) FROM resources r WHERE r.owner_id=u.id),
- (SELECT count(*) FROM feedback_tickets t WHERE t.user_id=u.id),
- u.created_at
-FROM users u WHERE u.id=$1`, id)
-	var bannedAt, frozenAt sql.NullTime
-	if err := row.Scan(&item.ID, &item.BandBBSUserID, &item.Username, &item.AvatarURL, &item.Role, &bannedAt, &item.BanReason, &frozenAt, &item.ResourceCount, &item.TicketCount, &item.CreatedAt); err != nil {
+	row := s.db.QueryRowContext(ctx, `SELECT `+adminUserSelect+` FROM users u WHERE u.id=$1`, id)
+	item, err = scanAdminUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AdminUserItem{}, ErrAdminUserNotFound
+	}
+	if err != nil {
 		return AdminUserItem{}, err
 	}
-	if bannedAt.Valid {
-		item.BannedAt = &bannedAt.Time
-	}
-	if frozenAt.Valid {
-		item.CreatorFrozenAt = &frozenAt.Time
-	}
-	return item, err
-}
-
-func accountActionMessage(action, reason, role string) (string, string) {
-	switch action {
-	case "ban":
-		body := "你的账号已被管理员封禁"
-		if reason != "" {
-			body += "：" + reason
-		}
-		return "账号已封禁", body
-	case "unban":
-		return "账号已解封", "你的账号已恢复正常使用"
-	case "freeze_creator":
-		return "创作者功能已冻结", "你暂时无法提交或管理资源"
-	case "unfreeze_creator":
-		return "创作者功能已恢复", "你现在可以继续提交和管理资源"
-	case "set_role":
-		return "账号角色已更新", "你的账号角色已调整为 " + role
-	default:
-		return "", ""
-	}
+	return item, nil
 }

@@ -17,6 +17,7 @@ import {
   kindLabel,
   mediaRoleLabel,
   paidLabel,
+  TableState,
   toast,
 } from "../ui"
 
@@ -89,7 +90,10 @@ export function ReviewPage() {
   const [target, setTarget] = useState("")
   const [state, setState] = useState("pending")
   const [sort, setSort] = useState("sla")
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState("")
   const [busy, setBusy] = useState(false)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -102,13 +106,21 @@ export function ReviewPage() {
   const [bulkNote, setBulkNote] = useState("")
   const [analysis, setAnalysis] = useState<Artifact | null>(null)
 
-  const load = () =>
-    listReviews(state, kind, { sort, target, q })
-      .then((data) => setItems((data.items || []) as Item[]))
-      .catch((err: Error) => setError(err.message))
+  const load = async (search = q) => {
+    setLoading(true)
+    setError("")
+    try {
+      const data = await listReviews(state, kind, { sort, target, q: search })
+      setItems((data.items || []) as Item[])
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    load()
+    void load()
   }, [kind, sort, target, state])
 
   useEffect(() => {
@@ -122,8 +134,13 @@ export function ReviewPage() {
   useEffect(() => {
     if (!id) {
       setDetail(null)
+      setDetailError("")
+      setDetailLoading(false)
       return
     }
+    setDetail(null)
+    setDetailError("")
+    setDetailLoading(true)
     getReview(id)
       .then((data) => {
         const value = data as Detail
@@ -131,7 +148,8 @@ export function ReviewPage() {
         setGrade(value.review.curation_grade === "featured" ? "featured" : "standard")
         setChecked(value.review.items?.length ? value.review.items : value.checklist_catalog || [])
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err: Error) => setDetailError(err.message))
+      .finally(() => setDetailLoading(false))
   }, [id])
 
   const catalog = detail?.checklist_catalog || ["图片合规", "安装包可安装", "描述与实际功能一致", "设备适配正确", "发布计划完整"]
@@ -157,11 +175,11 @@ export function ReviewPage() {
 
   return (
     <>
-      <PageHeader hint="按超时排队。先看发布目标、图片和安装包，再决定通过或退回。">
+      <PageHeader title="待审核" hint="按超时排队，先看发布目标、图片和安装包，再决定通过或退回">
         <SearchForm
           value={q}
           onChange={setQ}
-          onSubmit={() => load()}
+          onSubmit={() => void load(q)}
           placeholder="资源、创作者或审核 ID"
         />
         <button className="btn" type="button" disabled={!selected.length} onClick={() => setBulkOpen(true)}>
@@ -195,36 +213,39 @@ export function ReviewPage() {
       </div>
       <div className="split">
         <div className="queue">
-          {items.length === 0 && <Empty>没有符合筛选的审核单</Empty>}
-          {items.map((item) => (
-            <button key={item.id} type="button" className={`queue-item ${item.id === id ? "selected" : ""}`} onClick={() => navigate(`/review/${item.id}`)}>
-              <div className="title">
-                <input
-                  type="checkbox"
-                  checked={selected.includes(item.id)}
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => setSelected(event.target.checked ? [...selected, item.id] : selected.filter((value) => value !== item.id))}
-                />
-                <span>{item.name || "未命名"}</span>
-              </div>
-              <div className="meta">
-                <span>{item.owner}</span>
-                <span>{kindLabel[item.kind] || item.kind}</span>
-                <span>#{item.revision_number}</span>
-                {item.priority_label ? <span className="chip">{item.priority_label}</span> : null}
-              </div>
-              <TargetChips targets={item.targets} />
-              <div className={`hint ${item.overdue ? "overdue" : ""}`}>
-                {item.overdue ? "已超时" : item.waiting || formatRelative(item.updated_at)}
-                {item.reports ? ` · 举报 ${item.reports}` : ""}
-                {item.owner_rejections ? ` · 退回过 ${item.owner_rejections}` : ""}
-                {item.reviewer ? ` · ${item.reviewer}` : " · 未分配"}
-              </div>
-            </button>
-          ))}
+          <TableState loading={loading} error={error} onRetry={() => void load()} isEmpty={!items.length} empty="没有符合筛选的审核单">
+            {items.map((item) => (
+              <button key={item.id} type="button" className={`queue-item ${item.id === id ? "selected" : ""}`} onClick={() => navigate(`/review/${item.id}`)}>
+                <div className="title">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(item.id)}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => setSelected(event.target.checked ? [...selected, item.id] : selected.filter((value) => value !== item.id))}
+                  />
+                  <span>{item.name || "未命名"}</span>
+                </div>
+                <div className="meta">
+                  <span>{item.owner}</span>
+                  <span>{kindLabel[item.kind] || item.kind}</span>
+                  <span>#{item.revision_number}</span>
+                  {item.priority_label ? <span className="chip">{item.priority_label}</span> : null}
+                </div>
+                <TargetChips targets={item.targets} />
+                <div className={`hint ${item.overdue ? "overdue" : ""}`}>
+                  {item.overdue ? "已超时" : item.waiting || formatRelative(item.updated_at)}
+                  {item.reports ? ` · 举报 ${item.reports}` : ""}
+                  {item.owner_rejections ? ` · 退回过 ${item.owner_rejections}` : ""}
+                  {item.reviewer ? ` · ${item.reviewer}` : " · 未分配"}
+                </div>
+              </button>
+            ))}
+          </TableState>
         </div>
         <div className="detail">
           {!id && <div className="detail-empty">从左边选一条</div>}
+          {id && detailLoading && !detail && <Empty>加载中</Empty>}
+          {id && detailError && !detail && <div className="error detail-placeholder">{detailError}</div>}
           {id && detail && (
             <>
               <h2 className="detail-title">{detail.current?.name || "未命名"}</h2>

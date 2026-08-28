@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react"
+import { FormEvent, ReactNode, useEffect, useId, useState } from "react"
 
 type Toast = { id: number; text: string; tone: "ok" | "err" }
 
@@ -31,9 +31,9 @@ export function ToastHost() {
   }, [])
   if (!items.length) return null
   return (
-    <div className="toasts">
+    <div className="toasts" aria-live="polite" aria-atomic="true">
       {items.map((item) => (
-        <div key={item.id} className={`toast ${item.tone}`}>
+        <div key={item.id} className={`toast ${item.tone}`} role={item.tone === "err" ? "alert" : "status"}>
           {item.text}
         </div>
       ))}
@@ -56,8 +56,14 @@ export function formatRelative(value?: string) {
   return new Date(value).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
-export function formatBytes(value?: number) {
+export function formatDateTime(value?: string) {
   if (!value) return "—"
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false })
+}
+
+export function formatBytes(value?: number) {
+  if (value === undefined || value === null || Number.isNaN(value)) return "—"
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
@@ -66,6 +72,9 @@ export function formatBytes(value?: number) {
 export const kindLabel: Record<string, string> = { watchface: "表盘", app: "应用", quickapp: "快应用" }
 export const paidLabel: Record<string, string> = { free: "免费", paid: "付费", force_paid: "强制付费" }
 export const stateLabel: Record<string, string> = {
+  ok: "正常",
+  success: "成功",
+  failure: "失败",
   visible: "展示中",
   hidden: "已隐藏",
   frozen: "已冻结",
@@ -88,10 +97,24 @@ export const stateLabel: Record<string, string> = {
   investigating: "调查中",
   replied: "已回复",
   resolved: "已关闭",
+  closed: "已关闭",
+  dismissed: "已驳回",
+  revoked: "已撤销",
   banned: "已封禁",
+  ready: "已就绪",
+  uploaded: "已上传",
+  missing: "缺失",
+  uploading: "上传中",
+  pending_upload: "等待上传",
   enabled: "启用",
   disabled: "停用",
   standard: "普通",
+  active: "有效",
+  used: "已使用",
+  expired: "已过期",
+  delisted: "已下架",
+  read: "已读",
+  unread: "未读",
 }
 export const eventLabel: Record<string, string> = {
   checklist_saved: "保存清单",
@@ -118,6 +141,9 @@ export function targetLabel(value?: string) {
 }
 
 const statusClass: Record<string, string> = {
+  ok: "ok",
+  success: "ok",
+  failure: "danger",
   pending: "warn",
   review: "warn",
   submitted: "warn",
@@ -129,14 +155,24 @@ const statusClass: Record<string, string> = {
   banned: "danger",
   frozen: "warn",
   suspended: "danger",
+  missing: "danger",
+  pending_upload: "warn",
+  uploading: "warn",
   visible: "ok",
   approved: "ok",
   listed: "ok",
+  ready: "ok",
+  uploaded: "ok",
   resolved: "ok",
   replied: "ok",
   featured: "ok",
   enabled: "ok",
   published: "ok",
+  closed: "ok",
+  dismissed: "danger",
+  revoked: "danger",
+  expired: "danger",
+  delisted: "danger",
 }
 
 export function Status({ value, label }: { value: string; label?: string }) {
@@ -269,20 +305,29 @@ export function Pagination({ page, total, perPage, onChange }: { page: number; t
 export function SearchForm({ value, onChange, onSubmit, placeholder }: { value: string; onChange: (value: string) => void; onSubmit: () => void; placeholder: string }) {
   return (
     <form
+      className="search-form"
+      role="search"
       onSubmit={(event: FormEvent) => {
         event.preventDefault()
         onSubmit()
       }}
     >
-      <input className="search" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+      <input className="search" type="search" value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={placeholder} />
     </form>
   )
+}
+
+function cleanHint(value: string) {
+  return value.replace(/[。！？；]+$/u, "")
 }
 
 export function PageHeader({ title, hint, children }: { title?: string; hint?: string; children?: ReactNode }) {
   return (
     <header className="page-head">
-      <div>{hint ? <p>{hint}</p> : title ? <p>{title}</p> : null}</div>
+      <div className="page-head-copy">
+        {title ? <h1>{title}</h1> : null}
+        {hint ? <p>{cleanHint(hint)}</p> : null}
+      </div>
       <div className="page-head-actions">{children}</div>
     </header>
   )
@@ -290,6 +335,20 @@ export function PageHeader({ title, hint, children }: { title?: string; hint?: s
 
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>
+}
+
+export function TableState({ loading, error, isEmpty, empty, onRetry, children }: { loading: boolean; error?: string; isEmpty: boolean; empty: ReactNode; onRetry?: () => void; children: ReactNode }) {
+  if (loading) return <Empty>加载中</Empty>
+  if (error) {
+    return (
+      <div className="table-state error">
+        <span>{error}</span>
+        {onRetry ? <button className="btn small-btn" type="button" onClick={onRetry}>重试</button> : null}
+      </div>
+    )
+  }
+  if (isEmpty) return <Empty>{empty}</Empty>
+  return <>{children}</>
 }
 
 export function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -318,22 +377,36 @@ export function Dialog({
   footer?: ReactNode
   wide?: boolean
 }) {
+  const titleId = useId()
+  const hintId = useId()
   useEffect(() => {
     if (!open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose()
     }
     window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      document.body.style.overflow = previousOverflow
+    }
   }, [open, onClose])
   if (!open) return null
   return (
     <div className="dialog-back" onClick={onClose}>
-      <div className={`dialog ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+      <div
+        className={`dialog ${wide ? "wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={hint ? hintId : undefined}
+        onClick={(event) => event.stopPropagation()}
+      >
         <div className="dialog-head">
           <div>
-            <h2>{title}</h2>
-            {hint ? <p className="hint">{hint}</p> : null}
+            <h2 id={titleId}>{title}</h2>
+            {hint ? <p className="hint" id={hintId}>{cleanHint(hint)}</p> : null}
           </div>
           <button className="btn" type="button" onClick={onClose}>
             关闭
@@ -361,12 +434,63 @@ export function Tabs({ value, onChange, items }: { value: string; onChange: (val
 export function FieldList({ row, prefer }: { row: Record<string, unknown> | null; prefer?: string[] }) {
   if (!row) return null
   const keys = prefer?.filter((key) => row[key] !== undefined) || Object.keys(row).filter((key) => typeof row[key] !== "object")
+  const labels: Record<string, string> = {
+    id: "ID",
+    sha256: "SHA256",
+    created_at: "创建时间",
+    updated_at: "更新时间",
+    published_at: "发布时间",
+    expires_at: "过期时间",
+    last_seen: "最近活动",
+    last_seen_at: "最近活动",
+    size_bytes: "大小",
+    media_type: "媒体类型",
+    local_available: "本地文件",
+    r2_state: "副本状态",
+    referenced: "已引用",
+    reference_count: "引用数",
+    event_type: "事件",
+    error_code: "错误码",
+    error_message: "错误信息",
+    user_agent: "User-Agent",
+    user_id: "用户 ID",
+    username: "用户名",
+    actor_user_id: "操作者 ID",
+    app_id: "应用 ID",
+    app_version: "应用版本",
+    app_build: "构建版本",
+    platform: "平台",
+    provider: "服务商",
+    result: "结果",
+    status: "状态",
+    state_id: "State ID",
+    ticket_id: "Ticket ID",
+    target_source: "目标来源",
+    target_id: "目标 ID",
+    target_url: "目标地址",
+    attempts: "尝试次数",
+    next_attempt_at: "下次尝试",
+  }
+  const dateKeys = new Set(["created_at", "updated_at", "published_at", "expires_at", "last_seen", "last_seen_at", "used_at", "closed_at", "r2_updated_at", "next_attempt_at"])
+  const booleanKeys = new Set(["local_available", "referenced", "has_token"])
   return (
     <dl className="kv">
       {keys.map((key) => (
         <div key={key}>
-          <dt>{key}</dt>
-          <dd>{row[key] === null || row[key] === undefined ? "—" : typeof row[key] === "object" ? JSON.stringify(row[key]) : String(row[key])}</dd>
+          <dt>{labels[key] || key.replaceAll("_", " ")}</dt>
+          <dd>
+            {row[key] === null || row[key] === undefined || row[key] === ""
+              ? "—"
+              : booleanKeys.has(key)
+                ? row[key] ? "是" : "否"
+                : key === "size_bytes"
+                  ? formatBytes(Number(row[key]))
+                  : dateKeys.has(key)
+                    ? formatDateTime(String(row[key]))
+                    : typeof row[key] === "object"
+                      ? JSON.stringify(row[key])
+                      : String(row[key])}
+          </dd>
         </div>
       ))}
     </dl>

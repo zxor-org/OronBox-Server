@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -13,16 +14,12 @@ import (
 var ErrMessageRecipients = errors.New("at least one valid recipient is required")
 
 type UserMessage struct {
-	ID               string     `json:"id"`
-	Kind             string     `json:"kind"`
-	Type             string     `json:"type"`
-	Title            string     `json:"title"`
-	Body             string     `json:"body"`
-	Ref              string     `json:"ref,omitempty"`
-	TargetResourceID string     `json:"target_resource_id,omitempty"`
-	TargetCommentID  string     `json:"target_comment_id,omitempty"`
-	ReadAt           *time.Time `json:"read_at,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID        string          `json:"id"`
+	Kind      string          `json:"kind"`
+	Event     string          `json:"event"`
+	Data      json.RawMessage `json:"data"`
+	ReadAt    *time.Time      `json:"read_at,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 type Announcement struct {
@@ -35,18 +32,7 @@ type Announcement struct {
 
 func (s *Store) UserMessages(ctx context.Context, userID string) ([]UserMessage, int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT message.id::text,message.kind,message.title,message.body,message.ref,message.read_at,message.created_at,
- CASE
-  WHEN message.kind IN ('comment_reply','moderation') THEN COALESCE((SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=message.ref),(SELECT resource.id::text FROM resources resource WHERE resource.id::text=message.ref),'')
-  WHEN message.kind='review_result' THEN COALESCE((SELECT revision.resource_id::text FROM resource_revisions revision WHERE revision.id::text=message.ref),'')
-  WHEN message.kind='report_result' THEN COALESCE((SELECT CASE WHEN ticket.target_source='comment' THEN (SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=ticket.target_id) WHEN ticket.target_source IN ('oronBox','oronbox','resource') THEN ticket.target_id ELSE '' END FROM feedback_tickets ticket WHERE ticket.id::text=message.ref),'')
-  ELSE ''
- END,
- CASE
-  WHEN message.kind IN ('comment_reply','moderation') AND EXISTS(SELECT 1 FROM resource_comments comment WHERE comment.id::text=message.ref) THEN message.ref
-  WHEN message.kind='report_result' THEN COALESCE((SELECT CASE WHEN ticket.target_source='comment' THEN ticket.target_id ELSE '' END FROM feedback_tickets ticket WHERE ticket.id::text=message.ref),'')
-  ELSE ''
- END
+SELECT message.id::text,message.kind,message.event,message.data,message.read_at,message.created_at
 FROM user_messages message WHERE message.user_id=$1 AND message.expires_at>now() ORDER BY message.created_at DESC LIMIT 100`, userID)
 	if err != nil {
 		return nil, 0, err
@@ -55,11 +41,13 @@ FROM user_messages message WHERE message.user_id=$1 AND message.expires_at>now()
 	items := []UserMessage{}
 	for rows.Next() {
 		var item UserMessage
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Title, &item.Body, &item.Ref, &item.ReadAt, &item.CreatedAt, &item.TargetResourceID, &item.TargetCommentID); err != nil {
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Event, &item.Data, &item.ReadAt, &item.CreatedAt); err != nil {
 			return nil, 0, err
 		}
-		item.Type = item.Kind
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 	var unread int
 	err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1 AND read_at IS NULL AND expires_at>now()`, userID).Scan(&unread)
@@ -109,7 +97,7 @@ func (s *Store) CreateAnnouncement(ctx context.Context, actorID, title, body str
 	if _, err := tx.ExecContext(ctx, `INSERT INTO announcements(id,title,body,created_by) VALUES($1,$2,$3,$4)`, id, title, body, actorID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body,ref) SELECT gen_random_uuid(),id,'announcement',$2,$3,$1 FROM users`, id, title, body); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) SELECT gen_random_uuid(),id,'announcement','announcement.published',jsonb_build_object('announcement_id',$1::text,'title',$2::text,'body',$3::text),'','',$1 FROM users`, id, title, body); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -168,7 +156,7 @@ func (s *Store) CreateAdminMessages(ctx context.Context, userIDs []string, title
 	if len(valid) == 0 {
 		return 0, ErrMessageRecipients
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body) SELECT gen_random_uuid(),id,'admin_message',$2,$3 FROM users WHERE id=ANY($1::uuid[])`, valid, title, body)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body) SELECT gen_random_uuid(),id,'admin_message','admin.message',jsonb_build_object('title',$2::text,'body',$3::text),'','' FROM users WHERE id=ANY($1::uuid[])`, valid, title, body)
 	if err != nil {
 		return 0, err
 	}

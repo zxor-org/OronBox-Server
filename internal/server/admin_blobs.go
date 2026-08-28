@@ -1,14 +1,11 @@
 package server
 
 import (
-	"fmt"
 	"mime"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
 func (a *App) handleAdminBlobRequeue(w http.ResponseWriter, r *http.Request) {
@@ -52,15 +49,5 @@ func (a *App) handleAdminBlob(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	}
-	actor := currentAdmin(r)
-	_ = a.store.RecordAuditData(r.Context(), actor, "blob.read", "success", a.clientIP(r), r.UserAgent(), adminBlobReadAuditData(record.SHA256, r.URL.Query().Get("download") == "1"))
 	http.ServeContent(w, r, record.SHA256, time.Time{}, reader)
-}
-
-func adminBlobReadAuditData(sha256 string, download bool) store.AuditData {
-	return store.AuditData{
-		Message:  fmt.Sprintf("sha256=%s download=%t", sha256, download),
-		Target:   store.AuditTarget{Type: "blob", ID: sha256, Label: "sensitive blob read"},
-		Metadata: map[string]any{"download": download, "sensitive": true},
-	}
 }

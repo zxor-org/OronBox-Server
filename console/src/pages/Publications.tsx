@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useOutletContext } from "react-router"
 import { api, retryPublication, type Session } from "../api"
-import { Empty, PageHeader, Pagination, SearchForm, Status, targetLabel, toast } from "../ui"
+import { Empty, PageHeader, Pagination, SearchForm, Status, TableState, targetLabel, toast } from "../ui"
 
 type Item = { id: string; name: string; target: string; state: string; error: string }
 
@@ -14,15 +14,20 @@ export function PublicationsPage() {
   const [target, setTarget] = useState("")
   const [state, setState] = useState("")
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(true)
 
-  const load = (search = q, next = page) =>
-    api
+  const load = (search = q, next = page) => {
+    setLoading(true)
+    setError("")
+    return api
       .list<Item>("/admin/api/publications", { q: search, page: next, per_page: 25, target, state })
       .then((data) => {
         setItems(data.items || [])
         setTotal(data.total || 0)
       })
       .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
     load(q, page)
@@ -74,10 +79,8 @@ export function PublicationsPage() {
           <option value="published">已发布</option>
         </select>
       </div>
-      {error && <div className="error">{error}</div>}
       <div className="table-wrap">
-        {items.length === 0 && <Empty>没有发布任务</Empty>}
-        {items.length > 0 && (
+        <TableState loading={loading} error={error} onRetry={() => void load()} isEmpty={!items.length} empty={q ? "没有匹配的发布任务" : "没有发布任务"}>
           <table>
             <thead>
               <tr>
@@ -119,7 +122,7 @@ export function PublicationsPage() {
               ))}
             </tbody>
           </table>
-        )}
+        </TableState>
       </div>
       <Pagination page={page} total={total} perPage={25} onChange={setPage} />
     </>

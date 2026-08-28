@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { decideComment, listComments, type CommentItem } from "../api"
-import { Dialog, Empty, Field, PageHeader, Pagination, SearchForm, Status, toast } from "../ui"
+import { Dialog, Empty, Field, PageHeader, Pagination, SearchForm, Status, TableState, toast } from "../ui"
 
 export function CommentsPage() {
   const [items, setItems] = useState<CommentItem[]>([])
@@ -9,16 +9,21 @@ export function CommentsPage() {
   const [page, setPage] = useState(1)
   const [state, setState] = useState("review")
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(true)
   const [hiding, setHiding] = useState<CommentItem | null>(null)
   const [note, setNote] = useState("")
 
-  const load = (search = q, next = page, nextState = state) =>
-    listComments(nextState, search, next)
+  const load = (search = q, next = page, nextState = state) => {
+    setLoading(true)
+    setError("")
+    return listComments(nextState, search, next)
       .then((data) => {
         setItems(data.items || [])
         setTotal(data.total || 0)
       })
       .catch((err: Error) => setError(err.message))
+      .finally(() => setLoading(false))
+  }
 
   useEffect(() => {
     load(q, page, state)
@@ -60,10 +65,8 @@ export function CommentsPage() {
           <option value="hidden">已隐藏</option>
         </select>
       </div>
-      {error && <div className="error">{error}</div>}
       <div className="table-wrap">
-        {items.length === 0 && <Empty>没有评论</Empty>}
-        {items.length > 0 && (
+        <TableState loading={loading} error={error} onRetry={() => void load()} isEmpty={!items.length} empty={q ? "没有匹配的评论" : "没有评论"}>
           <table>
             <thead>
               <tr>
@@ -99,7 +102,7 @@ export function CommentsPage() {
               ))}
             </tbody>
           </table>
-        )}
+        </TableState>
       </div>
       <Pagination page={page} total={total} perPage={25} onChange={setPage} />
       <Dialog

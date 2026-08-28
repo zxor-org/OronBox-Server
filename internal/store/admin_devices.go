@@ -12,15 +12,15 @@ import (
 )
 
 type AdminDeviceItem struct {
-	ID            string
-	DisplayName   string
-	Codename      string
-	Platform      string
-	Vendor        string
-	AstroBoxID    string
-	Enabled       bool
-	ResourceCount int
-	ArtifactCount int
+	ID            string `json:"id"`
+	DisplayName   string `json:"display_name"`
+	Codename      string `json:"codename"`
+	Platform      string `json:"platform"`
+	Vendor        string `json:"vendor"`
+	AstroBoxID    string `json:"astrobox_id"`
+	Enabled       bool   `json:"enabled"`
+	ResourceCount int    `json:"resource_count"`
+	ArtifactCount int    `json:"artifact_count"`
 }
 
 type AdminDeviceQuery struct {
@@ -63,12 +63,12 @@ func (query AdminDeviceQuery) normalized() AdminDeviceQuery {
 }
 
 type AdminDevicePage struct {
-	Items      []AdminDeviceItem
-	Total      int
-	Page       int
-	PerPage    int
-	TotalPages int
-	Query      AdminDeviceQuery
+	Items      []AdminDeviceItem `json:"items"`
+	Total      int               `json:"total"`
+	Page       int               `json:"page"`
+	PerPage    int               `json:"per_page"`
+	TotalPages int               `json:"total_pages"`
+	Query      AdminDeviceQuery  `json:"query"`
 }
 
 var ErrAdminDeviceNotFound = errors.New("device was not found")
@@ -77,13 +77,13 @@ var ErrAdminDeviceConflict = errors.New("device update conflicts with the catalo
 var deviceCodenamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 type AdminDeviceInput struct {
-	ID          string
-	DisplayName string
-	Codename    string
-	Platform    string
-	Vendor      string
-	AstroBoxID  string
-	Enabled     bool
+	ID          string `json:"id,omitempty"`
+	DisplayName string `json:"display_name"`
+	Codename    string `json:"codename"`
+	Platform    string `json:"platform"`
+	Vendor      string `json:"vendor"`
+	AstroBoxID  string `json:"astrobox_id"`
+	Enabled     bool   `json:"enabled"`
 }
 
 func (input AdminDeviceInput) normalized() (AdminDeviceInput, error) {

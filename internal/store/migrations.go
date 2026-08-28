@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 6
+const schemaVersion int64 = 7
 
 // governanceSchema holds the moderation tables introduced in schema v6. It is
 // shared by the fresh install and the upgrade path so the two cannot drift.
@@ -72,16 +72,16 @@ ON CONFLICT DO NOTHING;
 
 // notificationFunctions is written with CREATE OR REPLACE so the upgrade path
 // can install the same definitions the fresh schema uses. Every message now
-// carries a stable machine-readable event name alongside the human copy, which
-// is what lets the client route a notification without parsing Chinese text.
+// carries a stable machine-readable event name and metadata, which lets the
+// client localize and route a notification without parsing server copy.
 const notificationFunctions = `
 CREATE OR REPLACE FUNCTION notify_comment_reply() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF NEW.parent_id IS NOT NULL AND NEW.moderation_state='visible' THEN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref)
   SELECT md5(random()::text||clock_timestamp()::text)::uuid,parent.user_id,'comment_reply','comment.replied',
-   jsonb_build_object('comment_id',NEW.id::text,'parent_id',NEW.parent_id::text,'resource_id',NEW.resource_id::text),
-   '评论收到回复',NEW.body,NEW.id::text
+   jsonb_build_object('comment_id',NEW.id::text,'parent_id',NEW.parent_id::text,'resource_id',NEW.resource_id::text,'body',NEW.body),
+   '','',NEW.id::text
   FROM resource_comments parent WHERE parent.id=NEW.parent_id AND parent.user_id<>NEW.user_id;
  END IF;
  RETURN NEW;
@@ -94,8 +94,7 @@ BEGIN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'moderation','comment.hidden',
    jsonb_build_object('comment_id',NEW.id::text,'resource_id',NEW.resource_id::text,'automated',TG_OP='INSERT'),
-   '评论已被隐藏',
-   CASE WHEN TG_OP='INSERT' THEN '你的评论未通过内容审核，暂时不可见，可在消息中发起申诉' ELSE '你的评论经人工复审后已被隐藏' END,
+   '','',
    NEW.id::text);
  END IF;
  RETURN NEW;
@@ -107,8 +106,7 @@ BEGIN
   SELECT md5(random()::text||clock_timestamp()::text)::uuid,resource.owner_id,'review_result',
    CASE NEW.state WHEN 'approved' THEN 'review.approved' ELSE 'review.rejected' END,
    jsonb_build_object('resource_id',resource.id::text,'revision_id',NEW.revision_id::text,'review_case_id',NEW.id::text,'note',NEW.note),
-   CASE NEW.state WHEN 'approved' THEN '资源审核已通过' ELSE '资源审核未通过' END,
-   CASE NEW.state WHEN 'approved' THEN '你的资源版本已通过审核' ELSE '你的资源版本需要修改'||CASE WHEN NEW.note='' THEN '' ELSE '：'||NEW.note END END,
+   '','',
    NEW.revision_id::text
   FROM resource_revisions revision JOIN resources resource ON resource.id=revision.resource_id WHERE revision.id=NEW.revision_id;
  END IF;
@@ -121,8 +119,7 @@ BEGIN
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.owner_id,'moderation',
    CASE NEW.moderation_state WHEN 'suspended' THEN 'resource.suspended' WHEN 'frozen' THEN 'resource.frozen' WHEN 'deleted' THEN 'resource.deleted' ELSE 'resource.restored' END,
    jsonb_build_object('resource_id',NEW.id::text,'state',NEW.moderation_state,'reason',COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason)),
-   CASE NEW.moderation_state WHEN 'suspended' THEN '资源已下架' WHEN 'frozen' THEN '资源已冻结' ELSE '资源已恢复' END,
-   CASE NEW.moderation_state WHEN 'suspended' THEN '资源已下架' WHEN 'frozen' THEN '资源已冻结' ELSE '资源已恢复' END||CASE WHEN COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason)='' THEN '' ELSE '：'||COALESCE(NULLIF(NEW.moderation_reason,''),OLD.moderation_reason) END,
+   '','',
    NEW.id::text);
  END IF;
  RETURN NEW;
@@ -132,8 +129,12 @@ BEGIN
  IF NEW.kind IN ('resource_report','comment_report') AND OLD.status<>NEW.status THEN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','report.updated',
-   jsonb_build_object('ticket_id',NEW.id::text,'status',NEW.status,'resolution',NEW.resolution),
-   '举报处理结果',CASE WHEN NEW.resolution='' THEN '举报处理状态已更新为 '||NEW.status ELSE NEW.resolution END,NEW.id::text);
+   jsonb_build_object(
+    'ticket_id',NEW.id::text,'status',NEW.status,'resolution',NEW.resolution,
+    'target_source',NEW.target_source,'target_id',NEW.target_id,
+    'resource_id',CASE WHEN lower(NEW.target_source) IN ('oronbox','resource') THEN NEW.target_id WHEN NEW.target_source='comment' THEN COALESCE((SELECT resource_id::text FROM resource_comments WHERE id::text=NEW.target_id),'') ELSE '' END,
+    'comment_id',CASE WHEN NEW.target_source='comment' THEN NEW.target_id ELSE '' END),
+   '','',NEW.id::text);
  END IF;
  RETURN NEW;
 END $$;
@@ -144,8 +145,7 @@ BEGIN
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.uploader_id,'moderation',
    CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN 'plugin.approved' ELSE 'plugin.relisted' END WHEN 'rejected' THEN 'plugin.rejected' ELSE 'plugin.delisted' END,
    jsonb_build_object('plugin_id',NEW.id,'state',NEW.state,'reason',NEW.moderation_reason),
-   CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '插件审核已通过' ELSE '插件已恢复上架' END WHEN 'rejected' THEN '插件审核未通过' ELSE '插件已被下架' END,
-   CASE NEW.state WHEN 'listed' THEN CASE WHEN OLD.state='pending' THEN '你上传的插件已通过审核并上架' ELSE '你上传的插件已恢复上架' END WHEN 'rejected' THEN '你上传的插件未通过审核' ELSE '你上传的插件已被管理员下架' END||CASE WHEN NEW.moderation_reason='' THEN '' ELSE '：'||NEW.moderation_reason END,
+   '','',
    NEW.id);
  END IF;
  RETURN NEW;
@@ -157,8 +157,7 @@ BEGIN
   SELECT md5(random()::text||clock_timestamp()::text)::uuid,collection.owner_id,'review_result',
    CASE NEW.state WHEN 'approved' THEN 'collection.approved' ELSE 'collection.rejected' END,
    jsonb_build_object('collection_id',collection.id::text,'revision_id',NEW.id::text,'note',NEW.review_note),
-   CASE NEW.state WHEN 'approved' THEN '合集审核已通过' ELSE '合集审核未通过' END,
-   CASE NEW.state WHEN 'approved' THEN '你的合集已通过审核' ELSE '你的合集需要修改'||CASE WHEN NEW.review_note='' THEN '' ELSE '：'||NEW.review_note END END,
+   '','',
    NEW.id::text
   FROM resource_collections collection WHERE collection.id=NEW.collection_id;
  END IF;
@@ -170,9 +169,8 @@ BEGIN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'account',
    CASE NEW.kind WHEN 'reversal' THEN 'coin.reversed' ELSE 'coin.adjusted' END,
-   jsonb_build_object('ledger_id',NEW.id::text,'delta_units',NEW.delta_units,'kind',NEW.kind,'reference_type',NEW.reference_type,'reference_id',NEW.reference_id,'note',NEW.note),
-   CASE WHEN NEW.kind='reversal' THEN '硬币记录已冲正' WHEN NEW.delta_units>0 THEN '硬币已到账' ELSE '硬币已扣除' END,
-   CASE WHEN NEW.delta_units>0 THEN '账户增加了 '||NEW.delta_units||' 枚硬币' ELSE '账户扣除了 '||abs(NEW.delta_units)||' 枚硬币' END||CASE WHEN NEW.note='' THEN '' ELSE '：'||NEW.note END,
+   jsonb_build_object('ledger_id',NEW.id::text,'delta_units',NEW.delta_units,'kind',NEW.kind,'reference_type',NEW.reference_type,'reference_id',NEW.reference_id,'reason',NEW.note),
+   '','',
    NEW.id::text);
  END IF;
  RETURN NEW;
@@ -183,7 +181,7 @@ BEGIN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'account','coin.vote_revoked',
    jsonb_build_object('resource_id',NEW.resource_id::text,'coins',NEW.coins,'reason',NEW.invalidation_reason),
-   '投币已作废','你对该资源的投币已被管理员作废'||CASE WHEN NEW.invalidation_reason='' THEN '' ELSE '：'||NEW.invalidation_reason END,
+   '','',
    NEW.resource_id::text);
  END IF;
  RETURN NEW;
@@ -194,8 +192,7 @@ BEGIN
   INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(
    md5(random()::text||clock_timestamp()::text)::uuid,NEW.user_id,'report_result','appeal.'||NEW.status,
    jsonb_build_object('appeal_id',NEW.id::text,'subject_type',NEW.subject_type,'subject_id',NEW.subject_id,'status',NEW.status,'resolution',NEW.resolution),
-   CASE NEW.status WHEN 'overturned' THEN '申诉已受理' WHEN 'upheld' THEN '申诉未改变原结果' ELSE '申诉已驳回' END,
-   CASE WHEN NEW.resolution<>'' THEN NEW.resolution WHEN NEW.status='overturned' THEN '管理员已撤销原处理结果' WHEN NEW.status='upheld' THEN '复核后维持原处理结果' ELSE '申诉未被受理' END,
+   '','',
    NEW.id::text);
  END IF;
  RETURN NEW;
@@ -256,6 +253,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 				{from: 3, apply: migrateSchemaV4},
 				{from: 4, apply: migrateSchemaV5},
 				{from: 5, apply: migrateSchemaV6},
+				{from: 6, apply: migrateSchemaV7},
 			}
 			for _, step := range steps {
 				if installedVersion.Int64 > step.from {
@@ -824,6 +822,46 @@ func migrateSchemaV6(ctx context.Context, tx *sql.Tx) error {
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(6)`); err != nil {
 		return fmt.Errorf("record PostgreSQL schema v6: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV7(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, notificationFunctions); err != nil {
+		return fmt.Errorf("refresh structured notification functions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE user_messages AS m
+SET event=CASE WHEN m.event='' THEN 'legacy.'||m.kind ELSE m.event END,
+    data=m.data||jsonb_build_object(
+      'title',m.title,
+      'body',m.body,
+      'ref',m.ref,
+      'resource_id',CASE
+        WHEN m.kind IN ('comment_reply','moderation') THEN COALESCE(
+          (SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=m.ref),
+          (SELECT resource.id::text FROM resources resource WHERE resource.id::text=m.ref),
+          '')
+        WHEN m.kind='review_result' THEN COALESCE(
+          (SELECT revision.resource_id::text FROM resource_revisions revision WHERE revision.id::text=m.ref),
+          '')
+        WHEN m.kind='report_result' THEN COALESCE((SELECT CASE
+          WHEN lower(ticket.target_source) IN ('oronbox','resource') THEN ticket.target_id
+          WHEN lower(ticket.target_source)='comment' THEN COALESCE((SELECT comment.resource_id::text FROM resource_comments comment WHERE comment.id::text=ticket.target_id),'')
+          ELSE '' END
+          FROM feedback_tickets ticket WHERE ticket.id::text=m.ref),'')
+        ELSE ''
+      END,
+      'comment_id',CASE
+        WHEN m.kind IN ('comment_reply','moderation') AND EXISTS(SELECT 1 FROM resource_comments comment WHERE comment.id::text=m.ref) THEN m.ref
+        WHEN m.kind='report_result' THEN COALESCE((SELECT CASE WHEN lower(ticket.target_source)='comment' THEN ticket.target_id ELSE '' END FROM feedback_tickets ticket WHERE ticket.id::text=m.ref),'')
+        ELSE ''
+      END
+    )
+WHERE m.event='' OR m.event LIKE 'legacy.%'`); err != nil {
+		return fmt.Errorf("preserve legacy notification content as metadata: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES(7)`); err != nil {
+		return fmt.Errorf("record PostgreSQL schema v7: %w", err)
 	}
 	return nil
 }

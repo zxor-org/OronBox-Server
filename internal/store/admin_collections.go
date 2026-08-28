@@ -53,84 +53,84 @@ func (query AdminCollectionQuery) normalized() AdminCollectionQuery {
 }
 
 type AdminCollectionItem struct {
-	ID                       string
-	OwnerID                  string
-	Owner                    string
-	Slug                     string
-	Platform                 string
-	Kind                     string
-	CurrentRevisionID        string
-	CurrentRevisionNumber    int
-	CurrentRevisionName      string
-	LatestRevisionID         string
-	LatestRevisionNumber     int
-	LatestRevisionName       string
-	LatestRevisionSummary    string
-	LatestRevisionState      string
-	RepresentativeResourceID string
-	Enabled                  bool
-	MemberCount              int
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                       string    `json:"id"`
+	OwnerID                  string    `json:"owner_id"`
+	Owner                    string    `json:"owner"`
+	Slug                     string    `json:"slug"`
+	Platform                 string    `json:"platform"`
+	Kind                     string    `json:"kind"`
+	CurrentRevisionID        string    `json:"current_revision_id"`
+	CurrentRevisionNumber    int       `json:"current_revision_number"`
+	CurrentRevisionName      string    `json:"current_revision_name"`
+	LatestRevisionID         string    `json:"latest_revision_id"`
+	LatestRevisionNumber     int       `json:"latest_revision_number"`
+	LatestRevisionName       string    `json:"latest_revision_name"`
+	LatestRevisionSummary    string    `json:"latest_revision_summary"`
+	LatestRevisionState      string    `json:"latest_revision_state"`
+	RepresentativeResourceID string    `json:"representative_resource_id,omitempty"`
+	Enabled                  bool      `json:"enabled"`
+	MemberCount              int       `json:"member_count"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type AdminCollectionPage struct {
-	Items      []AdminCollectionItem
-	Total      int
-	Page       int
-	PerPage    int
-	TotalPages int
-	Query      AdminCollectionQuery
+	Items      []AdminCollectionItem `json:"items"`
+	Total      int                   `json:"total"`
+	Page       int                   `json:"page"`
+	PerPage    int                   `json:"per_page"`
+	TotalPages int                   `json:"total_pages"`
+	Query      AdminCollectionQuery  `json:"query"`
 }
 
 type AdminCollectionRevision struct {
-	ID                       string
-	CollectionID             string
-	Number                   int
-	Name                     string
-	Summary                  string
-	State                    string
-	ReviewerID               string
-	Reviewer                 string
-	ReviewNote               string
-	Enabled                  bool
-	RepresentativeResourceID string
-	CreatedBy                string
-	CreatedVia               string
-	BaseRevisionID           string
-	Members                  []AdminCollectionMember
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                       string                  `json:"id"`
+	CollectionID             string                  `json:"collection_id"`
+	Number                   int                     `json:"number"`
+	Name                     string                  `json:"name"`
+	Summary                  string                  `json:"summary"`
+	State                    string                  `json:"state"`
+	ReviewerID               string                  `json:"reviewer_id,omitempty"`
+	Reviewer                 string                  `json:"reviewer,omitempty"`
+	ReviewNote               string                  `json:"review_note,omitempty"`
+	Enabled                  bool                    `json:"enabled"`
+	RepresentativeResourceID string                  `json:"representative_resource_id,omitempty"`
+	CreatedBy                string                  `json:"created_by,omitempty"`
+	CreatedVia               string                  `json:"created_via,omitempty"`
+	BaseRevisionID           string                  `json:"base_revision_id,omitempty"`
+	Members                  []AdminCollectionMember `json:"members"`
+	CreatedAt                time.Time               `json:"created_at"`
+	UpdatedAt                time.Time               `json:"updated_at"`
 }
 
 type AdminCollectionMember struct {
-	ID                  string
-	OwnerID             string
-	Owner               string
-	Slug                string
-	Kind                string
-	Position            int
-	ModerationState     string
-	CurrentRevisionID   string
-	CurrentRevisionNo   int
-	CurrentRevisionName string
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                  string    `json:"id"`
+	OwnerID             string    `json:"owner_id"`
+	Owner               string    `json:"owner"`
+	Slug                string    `json:"slug"`
+	Kind                string    `json:"kind"`
+	Position            int       `json:"position"`
+	ModerationState     string    `json:"moderation_state"`
+	CurrentRevisionID   string    `json:"current_revision_id"`
+	CurrentRevisionNo   int       `json:"current_revision_no"`
+	CurrentRevisionName string    `json:"current_revision_name"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type AdminCollectionDetail struct {
-	Collection AdminCollectionItem
-	Revisions  []AdminCollectionRevision
-	Members    []AdminCollectionMember
+	Collection AdminCollectionItem       `json:"collection"`
+	Revisions  []AdminCollectionRevision `json:"revisions"`
+	Members    []AdminCollectionMember   `json:"members"`
 }
 
 type AdminCollectionMetadataInput struct {
-	Name                     string
-	Summary                  string
-	Enabled                  bool
-	RepresentativeResourceID string
-	ResourceIDs              []string
-	CreatedBy                string
+	Name                     string   `json:"name"`
+	Summary                  string   `json:"summary"`
+	Enabled                  bool     `json:"enabled"`
+	RepresentativeResourceID string   `json:"representative_resource_id"`
+	ResourceIDs              []string `json:"resource_ids"`
+	CreatedBy                string   `json:"created_by,omitempty"`
 }
 
 func (input AdminCollectionMetadataInput) normalized() (AdminCollectionMetadataInput, error) {

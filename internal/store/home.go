@@ -9,47 +9,47 @@ import (
 )
 
 type BlogPost struct {
-	Slug        string
-	Type        string
-	Title       string
-	Subtitle    string
-	Author      string
-	CoverSHA256 string
-	Body        string
-	Published   bool
-	PublishedAt *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	Slug        string     `json:"slug"`
+	Type        string     `json:"type"`
+	Title       string     `json:"title"`
+	Subtitle    string     `json:"subtitle"`
+	Author      string     `json:"author"`
+	CoverSHA256 string     `json:"cover_sha256,omitempty"`
+	Body        string     `json:"body"`
+	Published   bool       `json:"published"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type HomeBanner struct {
-	ID          string
-	Type        string
-	Title       string
-	Subtitle    string
-	CoverSHA256 string
-	ResourceID  string
-	BlogSlug    string
-	LinkURL     string
-	Position    int
-	Enabled     bool
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Title       string `json:"title"`
+	Subtitle    string `json:"subtitle"`
+	CoverSHA256 string `json:"cover_sha256,omitempty"`
+	ResourceID  string `json:"resource_id,omitempty"`
+	BlogSlug    string `json:"blog_slug,omitempty"`
+	LinkURL     string `json:"link_url,omitempty"`
+	Position    int    `json:"position"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type HomeSection struct {
-	ID          string
-	Name        string
-	Description string
-	Position    int
-	Enabled     bool
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Position    int    `json:"position"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type HomeSectionCard struct {
-	ID         string
-	SectionID  string
-	Type       string
-	ResourceID string
-	BlogSlug   string
-	Position   int
+	ID         string `json:"id"`
+	SectionID  string `json:"section_id"`
+	Type       string `json:"type"`
+	ResourceID string `json:"resource_id,omitempty"`
+	BlogSlug   string `json:"blog_slug,omitempty"`
+	Position   int    `json:"position"`
 }
 
 var (

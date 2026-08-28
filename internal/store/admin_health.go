@@ -10,27 +10,40 @@ import (
 // administration health page. Counts intentionally come from the database so
 // the page remains useful when workers or object storage are degraded.
 type AdminHealthDiagnostics struct {
-	DatabaseSizeBytes int64
-	DatabaseSessions  int64
-	Publications      AdminPublicationQueueDiagnostics
-	Blobs             AdminBlobDiagnostics
-	OAuth             AdminOAuthDiagnostics
+	DatabaseSizeBytes int64                            `json:"database_size_bytes"`
+	DatabaseSessions  int64                            `json:"database_sessions"`
+	Publications      AdminPublicationQueueDiagnostics `json:"publications"`
+	Blobs             AdminBlobDiagnostics             `json:"blobs"`
+	OAuth             AdminOAuthDiagnostics            `json:"oauth"`
 }
 
 type AdminPublicationQueueDiagnostics struct {
-	Pending, Running, Reviewing, Published, Failed, Cancelled int64
-	Ready, Delayed, StaleRunning                              int64
+	Pending      int64 `json:"pending"`
+	Running      int64 `json:"running"`
+	Reviewing    int64 `json:"reviewing"`
+	Published    int64 `json:"published"`
+	Failed       int64 `json:"failed"`
+	Cancelled    int64 `json:"cancelled"`
+	Ready        int64 `json:"ready"`
+	Delayed      int64 `json:"delayed"`
+	StaleRunning int64 `json:"stale_running"`
 }
 
 type AdminBlobDiagnostics struct {
-	Count, SizeBytes                                 int64
-	ReplicaMissing, ReplicaPending, ReplicaUploading int64
-	ReplicaReady, ReplicaFailed, ReplicaRetryReady   int64
+	Count             int64 `json:"count"`
+	SizeBytes         int64 `json:"size_bytes"`
+	ReplicaMissing    int64 `json:"replica_missing"`
+	ReplicaPending    int64 `json:"replica_pending"`
+	ReplicaUploading  int64 `json:"replica_uploading"`
+	ReplicaReady      int64 `json:"replica_ready"`
+	ReplicaFailed     int64 `json:"replica_failed"`
+	ReplicaRetryReady int64 `json:"replica_retry_ready"`
 }
 
 type AdminOAuthDiagnostics struct {
-	Events24Hours, Failures24Hours int64
-	FailureRate                    float64
+	Events24Hours   int64   `json:"events_24_hours"`
+	Failures24Hours int64   `json:"failures_24_hours"`
+	FailureRate     float64 `json:"failure_rate"`
 }
 
 func (s *Store) AdminHealthDiagnostics(ctx context.Context) (AdminHealthDiagnostics, error) {

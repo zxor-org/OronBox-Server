@@ -17,19 +17,19 @@ type AdminSession struct {
 }
 
 type AuditLog struct {
-	ID          int64
-	CreatedAt   string
-	ActorUserID string
-	Username    string
-	Action      string
-	Result      string
-	IP          string
-	UserAgent   string
-	Message     string
-	Before      map[string]any
-	After       map[string]any
-	Target      AuditTarget
-	Metadata    map[string]any
+	ID          int64          `json:"id"`
+	CreatedAt   string         `json:"created_at"`
+	ActorUserID string         `json:"actor_user_id"`
+	Username    string         `json:"username"`
+	Action      string         `json:"action"`
+	Result      string         `json:"result"`
+	IP          string         `json:"ip"`
+	UserAgent   string         `json:"user_agent"`
+	Message     string         `json:"message,omitempty"`
+	Before      map[string]any `json:"before,omitempty"`
+	After       map[string]any `json:"after,omitempty"`
+	Target      AuditTarget    `json:"target,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type AuditTarget struct {
@@ -47,14 +47,14 @@ type AuditData struct {
 }
 
 type ClientStats struct {
-	AppID        string
-	AppVersion   string
-	AppBuild     string
-	Platform     string
-	RequestCount int64
-	SuccessCount int64
-	FailureCount int64
-	LastSeen     string
+	AppID        string `json:"app_id"`
+	AppVersion   string `json:"app_version"`
+	AppBuild     string `json:"app_build"`
+	Platform     string `json:"platform"`
+	RequestCount int64  `json:"request_count"`
+	SuccessCount int64  `json:"success_count"`
+	FailureCount int64  `json:"failure_count"`
+	LastSeen     string `json:"last_seen"`
 }
 
 func (s *Store) CreateAdminSession(ctx context.Context, id, userID, username, ip, ua string, expiresAt time.Time) error {

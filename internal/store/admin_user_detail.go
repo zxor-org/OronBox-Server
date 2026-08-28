@@ -18,8 +18,8 @@ const (
 // AdminUserDetailPageQuery allows every workspace group to paginate
 // independently. A zero value means the first 25 records.
 type AdminUserDetailPageQuery struct {
-	Page    int
-	PerPage int
+	Page    int `json:"page"`
+	PerPage int `json:"per_page"`
 }
 
 func (q AdminUserDetailPageQuery) normalized() AdminUserDetailPageQuery {
@@ -36,13 +36,13 @@ func (q AdminUserDetailPageQuery) normalized() AdminUserDetailPageQuery {
 }
 
 type AdminUserDetailQuery struct {
-	Resources AdminUserDetailPageQuery
-	Comments  AdminUserDetailPageQuery
-	Tickets   AdminUserDetailPageQuery
-	Messages  AdminUserDetailPageQuery
-	Ledger    AdminUserDetailPageQuery
-	Sessions  AdminUserDetailPageQuery
-	Audit     AdminUserDetailPageQuery
+	Resources AdminUserDetailPageQuery `json:"resources"`
+	Comments  AdminUserDetailPageQuery `json:"comments"`
+	Tickets   AdminUserDetailPageQuery `json:"tickets"`
+	Messages  AdminUserDetailPageQuery `json:"messages"`
+	Ledger    AdminUserDetailPageQuery `json:"ledger"`
+	Sessions  AdminUserDetailPageQuery `json:"sessions"`
+	Audit     AdminUserDetailPageQuery `json:"audit"`
 }
 
 func (q AdminUserDetailQuery) normalized() AdminUserDetailQuery {
@@ -57,11 +57,11 @@ func (q AdminUserDetailQuery) normalized() AdminUserDetailQuery {
 }
 
 type AdminUserDetailPage[T any] struct {
-	Items      []T
-	Total      int
-	Page       int
-	PerPage    int
-	TotalPages int
+	Items      []T `json:"items"`
+	Total      int `json:"total"`
+	Page       int `json:"page"`
+	PerPage    int `json:"per_page"`
+	TotalPages int `json:"total_pages"`
 }
 
 func newAdminUserDetailPage[T any](q AdminUserDetailPageQuery) AdminUserDetailPage[T] {
@@ -75,60 +75,102 @@ func finishAdminUserDetailPage[T any](page *AdminUserDetailPage[T]) {
 }
 
 type AdminUserResource struct {
-	ID, Slug, Name, Kind, Platform, ModerationState, RevisionState string
-	DownloadCount, RevisionNo                                      int
-	CreatedAt, UpdatedAt                                           time.Time
+	ID              string    `json:"id"`
+	Slug            string    `json:"slug"`
+	Name            string    `json:"name"`
+	Kind            string    `json:"kind"`
+	Platform        string    `json:"platform"`
+	ModerationState string    `json:"moderation_state"`
+	RevisionState   string    `json:"revision_state"`
+	DownloadCount   int       `json:"download_count"`
+	RevisionNo      int       `json:"revision_no"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type AdminUserComment struct {
-	ID, ResourceID, ResourceName, Body, ModerationState string
-	ParentID                                            string
-	CreatedAt                                           time.Time
-	EditedAt, DeletedAt                                 *time.Time
+	ID              string     `json:"id"`
+	ResourceID      string     `json:"resource_id"`
+	ResourceName    string     `json:"resource_name"`
+	Body            string     `json:"body"`
+	ModerationState string     `json:"moderation_state"`
+	ParentID        string     `json:"parent_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	EditedAt        *time.Time `json:"edited_at,omitempty"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 }
 
 type AdminUserTicket struct {
-	ID, Kind, Subject, Message, TargetSource, TargetID, TargetURL string
-	Status, Resolution                                            string
-	CreatedAt, UpdatedAt                                          time.Time
-	ClosedAt                                                      *time.Time
+	ID           string     `json:"id"`
+	Kind         string     `json:"kind"`
+	Subject      string     `json:"subject"`
+	Message      string     `json:"message"`
+	TargetSource string     `json:"target_source"`
+	TargetID     string     `json:"target_id"`
+	TargetURL    string     `json:"target_url"`
+	Status       string     `json:"status"`
+	Resolution   string     `json:"resolution"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ClosedAt     *time.Time `json:"closed_at,omitempty"`
 }
 
 type AdminUserMessage struct {
-	ID, Kind, Title, Body, Ref string
-	ReadAt                     *time.Time
-	CreatedAt, ExpiresAt       time.Time
+	ID        string     `json:"id"`
+	Kind      string     `json:"kind"`
+	Title     string     `json:"title"`
+	Body      string     `json:"body"`
+	Ref       string     `json:"ref"`
+	ReadAt    *time.Time `json:"read_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
 }
 
 type AdminUserCoinLedgerEntry struct {
-	ID, Kind, ReferenceType, ReferenceID, Note, ActorUserID string
-	DeltaUnits                                              int64
-	CreatedAt                                               time.Time
+	ID            string    `json:"id"`
+	Kind          string    `json:"kind"`
+	ReferenceType string    `json:"reference_type"`
+	ReferenceID   string    `json:"reference_id"`
+	Note          string    `json:"note"`
+	ActorUserID   string    `json:"actor_user_id"`
+	DeltaUnits    int64     `json:"delta_units"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type AdminUserSession struct {
-	ID, AppID, AppVersion, Platform, IP, UserAgent string
-	AccessExpiresAt, RefreshExpiresAt              time.Time
-	CreatedAt, LastSeenAt                          time.Time
+	ID               string    `json:"id"`
+	AppID            string    `json:"app_id"`
+	AppVersion       string    `json:"app_version"`
+	Platform         string    `json:"platform"`
+	IP               string    `json:"ip"`
+	UserAgent        string    `json:"user_agent"`
+	AccessExpiresAt  time.Time `json:"access_expires_at"`
+	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
 }
 
 type AdminUserAuditEntry struct {
-	ID                                      int64
-	Action, Result, IP, UserAgent, Metadata string
-	CreatedAt                               time.Time
+	ID        int64     `json:"id"`
+	Action    string    `json:"action"`
+	Result    string    `json:"result"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	Metadata  string    `json:"metadata"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type AdminUserDetail struct {
-	User      AdminUserItem
-	Resources AdminUserDetailPage[AdminUserResource]
-	Comments  AdminUserDetailPage[AdminUserComment]
-	Tickets   AdminUserDetailPage[AdminUserTicket]
-	Messages  AdminUserDetailPage[AdminUserMessage]
-	Coin      CoinAccount
-	Ledger    AdminUserDetailPage[AdminUserCoinLedgerEntry]
-	Sessions  AdminUserDetailPage[AdminUserSession]
-	Audit     AdminUserDetailPage[AdminUserAuditEntry]
-	Query     AdminUserDetailQuery
+	User      AdminUserItem                                 `json:"user"`
+	Resources AdminUserDetailPage[AdminUserResource]        `json:"resources"`
+	Comments  AdminUserDetailPage[AdminUserComment]         `json:"comments"`
+	Tickets   AdminUserDetailPage[AdminUserTicket]          `json:"tickets"`
+	Messages  AdminUserDetailPage[AdminUserMessage]         `json:"messages"`
+	Coin      CoinAccount                                   `json:"coin"`
+	Ledger    AdminUserDetailPage[AdminUserCoinLedgerEntry] `json:"ledger"`
+	Sessions  AdminUserDetailPage[AdminUserSession]         `json:"sessions"`
+	Audit     AdminUserDetailPage[AdminUserAuditEntry]      `json:"audit"`
+	Query     AdminUserDetailQuery                          `json:"query"`
 }
 
 func (s *Store) AdminUserDetail(ctx context.Context, id string, raw AdminUserDetailQuery) (AdminUserDetail, error) {
@@ -137,22 +179,13 @@ func (s *Store) AdminUserDetail(ctx context.Context, id string, raw AdminUserDet
 	}
 	q := raw.normalized()
 	detail := AdminUserDetail{Query: q}
-	var bannedAt, frozenAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT u.id::text,u.bandbbs_user_id,u.username,u.avatar_url,u.role,u.banned_at,u.ban_reason,u.creator_frozen_at,
- (SELECT count(*) FROM resources WHERE owner_id=u.id),(SELECT count(*) FROM feedback_tickets WHERE user_id=u.id),u.created_at
- FROM users u WHERE u.id=$1`, id).Scan(&detail.User.ID, &detail.User.BandBBSUserID, &detail.User.Username, &detail.User.AvatarURL,
-		&detail.User.Role, &bannedAt, &detail.User.BanReason, &frozenAt, &detail.User.ResourceCount, &detail.User.TicketCount, &detail.User.CreatedAt)
+	var err error
+	detail.User, err = scanAdminUser(s.db.QueryRowContext(ctx, `SELECT `+adminUserSelect+` FROM users u WHERE u.id=$1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminUserDetail{}, ErrAdminUserNotFound
 	}
 	if err != nil {
 		return AdminUserDetail{}, err
-	}
-	if bannedAt.Valid {
-		detail.User.BannedAt = &bannedAt.Time
-	}
-	if frozenAt.Valid {
-		detail.User.CreatorFrozenAt = &frozenAt.Time
 	}
 	if detail.Resources, err = s.adminUserResources(ctx, id, q.Resources); err != nil {
 		return AdminUserDetail{}, err
@@ -276,7 +309,7 @@ func (s *Store) adminUserMessages(ctx context.Context, id string, q AdminUserDet
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1`, id).Scan(&p.Total); err != nil {
 		return p, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id::text,kind,title,body,ref,read_at,created_at,expires_at FROM user_messages WHERE user_id=$1 ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id::text,m.kind,`+adminMessageTitleSQL+`,`+adminMessageBodySQL+`,`+adminMessageRefSQL+`,m.read_at,m.created_at,m.expires_at FROM user_messages m WHERE m.user_id=$1 ORDER BY m.created_at DESC,m.id DESC LIMIT $2 OFFSET $3`, id, q.PerPage, pageOffset(q))
 	if err != nil {
 		return p, err
 	}

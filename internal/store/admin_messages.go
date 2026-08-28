@@ -32,6 +32,12 @@ type AdminMessagePage struct {
 	Query                            AdminMessageQuery
 }
 
+const (
+	adminMessageTitleSQL = `COALESCE(NULLIF(m.title,''),NULLIF(m.data->>'title',''),NULLIF(m.event,''),'')`
+	adminMessageBodySQL  = `COALESCE(NULLIF(m.body,''),NULLIF(m.data->>'body',''),'')`
+	adminMessageRefSQL   = `COALESCE(NULLIF(m.ref,''),NULLIF(m.data->>'ref',''),'')`
+)
+
 func (query AdminMessageQuery) normalized() AdminMessageQuery {
 	query.Search = strings.TrimSpace(query.Search)
 	query.User = strings.TrimSpace(query.User)
@@ -56,7 +62,7 @@ func adminMessageFilter(query AdminMessageQuery) (string, []any) {
 		where = append(where, strings.ReplaceAll(clause, "?", fmt.Sprintf("$%d", len(args))))
 	}
 	if query.Search != "" {
-		add(`concat_ws(' ',m.id::text,m.title,m.body,m.ref,m.kind,u.id::text,u.username) ILIKE '%'||?||'%'`, query.Search)
+		add(`concat_ws(' ',m.id::text,`+adminMessageTitleSQL+`,`+adminMessageBodySQL+`,`+adminMessageRefSQL+`,m.kind,m.event,m.data::text,u.id::text,u.username) ILIKE '%'||?||'%'`, query.Search)
 	}
 	if query.Kind != "" {
 		add(`m.kind=?`, query.Kind)
@@ -87,7 +93,7 @@ func (s *Store) AdminMessages(ctx context.Context, raw AdminMessageQuery) (Admin
 		return AdminMessagePage{}, err
 	}
 	args = append(args, query.PerPage, (query.Page-1)*query.PerPage)
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id::text,m.user_id::text,u.username,m.kind,m.title,m.body,m.ref,m.read_at,m.created_at,m.expires_at`+base+fmt.Sprintf(` ORDER BY m.created_at DESC,m.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id::text,m.user_id::text,u.username,m.kind,`+adminMessageTitleSQL+`,`+adminMessageBodySQL+`,`+adminMessageRefSQL+`,m.read_at,m.created_at,m.expires_at`+base+fmt.Sprintf(` ORDER BY m.created_at DESC,m.id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {
 		return AdminMessagePage{}, err
 	}
@@ -112,7 +118,7 @@ func (s *Store) AdminMessage(ctx context.Context, id string) (AdminMessage, erro
 	if _, err := uuid.Parse(id); err != nil {
 		return AdminMessage{}, ErrAdminMessageNotFound
 	}
-	item, err := scanAdminMessage(s.db.QueryRowContext(ctx, `SELECT m.id::text,m.user_id::text,u.username,m.kind,m.title,m.body,m.ref,m.read_at,m.created_at,m.expires_at FROM user_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, id))
+	item, err := scanAdminMessage(s.db.QueryRowContext(ctx, `SELECT m.id::text,m.user_id::text,u.username,m.kind,`+adminMessageTitleSQL+`,`+adminMessageBodySQL+`,`+adminMessageRefSQL+`,m.read_at,m.created_at,m.expires_at FROM user_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminMessage{}, ErrAdminMessageNotFound
 	}

@@ -15,7 +15,11 @@ func writeList(w http.ResponseWriter, items any, total, page, perPage int, err e
 		writeJSON(w, http.StatusInternalServerError, errorBody(code, err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "page": page, "per_page": perPage})
+	totalPages := 0
+	if perPage > 0 && total > 0 {
+		totalPages = (total + perPage - 1) / perPage
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "page": page, "per_page": perPage, "total_pages": totalPages})
 }
 
 func (a *App) handleAdminAPIUsers(w http.ResponseWriter, r *http.Request) {
@@ -29,8 +33,13 @@ func (a *App) handleAdminAPIUsers(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
-			"id": item.ID, "username": item.Username, "role": item.Role, "resource_count": item.ResourceCount,
-			"banned": item.BannedAt != nil, "frozen": item.CreatorFrozenAt != nil, "ban_reason": item.BanReason,
+			"id": item.ID, "username": item.Username, "avatar_url": item.AvatarURL,
+			"bandbbs_user_id": item.BandBBSUserID, "role": item.Role,
+			"resource_count": item.ResourceCount, "ticket_count": item.TicketCount,
+			"banned": item.BannedAt != nil, "banned_at": item.BannedAt,
+			"frozen": item.CreatorFrozenAt != nil, "creator_frozen_at": item.CreatorFrozenAt,
+			"ban_reason": item.BanReason, "created_at": item.CreatedAt,
+			"updated_at": item.UpdatedAt, "last_seen_at": item.LastSeenAt,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "users_failed")
@@ -47,7 +56,10 @@ func (a *App) handleAdminAPICollections(w http.ResponseWriter, r *http.Request) 
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
-			"id": item.ID, "name": item.LatestRevisionName, "owner": item.Owner, "state": item.LatestRevisionState,
+			"id": item.ID, "name": item.LatestRevisionName, "owner": item.Owner, "owner_id": item.OwnerID,
+			"slug": item.Slug, "kind": item.Kind, "platform": item.Platform,
+			"state": item.LatestRevisionState, "member_count": item.MemberCount,
+			"enabled": item.Enabled, "updated_at": item.UpdatedAt, "created_at": item.CreatedAt,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "collections_failed")
@@ -81,7 +93,9 @@ func (a *App) handleAdminAPIDevices(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
-			"id": item.ID, "name": item.DisplayName, "codename": item.Codename, "platform": item.Platform,
+			"id": item.ID, "name": item.DisplayName, "display_name": item.DisplayName, "codename": item.Codename,
+			"platform": item.Platform, "vendor": item.Vendor, "astrobox_id": item.AstroBoxID,
+			"enabled": item.Enabled, "resource_count": item.ResourceCount, "artifact_count": item.ArtifactCount,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "devices_failed")
@@ -99,7 +113,10 @@ func (a *App) handleAdminAPIPlugins(w http.ResponseWriter, r *http.Request) {
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
 			"id": item.ID, "name": item.Name, "state": item.State, "version": item.Version,
-			"author": item.Author, "pending_version_id": item.PendingVersionID, "description": item.Description,
+			"author": item.Author, "uploader_id": item.UploaderID, "uploader": item.UploaderName,
+			"runtime": item.Runtime, "package_size": item.PackageSize, "icon_sha256": item.IconSHA256,
+			"pending_version_id": item.PendingVersionID, "description": item.Description,
+			"updated_at": item.UpdatedAt, "created_at": item.CreatedAt,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "plugins_failed")
@@ -165,7 +182,9 @@ func (a *App) handleAdminAPITickets(w http.ResponseWriter, r *http.Request) {
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
 			"id": item.ID, "kind": item.Kind, "subject": item.Subject, "status": item.Status,
-			"username": item.Username, "message": item.Message,
+			"username": item.Username, "user_id": item.UserID, "message": item.Message,
+			"target_source": item.TargetSource, "target_id": item.TargetID, "target_url": item.TargetURL,
+			"resolution": item.Resolution, "created_at": item.CreatedAt, "updated_at": item.UpdatedAt, "closed_at": item.ClosedAt,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "tickets_failed")
@@ -181,7 +200,11 @@ func (a *App) handleAdminAPIMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, map[string]any{"title": item.Title, "username": item.Username, "kind": item.Kind})
+		items = append(items, map[string]any{
+			"id": item.ID, "user_id": item.UserID, "username": item.Username, "kind": item.Kind,
+			"title": item.Title, "body": item.Body, "ref": item.Ref, "read_at": item.ReadAt,
+			"created_at": item.CreatedAt, "expires_at": item.ExpiresAt,
+		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "messages_failed")
 }
@@ -196,7 +219,10 @@ func (a *App) handleAdminAPIAnnouncements(w http.ResponseWriter, r *http.Request
 	}
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, map[string]any{"id": item.ID, "title": item.Title, "published_at": item.PublishedAt})
+		items = append(items, map[string]any{
+			"id": item.ID, "title": item.Title, "body": item.Body, "published_at": item.PublishedAt,
+			"created_by": item.CreatedBy, "creator": item.Creator,
+		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "announcements_failed")
 }
@@ -211,7 +237,13 @@ func (a *App) handleAdminAPIReleases(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, map[string]any{"version": item.Version, "channel": item.Channel, "platform": item.Platform})
+		items = append(items, map[string]any{
+			"id": item.ID, "version": item.Version, "minimum_version": item.MinimumVersion,
+			"channel": item.Channel, "platform": item.Platform, "arch": item.Arch,
+			"download_url": item.DownloadURL, "published_at": item.PublishedAt,
+			"enabled": item.Enabled, "revoked_at": item.RevokedAt, "state": item.State(),
+			"updated_at": item.UpdatedAt, "created_by": item.CreatedBy, "creator": item.Creator,
+		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "releases_failed")
 }
@@ -226,7 +258,11 @@ func (a *App) handleAdminAPIBlog(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, map[string]any{"title": item.Title, "slug": item.Slug})
+		items = append(items, map[string]any{
+			"slug": item.Slug, "type": item.Type, "title": item.Title, "subtitle": item.Subtitle,
+			"author": item.Author, "published": item.Published, "published_at": item.PublishedAt,
+			"created_at": item.CreatedAt, "updated_at": item.UpdatedAt,
+		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "blog_failed")
 }
@@ -241,7 +277,12 @@ func (a *App) handleAdminAPIAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
-		items = append(items, map[string]any{"action": item.Action, "username": item.Username, "result": item.Result})
+		items = append(items, map[string]any{
+			"id": item.ID, "created_at": item.CreatedAt, "actor_user_id": item.ActorUserID,
+			"username": item.Username, "action": item.Action, "result": item.Result,
+			"ip": item.IP, "user_agent": item.UserAgent, "message": item.Message,
+			"target": item.Target, "before": item.Before, "after": item.After, "metadata": item.Metadata,
+		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "audit_failed")
 }
@@ -257,7 +298,9 @@ func (a *App) handleAdminAPICoinLedger(w http.ResponseWriter, r *http.Request) {
 	items := make([]map[string]any, 0, len(page.Items))
 	for _, item := range page.Items {
 		items = append(items, map[string]any{
-			"kind": item.Kind, "delta_units": item.DeltaUnits, "note": item.Note, "username": item.Username,
+			"id": item.ID, "user_id": item.UserID, "kind": item.Kind, "delta_units": item.DeltaUnits,
+			"reference_type": item.ReferenceType, "reference_id": item.ReferenceID, "note": item.Note,
+			"username": item.Username, "created_at": item.CreatedAt,
 		})
 	}
 	writeList(w, items, page.Total, page.Page, page.PerPage, nil, "coins_failed")
@@ -269,9 +312,13 @@ func (a *App) handleAdminAPIHealth(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.Ping(r.Context()); err != nil {
 		dbStatus = err.Error()
 	}
-	diagnostics, _ := a.store.AdminHealthDiagnostics(r.Context())
+	diagnostics, err := a.store.AdminHealthDiagnostics(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorBody("health_failed", err.Error()))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": []map[string]any{{"db": dbStatus, "latency": time.Since(started).Round(time.Millisecond).String()}},
+		"items": []map[string]any{{"db": dbStatus, "latency": time.Since(started).Round(time.Millisecond).String(), "version": a.cfg.Version}},
 		"total": 1, "page": 1, "per_page": 1, "diagnostics": diagnostics,
 	})
 }
@@ -367,13 +414,13 @@ func (a *App) handleAdminAPIResource(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminAPIResourceDraft(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name            string           `json:"name"`
-		Summary         string           `json:"summary"`
-		PaidType        string           `json:"paid_type"`
-		RevisionID      string           `json:"revision_id"`
-		Attributes      []string         `json:"attributes"`
+		Name            string            `json:"name"`
+		Summary         string            `json:"summary"`
+		PaidType        string            `json:"paid_type"`
+		RevisionID      string            `json:"revision_id"`
+		Attributes      []string          `json:"attributes"`
 		Links           []store.AdminLink `json:"links"`
-		PublicationPlan json.RawMessage `json:"publication_plan"`
+		PublicationPlan json.RawMessage   `json:"publication_plan"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "invalid json"))

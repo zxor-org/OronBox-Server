@@ -56,20 +56,27 @@ type FeedbackTargetSnapshot struct {
 }
 
 type FeedbackInternalNote struct {
-	ID, AuthorID, Author, Message string
-	CreatedAt                     time.Time
+	ID        string    `json:"id"`
+	AuthorID  string    `json:"author_id"`
+	Author    string    `json:"author"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type FeedbackStatusEvent struct {
-	ID, ActorID, Actor, FromStatus, ToStatus string
-	CreatedAt                                time.Time
+	ID         string    `json:"id"`
+	ActorID    string    `json:"actor_id"`
+	Actor      string    `json:"actor"`
+	FromStatus string    `json:"from_status"`
+	ToStatus   string    `json:"to_status"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type AdminFeedbackDetail struct {
-	Ticket         FeedbackTicket
-	TargetSnapshot FeedbackTargetSnapshot
-	InternalNotes  []FeedbackInternalNote
-	StatusHistory  []FeedbackStatusEvent
+	Ticket         FeedbackTicket         `json:"ticket"`
+	TargetSnapshot FeedbackTargetSnapshot `json:"target_snapshot"`
+	InternalNotes  []FeedbackInternalNote `json:"internal_notes"`
+	StatusHistory  []FeedbackStatusEvent  `json:"status_history"`
 }
 
 type FeedbackReply struct {

@@ -55,26 +55,26 @@ func (item AdminReleaseItem) State() string {
 }
 
 type AdminReleasePage struct {
-	Items      []AdminReleaseItem
-	Total      int
-	Page       int
-	PerPage    int
-	TotalPages int
-	Query      AdminReleaseQuery
+	Items      []AdminReleaseItem `json:"items"`
+	Total      int                `json:"total"`
+	Page       int                `json:"page"`
+	PerPage    int                `json:"per_page"`
+	TotalPages int                `json:"total_pages"`
+	Query      AdminReleaseQuery  `json:"query"`
 }
 
 type AdminReleaseNotesInput struct {
-	MinimumVersion string
-	NotesZH        string
-	NotesEN        string
+	MinimumVersion string `json:"minimum_version"`
+	NotesZH        string `json:"notes_zh"`
+	NotesEN        string `json:"notes_en"`
 }
 
 type AdminReleaseVersionInput struct {
-	Version        string
-	MinimumVersion string
-	Channel        string
-	Platform       string
-	Arch           string
+	Version        string `json:"version"`
+	MinimumVersion string `json:"minimum_version"`
+	Channel        string `json:"channel"`
+	Platform       string `json:"platform"`
+	Arch           string `json:"arch"`
 }
 
 func (query AdminReleaseQuery) normalized() AdminReleaseQuery {

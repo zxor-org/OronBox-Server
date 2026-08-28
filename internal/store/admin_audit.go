@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
+
+var ErrAdminAuditNotFound = errors.New("admin audit log was not found")
 
 func inferLegacyAuditData(action, message string) AuditData {
 	values := make(map[string]string)
@@ -87,9 +90,13 @@ func scanAuditLog(scanner interface{ Scan(...any) error }) (AuditLog, error) {
 
 func (s *Store) AdminAuditLog(ctx context.Context, id int64) (AuditLog, error) {
 	if id < 1 {
-		return AuditLog{}, sql.ErrNoRows
+		return AuditLog{}, ErrAdminAuditNotFound
 	}
-	return scanAuditLog(s.db.QueryRowContext(ctx, adminAuditSelect+` WHERE audit.id=$1`, id))
+	item, err := scanAuditLog(s.db.QueryRowContext(ctx, adminAuditSelect+` WHERE audit.id=$1`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AuditLog{}, ErrAdminAuditNotFound
+	}
+	return item, err
 }
 
 func (s *Store) AdminAuditLogsForExport(ctx context.Context, raw AdminAuditLogQuery) ([]AuditLog, error) {

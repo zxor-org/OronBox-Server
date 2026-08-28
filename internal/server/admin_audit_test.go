@@ -35,11 +35,3 @@ func TestAuditCSVCellsCannotBecomeSpreadsheetFormulas(t *testing.T) {
 		t.Fatalf("normal cell changed to %q", got)
 	}
 }
-
-func TestSensitiveBlobReadAuditIsStructured(t *testing.T) {
-	t.Parallel()
-	data := adminBlobReadAuditData("abc123", true)
-	if data.Target.Type != "blob" || data.Target.ID != "abc123" || data.Metadata["download"] != true || data.Metadata["sensitive"] != true {
-		t.Fatalf("blob audit data = %#v", data)
-	}
-}

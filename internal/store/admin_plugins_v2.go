@@ -80,37 +80,37 @@ type AdminPluginItem struct {
 }
 
 type AdminPluginPage struct {
-	Items      []AdminPluginItem
-	Total      int
-	Page       int
-	PerPage    int
-	TotalPages int
-	Query      AdminPluginQuery
+	Items      []AdminPluginItem `json:"items"`
+	Total      int               `json:"total"`
+	Page       int               `json:"page"`
+	PerPage    int               `json:"per_page"`
+	TotalPages int               `json:"total_pages"`
+	Query      AdminPluginQuery  `json:"query"`
 }
 
 // AdminPluginVersion is an immutable plugin version snapshot.
 type AdminPluginVersion struct {
-	ID               string
-	Number           int
-	Version          string
-	Name             string
-	Author           string
-	Description      string
-	Runtime          string
-	Permissions      []string
-	State            string
-	ModerationReason string
-	PackageSHA256    string
-	IconSHA256       string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	CreatedVia       string
+	ID               string    `json:"id"`
+	Number           int       `json:"number"`
+	Version          string    `json:"version"`
+	Name             string    `json:"name"`
+	Author           string    `json:"author"`
+	Description      string    `json:"description"`
+	Runtime          string    `json:"runtime"`
+	Permissions      []string  `json:"permissions"`
+	State            string    `json:"state"`
+	ModerationReason string    `json:"moderation_reason,omitempty"`
+	PackageSHA256    string    `json:"package_sha256"`
+	IconSHA256       string    `json:"icon_sha256,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	CreatedVia       string    `json:"created_via"`
 }
 
 type AdminPluginDetail struct {
-	Plugin           AdminPluginItem
-	Versions         []AdminPluginVersion
-	HistorySupported bool
+	Plugin           AdminPluginItem      `json:"plugin"`
+	Versions         []AdminPluginVersion `json:"versions"`
+	HistorySupported bool                 `json:"history_supported"`
 }
 
 const adminPluginsV2FromSQL = `FROM plugins p
@@ -204,15 +204,22 @@ func (s *Store) AdminPluginV2(ctx context.Context, id string) (AdminPluginDetail
 }
 
 type AdminPluginMetadataRevisionInput struct {
-	Name        string
-	Author      string
-	Description string
-	CreatedBy   string
+	Name        string `json:"name"`
+	Author      string `json:"author"`
+	Description string `json:"description"`
+	CreatedBy   string `json:"created_by,omitempty"`
 }
 
 type AdminPluginPackageRevisionInput struct {
-	Version, Name, Author, Description, Runtime, PackageSHA256, IconSHA256, CreatedBy string
-	Permissions                                                                       []string
+	Version       string   `json:"version"`
+	Name          string   `json:"name"`
+	Author        string   `json:"author"`
+	Description   string   `json:"description"`
+	Runtime       string   `json:"runtime"`
+	PackageSHA256 string   `json:"package_sha256"`
+	IconSHA256    string   `json:"icon_sha256"`
+	CreatedBy     string   `json:"created_by,omitempty"`
+	Permissions   []string `json:"permissions"`
 }
 
 func (s *Store) AdminCreatePluginPackageRevision(ctx context.Context, id string, input AdminPluginPackageRevisionInput) (AdminPluginVersion, error) {

@@ -23,9 +23,12 @@ type AdminOAuthEventQuery struct {
 }
 
 type AdminOAuthEventPage struct {
-	Items                            []model.OAuthEvent
-	Total, Page, PerPage, TotalPages int
-	Query                            AdminOAuthEventQuery
+	Items      []model.OAuthEvent   `json:"items"`
+	Total      int                  `json:"total"`
+	Page       int                  `json:"page"`
+	PerPage    int                  `json:"per_page"`
+	TotalPages int                  `json:"total_pages"`
+	Query      AdminOAuthEventQuery `json:"query"`
 }
 
 type AdminOAuthStateQuery struct {
@@ -35,9 +38,12 @@ type AdminOAuthStateQuery struct {
 }
 
 type AdminOAuthStatePage struct {
-	Items                            []model.OAuthState
-	Total, Page, PerPage, TotalPages int
-	Query                            AdminOAuthStateQuery
+	Items      []model.OAuthState   `json:"items"`
+	Total      int                  `json:"total"`
+	Page       int                  `json:"page"`
+	PerPage    int                  `json:"per_page"`
+	TotalPages int                  `json:"total_pages"`
+	Query      AdminOAuthStateQuery `json:"query"`
 }
 
 type AdminOAuthTicketQuery struct {
@@ -47,9 +53,12 @@ type AdminOAuthTicketQuery struct {
 }
 
 type AdminOAuthTicketPage struct {
-	Items                            []model.OAuthTicket
-	Total, Page, PerPage, TotalPages int
-	Query                            AdminOAuthTicketQuery
+	Items      []model.OAuthTicket   `json:"items"`
+	Total      int                   `json:"total"`
+	Page       int                   `json:"page"`
+	PerPage    int                   `json:"per_page"`
+	TotalPages int                   `json:"total_pages"`
+	Query      AdminOAuthTicketQuery `json:"query"`
 }
 
 type AdminClientStatsQuery struct {
@@ -61,33 +70,36 @@ type AdminClientStatsQuery struct {
 var ErrAdminDiagnosticNotFound = errors.New("admin diagnostic record not found")
 
 type AdminOAuthEventDetail struct {
-	Event  model.OAuthEvent
-	State  *model.OAuthState
-	Ticket *model.OAuthTicket
+	Event  model.OAuthEvent   `json:"event"`
+	State  *model.OAuthState  `json:"state,omitempty"`
+	Ticket *model.OAuthTicket `json:"ticket,omitempty"`
 }
 
 type AdminOAuthStateDetail struct {
-	State   model.OAuthState
-	Events  []model.OAuthEvent
-	Tickets []model.OAuthTicket
+	State   model.OAuthState    `json:"state"`
+	Events  []model.OAuthEvent  `json:"events"`
+	Tickets []model.OAuthTicket `json:"tickets"`
 }
 
 type AdminOAuthTicketDetail struct {
-	Ticket model.OAuthTicket
-	UserID string
-	Events []model.OAuthEvent
-	States []model.OAuthState
+	Ticket model.OAuthTicket  `json:"ticket"`
+	UserID string             `json:"user_id"`
+	Events []model.OAuthEvent `json:"events"`
+	States []model.OAuthState `json:"states"`
 }
 
 type AdminClientDetail struct {
-	Stats  ClientStats
-	Events AdminOAuthEventPage
+	Stats  ClientStats         `json:"stats"`
+	Events AdminOAuthEventPage `json:"events"`
 }
 
 type AdminClientStatsPage struct {
-	Items                            []ClientStats
-	Total, Page, PerPage, TotalPages int
-	Query                            AdminClientStatsQuery
+	Items      []ClientStats         `json:"items"`
+	Total      int                   `json:"total"`
+	Page       int                   `json:"page"`
+	PerPage    int                   `json:"per_page"`
+	TotalPages int                   `json:"total_pages"`
+	Query      AdminClientStatsQuery `json:"query"`
 }
 
 type AdminAuditLogQuery struct {
@@ -97,9 +109,12 @@ type AdminAuditLogQuery struct {
 }
 
 type AdminAuditLogPage struct {
-	Items                            []AuditLog
-	Total, Page, PerPage, TotalPages int
-	Query                            AdminAuditLogQuery
+	Items      []AuditLog         `json:"items"`
+	Total      int                `json:"total"`
+	Page       int                `json:"page"`
+	PerPage    int                `json:"per_page"`
+	TotalPages int                `json:"total_pages"`
+	Query      AdminAuditLogQuery `json:"query"`
 }
 
 func normalizeAdminDiagnosticPage(page, perPage int) (int, int) {

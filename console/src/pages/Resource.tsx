@@ -9,6 +9,7 @@ export function ResourcePage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [data, setData] = useState<Resource | null>(null)
+  const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState("edit")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
@@ -20,10 +21,16 @@ export function ResourcePage() {
   const [reason, setReason] = useState("")
   const [governance, setGovernance] = useState({ author_name: "", source_url: "", license_name: "", authorization_note: "", collection_id: "", collection_position: 0 })
 
-  const load = () => {
-    if (!id) return
-    getResource(id)
-      .then((value) => {
+  const load = async () => {
+    if (!id) {
+      setData(null)
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError("")
+    try {
+      const value = await getResource(id)
         const resource = value as Resource
         setData(resource)
         setName(resource.name || "")
@@ -38,16 +45,27 @@ export function ResourcePage() {
           collection_id: resource.governance?.collection_id || "",
           collection_position: resource.governance?.collection_position || 0,
         })
-      })
-      .catch((err: Error) => setError(err.message))
+    } catch (err) {
+      setData(null)
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
-    load()
+    void load()
   }, [id])
 
   if (!id) return <Empty>缺少资源</Empty>
-  if (!data) return <Empty>{error || "加载中…"}</Empty>
+  if (!data) {
+    return error ? (
+      <div className="detail-placeholder error">
+        <p>{error}</p>
+        <button className="btn small-btn" type="button" onClick={() => void load()}>重试</button>
+      </div>
+    ) : <Empty>{loading ? "加载中…" : "无法加载资源"}</Empty>
+  }
 
   const save = async (submit = false) => {
     setBusy(true)
@@ -78,12 +96,17 @@ export function ResourcePage() {
   }
 
   const sendFile = async (path: string, file: File, extra: Record<string, string> = {}) => {
-    const form = new FormData()
-    form.set("file", file)
-    Object.entries(extra).forEach(([key, value]) => form.set(key, value))
-    await upload(path, form)
-    toast("已上传")
-    load()
+    try {
+      const form = new FormData()
+      form.set("file", file)
+      Object.entries(extra).forEach(([key, value]) => form.set(key, value))
+      await upload(path, form)
+      toast("已上传")
+      await load()
+    } catch (err) {
+      setError((err as Error).message)
+      toast((err as Error).message, "err")
+    }
   }
 
   return (
@@ -268,10 +291,13 @@ export function ResourcePage() {
                   className="btn"
                   type="button"
                   onClick={() =>
-                    api.post(`/admin/api/resources/${id}/revisions/${revision.id}/rollback`).then(() => {
-                      toast("已生成回滚草稿")
-                      load()
-                    })
+                    api
+                      .post(`/admin/api/resources/${id}/revisions/${revision.id}/rollback`)
+                      .then(() => {
+                        toast("已生成回滚草稿")
+                        load()
+                      })
+                      .catch((err: Error) => toast(err.message, "err"))
                   }
                 >
                   回滚到此版

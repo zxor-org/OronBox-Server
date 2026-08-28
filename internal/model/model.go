@@ -44,53 +44,53 @@ type TokenPayload struct {
 }
 
 type OAuthEvent struct {
-	ID             int64
-	CreatedAt      string
-	Provider       string
-	EventType      string
-	Result         string
-	AppID          string
-	AppVersion     string
-	AppBuild       string
-	Platform       string
-	IP             string
-	UserAgent      string
-	StateID        string
-	TicketID       string
-	ProviderUserID string
-	ExpectedScopes string
-	ActualScopes   string
-	ErrorCode      string
-	ErrorMessage   string
-	LatencyMS      int64
+	ID             int64  `json:"id"`
+	CreatedAt      string `json:"created_at"`
+	Provider       string `json:"provider"`
+	EventType      string `json:"event_type"`
+	Result         string `json:"result"`
+	AppID          string `json:"app_id"`
+	AppVersion     string `json:"app_version"`
+	AppBuild       string `json:"app_build"`
+	Platform       string `json:"platform"`
+	IP             string `json:"ip"`
+	UserAgent      string `json:"user_agent"`
+	StateID        string `json:"state_id"`
+	TicketID       string `json:"ticket_id"`
+	ProviderUserID string `json:"provider_user_id"`
+	ExpectedScopes string `json:"expected_scopes"`
+	ActualScopes   string `json:"actual_scopes"`
+	ErrorCode      string `json:"error_code"`
+	ErrorMessage   string `json:"error_message"`
+	LatencyMS      int64  `json:"latency_ms"`
 }
 
 type OAuthState struct {
-	ID         string
-	CreatedAt  string
-	ExpiresAt  string
-	UsedAt     string
-	AppID      string
-	AppVersion string
-	AppBuild   string
-	Platform   string
-	ReturnURI  string
-	IP         string
-	UserAgent  string
-	Provider   string
-	Purpose    string
+	ID         string `json:"id"`
+	CreatedAt  string `json:"created_at"`
+	ExpiresAt  string `json:"expires_at"`
+	UsedAt     string `json:"used_at,omitempty"`
+	AppID      string `json:"app_id"`
+	AppVersion string `json:"app_version"`
+	AppBuild   string `json:"app_build"`
+	Platform   string `json:"platform"`
+	ReturnURI  string `json:"return_uri"`
+	IP         string `json:"ip"`
+	UserAgent  string `json:"user_agent"`
+	Provider   string `json:"provider"`
+	Purpose    string `json:"purpose"`
 }
 
 type OAuthTicket struct {
-	ID        string
-	CreatedAt string
-	ExpiresAt string
-	UsedAt    string
-	AppID     string
-	Platform  string
-	ReturnURI string
-	UserLabel string
-	HasToken  bool
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+	UsedAt    string `json:"used_at,omitempty"`
+	AppID     string `json:"app_id"`
+	Platform  string `json:"platform"`
+	ReturnURI string `json:"return_uri"`
+	UserLabel string `json:"user_label"`
+	HasToken  bool   `json:"has_token"`
 }
 
 type Stats struct {

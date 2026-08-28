@@ -120,8 +120,8 @@ func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (P
 		return PluginRecord{}, err
 	}
 	defer tx.Rollback()
-	var pendingID, currentID string
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(pending_version_id::text,''),COALESCE(current_version_id::text,'') FROM plugins WHERE id=$1 FOR UPDATE`, id).Scan(&pendingID, &currentID)
+	var pendingID, currentID, currentState string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(pending_version_id::text,''),COALESCE(current_version_id::text,''),state FROM plugins WHERE id=$1 FOR UPDATE`, id).Scan(&pendingID, &currentID, &currentState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PluginRecord{}, ErrPluginNotFound
 	}
@@ -142,14 +142,19 @@ func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (P
 			_, err = tx.ExecContext(ctx, `UPDATE plugins SET pending_version_id=NULL,state=CASE WHEN $3='' THEN 'rejected' ELSE state END,moderation_reason=$2,updated_at=now() WHERE id=$1`, id, reason, currentID)
 		}
 		if err == nil {
-			title, body := "插件审核已通过", "你上传的插件更新已通过审核并上架"
-			if state == "rejected" {
-				title, body = "插件审核未通过", "你上传的插件更新未通过审核"
-				if reason != "" {
-					body += "：" + reason
+			// A new plugin, or a delisted plugin being restored, changes the
+			// plugins.state column and is notified by the database trigger. An
+			// update that stays listed/delisted does not fire that trigger, so it
+			// still needs the explicit version-review notification below.
+			triggerNotifies := (state == "listed" && currentState != "listed") ||
+				(state == "rejected" && currentID == "" && currentState != "rejected")
+			if !triggerNotifies {
+				event := "plugin.approved"
+				if state == "rejected" {
+					event = "plugin.rejected"
 				}
+				_, err = tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) SELECT $2,uploader_id,'moderation',$3,jsonb_build_object('plugin_id',id,'state',$4::text,'reason',$5::text),'','',id FROM plugins WHERE id=$1`, id, uuid.NewString(), event, state, reason)
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body,ref) SELECT $2,uploader_id,'moderation',$3,$4,id FROM plugins WHERE id=$1`, id, uuid.NewString(), title, body)
 		}
 	} else {
 		_, err = tx.ExecContext(ctx, `UPDATE plugins SET state=$2,moderation_reason=$3,updated_at=now() WHERE id=$1`, id, state, reason)
