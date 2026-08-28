@@ -178,13 +178,14 @@ func (a *App) handleAdminAPIReviewDecision(w http.ResponseWriter, r *http.Reques
 
 func (a *App) handleAdminAPIResources(w http.ResponseWriter, r *http.Request) {
 	page, err := a.store.AdminResources(r.Context(), store.AdminResourceQuery{
-		Search:     r.URL.Query().Get("q"),
-		Kind:       r.URL.Query().Get("kind"),
-		Owner:      r.URL.Query().Get("owner"),
-		Moderation: r.URL.Query().Get("state"),
-		Sort:       r.URL.Query().Get("sort"),
-		Page:       positiveInt(r.URL.Query().Get("page"), 1),
-		PerPage:    positiveInt(r.URL.Query().Get("per_page"), 25),
+		Search:            r.URL.Query().Get("q"),
+		Kind:              r.URL.Query().Get("kind"),
+		Owner:             r.URL.Query().Get("owner"),
+		Moderation:        r.URL.Query().Get("state"),
+		PublicationTarget: r.URL.Query().Get("target"),
+		Sort:              r.URL.Query().Get("sort"),
+		Page:              positiveInt(r.URL.Query().Get("page"), 1),
+		PerPage:           positiveInt(r.URL.Query().Get("per_page"), 25),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("resources_failed", err.Error()))

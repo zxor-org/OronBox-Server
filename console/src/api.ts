@@ -109,10 +109,10 @@ export function retryPublication(id: string) {
   return api.post(`/admin/api/publications/${id}`, { action: "requeue" })
 }
 
-export type ResourceItem = Record<string, unknown> & { id: string; name?: string; slug?: string; kind?: string; owner?: string; moderation?: string; revision_name?: string; revision_number?: number; review_state?: string; updated_at?: string }
+export type ResourceItem = Record<string, unknown> & { id: string; name?: string; slug?: string; kind?: string; owner?: string; moderation?: string; revision_name?: string; revision_number?: number; review_state?: string; updated_at?: string; targets?: string[] }
 
-export function listResources(q = "", kind = "", state = "", page = 1) {
-  return api.list<ResourceItem>("/admin/api/resources", { q, kind, state, page, per_page: 25 })
+export function listResources(q = "", kind = "", state = "", page = 1, target = "") {
+  return api.list<ResourceItem>("/admin/api/resources", { q, kind, state, target, page, per_page: 25 })
 }
 
 export type CommentItem = { id: string; username: string; body: string; state: string; resource_id?: string; created_at?: string }

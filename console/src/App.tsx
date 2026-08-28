@@ -1,5 +1,35 @@
 import { NavLink, Outlet, Route, Routes, useLocation } from "react-router"
 import { useEffect, useState } from "react"
+import type { Icon } from "@phosphor-icons/react"
+import {
+  ArticleIcon,
+  BellIcon,
+  ChartBarIcon,
+  ChatCircleIcon,
+  ClipboardTextIcon,
+  ClockCounterClockwiseIcon,
+  CloudArrowUpIcon,
+  CoinsIcon,
+  DatabaseIcon,
+  DevicesIcon,
+  FlagIcon,
+  GearFineIcon,
+  HeartbeatIcon,
+  HouseIcon,
+  KeyIcon,
+  MegaphoneIcon,
+  MoonIcon,
+  PackageIcon,
+  PulseIcon,
+  PuzzlePieceIcon,
+  RocketLaunchIcon,
+  SignOutIcon,
+  SunIcon,
+  TicketIcon,
+  UsersIcon,
+  WatchIcon,
+  BooksIcon,
+} from "@phosphor-icons/react"
 import { loadSession, logout, type Session } from "./api"
 import { ReviewPage } from "./pages/Review"
 import { ResourcesPage } from "./pages/Resources"
@@ -25,56 +55,56 @@ import {
 import { ToastHost } from "./ui"
 import { applyTheme, readTheme, type Theme } from "./theme"
 
-type NavItem = { to: string; label: string; admin?: boolean; end?: boolean; badge?: boolean }
+type NavItem = { to: string; label: string; icon: Icon; admin?: boolean; end?: boolean; badge?: boolean }
 
 const groups: { label: string; items: NavItem[] }[] = [
   {
     label: "审核工作台",
     items: [
-      { to: "/review", label: "待审核", badge: true },
-      { to: "/collections/review", label: "合集审核" },
-      { to: "/comments", label: "评论审核" },
-      { to: "/reports", label: "举报与反馈" },
+      { to: "/review", label: "待审核", icon: ClipboardTextIcon, badge: true },
+      { to: "/collections/review", label: "合集审核", icon: BooksIcon },
+      { to: "/comments", label: "评论审核", icon: ChatCircleIcon },
+      { to: "/reports", label: "举报与反馈", icon: FlagIcon },
     ],
   },
   {
     label: "内容与发布",
     items: [
-      { to: "/", label: "概览", admin: true, end: true },
-      { to: "/resources", label: "全部资源" },
-      { to: "/publications", label: "发布任务" },
-      { to: "/devices", label: "设备目录" },
-      { to: "/plugins", label: "插件管理" },
+      { to: "/", label: "概览", icon: ChartBarIcon, admin: true, end: true },
+      { to: "/resources", label: "全部资源", icon: PackageIcon },
+      { to: "/publications", label: "发布任务", icon: CloudArrowUpIcon },
+      { to: "/devices", label: "设备目录", icon: WatchIcon },
+      { to: "/plugins", label: "插件管理", icon: PuzzlePieceIcon },
     ],
   },
   {
     label: "社区与用户",
     items: [
-      { to: "/users", label: "用户", admin: true },
-      { to: "/coins", label: "硬币管理", admin: true },
-      { to: "/messages", label: "系统消息" },
+      { to: "/users", label: "用户", icon: UsersIcon, admin: true },
+      { to: "/coins", label: "硬币管理", icon: CoinsIcon, admin: true },
+      { to: "/messages", label: "系统消息", icon: BellIcon },
     ],
   },
   {
     label: "内容运营",
     items: [
-      { to: "/home", label: "首页编排" },
-      { to: "/blog", label: "Blog 管理", admin: true },
-      { to: "/announcements", label: "公告", admin: true },
-      { to: "/releases", label: "客户端版本" },
+      { to: "/home", label: "首页编排", icon: HouseIcon },
+      { to: "/blog", label: "Blog 管理", icon: ArticleIcon, admin: true },
+      { to: "/announcements", label: "公告", icon: MegaphoneIcon, admin: true },
+      { to: "/releases", label: "客户端版本", icon: RocketLaunchIcon },
     ],
   },
   {
     label: "系统与诊断",
     items: [
-      { to: "/oauth/events", label: "OAuth 事件" },
-      { to: "/oauth/states", label: "OAuth States" },
-      { to: "/oauth/tickets", label: "登录 Tickets" },
-      { to: "/clients", label: "客户端统计" },
-      { to: "/storage/blobs", label: "Blob 与副本" },
-      { to: "/health", label: "运行状态" },
-      { to: "/audit", label: "审计日志" },
-      { to: "/settings", label: "设置", admin: true },
+      { to: "/oauth/events", label: "OAuth 事件", icon: PulseIcon },
+      { to: "/oauth/states", label: "OAuth States", icon: KeyIcon },
+      { to: "/oauth/tickets", label: "登录 Tickets", icon: TicketIcon },
+      { to: "/clients", label: "客户端统计", icon: DevicesIcon },
+      { to: "/storage/blobs", label: "Blob 与副本", icon: DatabaseIcon },
+      { to: "/health", label: "运行状态", icon: HeartbeatIcon },
+      { to: "/audit", label: "审计日志", icon: ClockCounterClockwiseIcon },
+      { to: "/settings", label: "设置", icon: GearFineIcon, admin: true },
     ],
   },
 ]
@@ -107,6 +137,8 @@ const titles: Record<string, string> = {
   settings: "设置",
 }
 
+const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{4,}$/i
+
 function Shell({ session }: { session: Session }) {
   const admin = session.role === "admin"
   const [theme, setTheme] = useState<Theme>(() => readTheme())
@@ -126,12 +158,22 @@ function Shell({ session }: { session: Session }) {
             return (
               <div className="nav-group" key={group.label}>
                 <h2>{group.label}</h2>
-                {items.map((item) => (
-                  <NavLink key={item.to} to={item.to} end={item.end}>
-                    {item.label}
-                    {item.badge && session.pending_reviews > 0 ? <span className="count">{session.pending_reviews}</span> : null}
-                  </NavLink>
-                ))}
+                {items.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => (isActive ? "active" : "")}>
+                      {({ isActive }) => (
+                        <>
+                          <span className="nav-label">
+                            <Icon size={20} weight={isActive ? "fill" : "regular"} />
+                            {item.label}
+                          </span>
+                          {item.badge && session.pending_reviews > 0 ? <span className="count">{session.pending_reviews}</span> : null}
+                        </>
+                      )}
+                    </NavLink>
+                  )
+                })}
               </div>
             )
           })}
@@ -146,6 +188,7 @@ function Shell({ session }: { session: Session }) {
               setTheme(next)
             }}
           >
+            {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
             {theme === "dark" ? "日间" : "夜间"}
           </button>
           <button
@@ -155,6 +198,7 @@ function Shell({ session }: { session: Session }) {
               window.location.href = "/admin/login"
             }}
           >
+            <SignOutIcon size={16} />
             退出
           </button>
         </div>
@@ -163,7 +207,8 @@ function Shell({ session }: { session: Session }) {
         <header className="topbar">
           {keys.map((key, index) => {
             const last = index === keys.length - 1
-            const label = titles[key] || crumbs[index] || "概览"
+            const segment = crumbs[index] || ""
+            const label = titles[key] || (uuidLike.test(segment) ? "详情" : segment) || "概览"
             return (
               <span key={key || "home"} className="crumb">
                 {index > 0 ? <span className="crumb-sep">/</span> : null}
@@ -172,7 +217,9 @@ function Shell({ session }: { session: Session }) {
             )
           })}
         </header>
-        <Outlet context={session} />
+        <div className="stage">
+          <Outlet context={session} />
+        </div>
       </div>
       <ToastHost />
     </div>

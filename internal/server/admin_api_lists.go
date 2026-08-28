@@ -55,7 +55,7 @@ func (a *App) handleAdminAPICollections(w http.ResponseWriter, r *http.Request) 
 
 func (a *App) handleAdminAPIPublications(w http.ResponseWriter, r *http.Request) {
 	page, err := a.store.AdminPublications(r.Context(), store.AdminPublicationQuery{
-		Search: r.URL.Query().Get("q"), State: r.URL.Query().Get("state"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+		Search: r.URL.Query().Get("q"), Target: r.URL.Query().Get("target"), State: r.URL.Query().Get("state"), Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorBody("publications_failed", err.Error()))

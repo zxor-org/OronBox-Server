@@ -80,40 +80,43 @@ export function UsersPage() {
         />
       </PageHeader>
       {error && <div className="error">{error}</div>}
-      <div className="table-wrap">
-        {items.length === 0 && <Empty>没有用户</Empty>}
-        {items.length > 0 && (
-          <table>
-            <thead>
-              <tr>
-                <th>用户</th>
-                <th>角色</th>
-                <th>资源</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.id} className={`clickable ${item.id === id ? "selected" : ""}`} onClick={() => navigate(`/users/${item.id}`)}>
-                  <td>{item.username}</td>
-                  <td>{item.role}</td>
-                  <td>{item.resource_count}</td>
-                  <td>
-                    <Status value={item.banned ? "banned" : item.frozen ? "frozen" : "visible"} label={item.banned ? "已封禁" : item.frozen ? "创作已冻结" : "正常"} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-      <Pagination page={page} total={total} perPage={25} onChange={setPage} />
-      {current && (
-        <div className="page-body">
+      <div className={current ? "workbench" : ""}>
+        <div>
+          <div className="table-wrap">
+            {items.length === 0 && <Empty>没有用户</Empty>}
+            {items.length > 0 && (
+              <table>
+                <thead>
+                  <tr>
+                    <th>用户</th>
+                    <th>角色</th>
+                    <th>资源</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item) => (
+                    <tr key={item.id} className={`clickable ${item.id === id ? "selected" : ""}`} onClick={() => navigate(`/users/${item.id}`)}>
+                      <td>{item.username}</td>
+                      <td>{item.role === "admin" ? "管理员" : item.role === "reviewer" ? "审核员" : "用户"}</td>
+                      <td>{item.resource_count}</td>
+                      <td>
+                        <Status value={item.banned ? "banned" : item.frozen ? "frozen" : "visible"} label={item.banned ? "已封禁" : item.frozen ? "创作已冻结" : "正常"} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <Pagination page={page} total={total} perPage={25} onChange={setPage} />
+        </div>
+        {current && (
+        <div className="detail">
           <div className="panel">
             <h3>{current.username}</h3>
             <p className="hint">
-              {current.role} · 资源 {current.resource_count}
+              {current.role === "admin" ? "管理员" : current.role === "reviewer" ? "审核员" : "用户"} · 资源 {current.resource_count}
               {current.ban_reason ? ` · ${current.ban_reason}` : ""}
             </p>
             <div className="row-actions">
@@ -142,6 +145,7 @@ export function UsersPage() {
           </div>
         </div>
       )}
+      </div>
       <Dialog
         open={!!action}
         title={action?.label || "确认"}

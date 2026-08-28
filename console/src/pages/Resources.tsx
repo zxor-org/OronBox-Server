@@ -1,17 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { listResources, type ResourceItem } from "../api";
-import { Pagination, SearchForm, Status, formatRelative } from "../ui";
-
-const kindLabel: Record<string, string> = { watchface: "表盘", app: "应用", quickapp: "快应用" };
-const stateLabel: Record<string, string> = {
-  visible: "展示中",
-  hidden: "已隐藏",
-  frozen: "已冻结",
-  pending: "待审核",
-  approved: "已通过",
-  rejected: "已退回",
-};
+import { Pagination, SearchForm, Status, TargetChips, formatRelative, kindLabel, stateLabel } from "../ui";
 
 export function ResourcesPage() {
   const navigate = useNavigate();
@@ -20,13 +10,14 @@ export function ResourcesPage() {
   const [q, setQ] = useState("");
   const [kind, setKind] = useState("");
   const [state, setState] = useState("");
+  const [target, setTarget] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = (search = q, nextPage = page) => {
     setLoading(true);
-    listResources(search, kind, state, nextPage)
+    listResources(search, kind, state, nextPage, target)
       .then((data) => {
         setItems(data.items || []);
         setTotal(data.total || 0);
@@ -37,12 +28,12 @@ export function ResourcesPage() {
 
   useEffect(() => {
     load(q, page);
-  }, [kind, state, page]);
+  }, [kind, state, target, page]);
 
   return (
     <>
       <header className="page-head">
-        <h1>资源</h1>
+        <p>点行进入工作区。发布目标来自当前版本的发布计划。</p>
         <SearchForm
           value={q}
           onChange={setQ}
@@ -67,6 +58,12 @@ export function ResourcesPage() {
           <option value="frozen">已冻结</option>
           <option value="pending">待审核</option>
         </select>
+        <select value={target} onChange={(event) => { setTarget(event.target.value); setPage(1); }}>
+          <option value="">全部目标</option>
+          <option value="oronbox">OronBox</option>
+          <option value="bandbbs">米坛</option>
+          <option value="astrobox">AstroBox</option>
+        </select>
       </div>
       <div className="table-wrap">
         {error && <div className="error">{error}</div>}
@@ -79,6 +76,7 @@ export function ResourcesPage() {
                 <th>名称</th>
                 <th>作者</th>
                 <th>类型</th>
+                <th>发布目标</th>
                 <th>当前版本</th>
                 <th>状态</th>
                 <th>更新</th>
@@ -90,6 +88,7 @@ export function ResourcesPage() {
                   <td>{item.name || item.revision_name || item.slug}</td>
                   <td>{item.owner}</td>
                   <td>{kindLabel[item.kind || ""] || item.kind}</td>
+                  <td><TargetChips targets={(item.targets as string[]) || []} /></td>
                   <td>{item.revision_name || item.revision_number}</td>
                   <td>
                     <Status value={item.moderation || item.review_state || ""} label={stateLabel[item.moderation || ""] || stateLabel[item.review_state || ""] || item.moderation || item.review_state} />

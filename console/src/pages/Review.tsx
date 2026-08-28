@@ -1,7 +1,24 @@
 import { useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router"
-import { bulkReviews, decideReview, getReview, listReviews, saveReviewChecklist } from "../api"
-import { Dialog, Empty, Field, PageHeader, Status, formatRelative, kindLabel, paidLabel, toast } from "../ui"
+import { CheckCircleIcon, ProhibitIcon, FolderOpenIcon } from "@phosphor-icons/react"
+import { api, bulkReviews, decideReview, getReview, listReviews, saveReviewChecklist } from "../api"
+import {
+  Dialog,
+  Empty,
+  Field,
+  PageHeader,
+  PublicationCards,
+  SearchForm,
+  Status,
+  TargetChips,
+  eventLabel,
+  formatBytes,
+  formatRelative,
+  kindLabel,
+  mediaRoleLabel,
+  paidLabel,
+  toast,
+} from "../ui"
 
 type Item = {
   id: string
@@ -14,30 +31,63 @@ type Item = {
   waiting?: string
   priority_label?: string
   reports?: number
+  owner_rejections?: number
   reviewer?: string
+  targets?: string[]
+  state?: string
+}
+
+type Artifact = {
+  name: string
+  version: string
+  devices?: string[]
+  device_bindings?: { id: string; display_name: string; codename: string }[]
+  url: string
+  package_id?: string
+  package_format?: string
+  size?: number
+  sha256?: string
+  analysis?: unknown
 }
 
 type Detail = {
-  review: { id: string; state: string; owner: string; kind: string; revision_number: number; items?: string[]; curation_grade?: string; resource_id?: string }
+  review: {
+    id: string
+    state: string
+    owner: string
+    kind: string
+    revision_number: number
+    items?: string[]
+    curation_grade?: string
+    resource_id?: string
+    targets?: string[]
+    reviewer?: string
+  }
   current: {
     name: string
     summary: string
     paid_type: string
     attributes?: string[]
-    media?: { sha256: string; url: string; role: string }[]
-    artifacts?: { name: string; version: string; devices?: string[]; url: string }[]
+    publication_plan?: unknown
+    media?: { sha256: string; url: string; role: string; width?: number; height?: number }[]
+    artifacts?: Artifact[]
   } | null
   diff?: { has_base: boolean; fields?: { label: string; before: string; after: string }[] }
   events?: { id: string; event: string; actor: string; note: string; created_at: string }[]
   checklist_catalog?: string[]
 }
 
+type Reviewer = { id: string; username: string; role: string }
+
 export function ReviewPage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [items, setItems] = useState<Item[]>([])
   const [detail, setDetail] = useState<Detail | null>(null)
+  const [q, setQ] = useState("")
   const [kind, setKind] = useState("")
+  const [target, setTarget] = useState("")
+  const [state, setState] = useState("pending")
   const [sort, setSort] = useState("sla")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
@@ -48,19 +98,26 @@ export function ReviewPage() {
   const [checked, setChecked] = useState<string[]>([])
   const [selected, setSelected] = useState<string[]>([])
   const [preview, setPreview] = useState("")
+  const [reviewers, setReviewers] = useState<Reviewer[]>([])
+  const [bulkNote, setBulkNote] = useState("")
+  const [analysis, setAnalysis] = useState<Artifact | null>(null)
 
   const load = () =>
-    listReviews("pending", kind, { sort })
+    listReviews(state, kind, { sort, target, q })
       .then((data) => setItems((data.items || []) as Item[]))
       .catch((err: Error) => setError(err.message))
 
   useEffect(() => {
     load()
-  }, [kind, sort])
+  }, [kind, sort, target, state])
 
   useEffect(() => {
-    if (!id && items[0]) navigate(`/review/${items[0].id}`, { replace: true })
-  }, [id, items, navigate])
+    api.get<{ reviewers?: Reviewer[] }>("/admin/api/catalog").then((data) => setReviewers(data.reviewers || [])).catch(() => null)
+  }, [])
+
+  useEffect(() => {
+    if (!id && items[0] && state === "pending") navigate(`/review/${items[0].id}`, { replace: true })
+  }, [id, items, navigate, state])
 
   useEffect(() => {
     if (!id) {
@@ -100,24 +157,45 @@ export function ReviewPage() {
 
   return (
     <>
-      <PageHeader title="待审核" hint="从队列处理提交。退回和批量操作使用对话框。">
-        <select className="search" value={kind} onChange={(event) => setKind(event.target.value)}>
-          <option value="">全部类型</option>
-          <option value="watchface">表盘</option>
-          <option value="quickapp">快应用</option>
-        </select>
-        <select className="search" value={sort} onChange={(event) => setSort(event.target.value)}>
-          <option value="sla">按超时</option>
-          <option value="priority">按优先级</option>
-          <option value="updated_desc">最近更新</option>
-        </select>
+      <PageHeader hint="按超时排队。先看发布目标、图片和安装包，再决定通过或退回。">
+        <SearchForm
+          value={q}
+          onChange={setQ}
+          onSubmit={() => load()}
+          placeholder="资源、创作者或审核 ID"
+        />
         <button className="btn" type="button" disabled={!selected.length} onClick={() => setBulkOpen(true)}>
           批量 {selected.length || ""}
         </button>
       </PageHeader>
+      <div className="toolbar">
+        <select value={state} onChange={(event) => setState(event.target.value)}>
+          <option value="pending">待审核</option>
+          <option value="approved">已通过</option>
+          <option value="rejected">已退回</option>
+          <option value="superseded">已替代</option>
+          <option value="">全部状态</option>
+        </select>
+        <select value={kind} onChange={(event) => setKind(event.target.value)}>
+          <option value="">全部类型</option>
+          <option value="watchface">表盘</option>
+          <option value="quickapp">快应用</option>
+        </select>
+        <select value={target} onChange={(event) => setTarget(event.target.value)}>
+          <option value="">全部目标</option>
+          <option value="oronbox">OronBox</option>
+          <option value="bandbbs">米坛</option>
+          <option value="astrobox">AstroBox</option>
+        </select>
+        <select value={sort} onChange={(event) => setSort(event.target.value)}>
+          <option value="sla">按超时</option>
+          <option value="priority">按优先级</option>
+          <option value="updated_desc">最近更新</option>
+        </select>
+      </div>
       <div className="split">
         <div className="queue">
-          {items.length === 0 && <Empty>没有待审核的版本</Empty>}
+          {items.length === 0 && <Empty>没有符合筛选的审核单</Empty>}
           {items.map((item) => (
             <button key={item.id} type="button" className={`queue-item ${item.id === id ? "selected" : ""}`} onClick={() => navigate(`/review/${item.id}`)}>
               <div className="title">
@@ -126,8 +204,8 @@ export function ReviewPage() {
                   checked={selected.includes(item.id)}
                   onClick={(event) => event.stopPropagation()}
                   onChange={(event) => setSelected(event.target.checked ? [...selected, item.id] : selected.filter((value) => value !== item.id))}
-                />{" "}
-                {item.name || "未命名"}
+                />
+                <span>{item.name || "未命名"}</span>
               </div>
               <div className="meta">
                 <span>{item.owner}</span>
@@ -135,10 +213,12 @@ export function ReviewPage() {
                 <span>#{item.revision_number}</span>
                 {item.priority_label ? <span className="chip">{item.priority_label}</span> : null}
               </div>
+              <TargetChips targets={item.targets} />
               <div className={`hint ${item.overdue ? "overdue" : ""}`}>
                 {item.overdue ? "已超时" : item.waiting || formatRelative(item.updated_at)}
                 {item.reports ? ` · 举报 ${item.reports}` : ""}
-                {item.reviewer ? ` · ${item.reviewer}` : ""}
+                {item.owner_rejections ? ` · 退回过 ${item.owner_rejections}` : ""}
+                {item.reviewer ? ` · ${item.reviewer}` : " · 未分配"}
               </div>
             </button>
           ))}
@@ -151,46 +231,93 @@ export function ReviewPage() {
               <div className="detail-meta">
                 {detail.review.owner} · {kindLabel[detail.review.kind] || detail.review.kind}
                 {detail.current?.paid_type ? ` · ${paidLabel[detail.current.paid_type] || detail.current.paid_type}` : ""}
-                {` · 第 ${detail.review.revision_number} 版 `}
+                {` · 第 ${detail.review.revision_number} 版`}
+                {detail.review.reviewer ? ` · 审核员 ${detail.review.reviewer}` : " · 未分配"}
+                {" "}
                 <Status value={detail.review.state} />
               </div>
               {detail.current?.summary && <p className="summary">{detail.current.summary}</p>}
-              {!!detail.current?.media?.length && (
-                <div className="gallery">
-                  {detail.current.media.map((media) => (
-                    <img key={media.sha256} src={media.url} alt={media.role} onClick={() => setPreview(media.url)} />
-                  ))}
-                </div>
-              )}
+              <PublicationCards plan={detail.current?.publication_plan} targets={detail.review.targets} />
+              <div className="panel">
+                <h3>预览与媒体</h3>
+                <p className="hint">点图看原图。没有图片时先确认是不是规范要求的漏传。</p>
+                {detail.current?.media?.length ? (
+                  <div className="gallery">
+                    {detail.current.media.map((media) => (
+                      <figure key={media.sha256} className="media-card">
+                        <img src={media.url} alt={mediaRoleLabel[media.role] || media.role} onClick={() => setPreview(media.url)} />
+                        <figcaption>
+                          {mediaRoleLabel[media.role] || media.role}
+                          {media.width && media.height ? ` · ${media.width}×${media.height}` : ""}
+                        </figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty>本次提交没有任何图片</Empty>
+                )}
+              </div>
+              <div className="panel">
+                <h3>资源文件</h3>
+                <p className="hint">先确认包能下，再看绑定了哪些设备。</p>
+                {detail.current?.artifacts?.length ? (
+                  <div className="files">
+                    {detail.current.artifacts.map((file) => (
+                      <div className="file" key={file.url || file.sha256}>
+                        <div>
+                          <div>{file.name}</div>
+                          <small>
+                            {file.version}
+                            {file.package_format ? ` · ${file.package_format}` : ""}
+                            {file.size ? ` · ${formatBytes(file.size)}` : ""}
+                          </small>
+                          <div className="chip-row">
+                            {(file.device_bindings || []).length
+                              ? file.device_bindings!.map((device) => (
+                                  <span className="chip" key={device.id}>
+                                    {device.display_name || device.codename}
+                                  </span>
+                                ))
+                              : (file.devices || []).map((device) => (
+                                  <span className="chip" key={device}>
+                                    {device}
+                                  </span>
+                                ))}
+                            {!file.device_bindings?.length && !file.devices?.length ? <span className="chip overdue">未绑定设备</span> : null}
+                          </div>
+                        </div>
+                        <div className="row-actions">
+                          {file.analysis ? (
+                            <button className="btn" type="button" onClick={() => setAnalysis(file)}>
+                              分析
+                            </button>
+                          ) : null}
+                          <a className="btn" href={`${file.url}?download=1`}>
+                            下载
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty>本次提交没有资源文件</Empty>
+                )}
+              </div>
               {detail.diff?.has_base && !!detail.diff.fields?.length && (
-                <div className="files">
-                  {detail.diff.fields.map((field) => (
-                    <div className="file" key={field.label}>
-                      <div>
-                        <div>{field.label}</div>
-                        <small>
-                          {field.before || "（空）"} → {field.after || "（空）"}
-                        </small>
+                <div className="panel">
+                  <h3>相对上一版的变更</h3>
+                  <div className="files">
+                    {detail.diff.fields.map((field) => (
+                      <div className="file" key={field.label}>
+                        <div>
+                          <div>{field.label}</div>
+                          <small>
+                            {field.before || "（空）"} → {field.after || "（空）"}
+                          </small>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {!!detail.current?.artifacts?.length && (
-                <div className="files">
-                  {detail.current.artifacts.map((file) => (
-                    <div className="file" key={file.url}>
-                      <div>
-                        <div>{file.name}</div>
-                        <small>
-                          {file.version} {file.devices?.length ? `· ${file.devices.join("、")}` : ""}
-                        </small>
-                      </div>
-                      <a className="btn" href={file.url}>
-                        下载
-                      </a>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="panel">
@@ -225,7 +352,7 @@ export function ReviewPage() {
                 <ol className="timeline">
                   {detail.events.map((event) => (
                     <li key={event.id}>
-                      <strong>{event.event}</strong> · {event.actor} · {formatRelative(event.created_at)}
+                      <strong>{eventLabel[event.event] || event.event}</strong> · {event.actor} · {formatRelative(event.created_at)}
                       {event.note ? <div className="hint">{event.note}</div> : null}
                     </li>
                   ))}
@@ -235,14 +362,17 @@ export function ReviewPage() {
               {detail.review.state === "pending" && (
                 <div className="actions sticky-actions">
                   <button className="btn btn-primary" disabled={busy} onClick={() => decide("approve")}>
-                    通过
+                    <CheckCircleIcon size={16} />
+                    批准发布
                   </button>
                   <button className="btn btn-danger" disabled={busy} onClick={() => setRejectOpen(true)}>
-                    退回
+                    <ProhibitIcon size={16} />
+                    退回修改
                   </button>
                   {detail.review.resource_id && (
                     <button className="btn" type="button" onClick={() => navigate(`/resources/${detail.review.resource_id}`)}>
-                      打开资源
+                      <FolderOpenIcon size={16} />
+                      资源工作区
                     </button>
                   )}
                 </div>
@@ -269,7 +399,27 @@ export function ReviewPage() {
       >
         <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="需要改什么" />
       </Dialog>
-      <Dialog open={bulkOpen} title="批量处理" hint={`已选 ${selected.length} 条。`} onClose={() => setBulkOpen(false)} footer={<button className="btn" type="button" onClick={() => setBulkOpen(false)}>完成</button>}>
+      <Dialog open={bulkOpen} title="批量处理" hint={`已选 ${selected.length} 条，全有或全无。`} onClose={() => setBulkOpen(false)} footer={<button className="btn" type="button" onClick={() => setBulkOpen(false)}>完成</button>}>
+        <Field label="分配给">
+          <select
+            onChange={async (event) => {
+              try {
+                await bulkReviews({ action: "assign", ids: selected, reviewer_id: event.target.value })
+                toast(event.target.value ? "已分配" : "已取消分配")
+                load()
+              } catch (err) {
+                toast((err as Error).message, "err")
+              }
+            }}
+          >
+            <option value="">选择审核员后立刻生效</option>
+            {reviewers.map((reviewer) => (
+              <option key={reviewer.id} value={reviewer.id}>
+                {reviewer.username}（{reviewer.role}）
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field label="优先级">
           <select
             onChange={async (event) => {
@@ -290,9 +440,49 @@ export function ReviewPage() {
             <option value="3">紧急</option>
           </select>
         </Field>
+        <Field label="批量退回理由">
+          <textarea value={bulkNote} onChange={(event) => setBulkNote(event.target.value)} placeholder="批量退回必填" />
+        </Field>
+        <div className="row-actions">
+          <button
+            className="btn btn-primary"
+            type="button"
+            onClick={() =>
+              bulkReviews({ action: "approve", ids: selected, grade })
+                .then(() => {
+                  toast("已批量通过")
+                  setSelected([])
+                  load()
+                })
+                .catch((err: Error) => toast(err.message, "err"))
+            }
+          >
+            批量通过
+          </button>
+          <button
+            className="btn btn-danger"
+            type="button"
+            disabled={!bulkNote.trim()}
+            onClick={() =>
+              bulkReviews({ action: "reject", ids: selected, note: bulkNote })
+                .then(() => {
+                  toast("已批量退回")
+                  setSelected([])
+                  setBulkNote("")
+                  load()
+                })
+                .catch((err: Error) => toast(err.message, "err"))
+            }
+          >
+            批量退回
+          </button>
+        </div>
       </Dialog>
       <Dialog open={!!preview} title="预览" wide onClose={() => setPreview("")}>
         {preview ? <img src={preview} alt="" style={{ width: "100%", borderRadius: 8 }} /> : null}
+      </Dialog>
+      <Dialog open={!!analysis} title="服务端分析" wide onClose={() => setAnalysis(null)}>
+        <pre className="summary">{JSON.stringify(analysis?.analysis, null, 2)}</pre>
       </Dialog>
     </>
   )

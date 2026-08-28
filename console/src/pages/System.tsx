@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react"
-import { useLocation, useParams } from "react-router"
+import { useLocation, useNavigate, useParams } from "react-router"
 import { api } from "../api"
-import { Dialog, Empty, Field, PageHeader, Pagination, SearchForm, Status, formatRelative, toast } from "../ui"
+import { Dialog, Empty, Field, FieldList, PageHeader, Pagination, SearchForm, Status, formatRelative, toast } from "../ui"
 
 type Row = Record<string, any>
 
@@ -27,6 +27,7 @@ function useRows(path: string, extra: Record<string, string | number | undefined
 
 export function CollectionsPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const { items, total, q, setQ, page, setPage, error, load } = useRows("/admin/api/collections")
   const [detail, setDetail] = useState<Row | null>(null)
   const [name, setName] = useState("")
@@ -56,7 +57,7 @@ export function CollectionsPage() {
           </thead>
           <tbody>
             {items.map((item) => (
-              <tr key={item.id} className="clickable" onClick={() => (window.location.href = `/admin/collections/${item.id}`)}>
+              <tr key={item.id} className="clickable" onClick={() => navigate(`/collections/${item.id}`)}>
                 <td>
                   {item.name}
                 </td>
@@ -758,7 +759,11 @@ export function SystemPage() {
           </>
         }
       >
-        <pre className="summary">{JSON.stringify(open, null, 2)}</pre>
+        <FieldList row={open} prefer={config.columns.map((column) => column.key)} />
+        <details>
+          <summary>原始数据</summary>
+          <pre className="summary">{JSON.stringify(open, null, 2)}</pre>
+        </details>
       </Dialog>
     </>
   )

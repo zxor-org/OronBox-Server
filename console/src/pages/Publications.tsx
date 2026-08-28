@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useOutletContext } from "react-router"
 import { api, retryPublication, type Session } from "../api"
-import { Empty, PageHeader, Pagination, SearchForm, Status, toast } from "../ui"
+import { Empty, PageHeader, Pagination, SearchForm, Status, targetLabel, toast } from "../ui"
 
 type Item = { id: string; name: string; target: string; state: string; error: string }
 
@@ -11,11 +11,13 @@ export function PublicationsPage() {
   const [total, setTotal] = useState(0)
   const [q, setQ] = useState("")
   const [page, setPage] = useState(1)
+  const [target, setTarget] = useState("")
+  const [state, setState] = useState("")
   const [error, setError] = useState("")
 
   const load = (search = q, next = page) =>
     api
-      .list<Item>("/admin/api/publications", { q: search, page: next, per_page: 25 })
+      .list<Item>("/admin/api/publications", { q: search, page: next, per_page: 25, target, state })
       .then((data) => {
         setItems(data.items || [])
         setTotal(data.total || 0)
@@ -24,7 +26,7 @@ export function PublicationsPage() {
 
   useEffect(() => {
     load(q, page)
-  }, [page])
+  }, [page, target, state])
 
   return (
     <>
@@ -56,6 +58,22 @@ export function PublicationsPage() {
           </button>
         )}
       </PageHeader>
+      <div className="toolbar">
+        <select value={target} onChange={(event) => { setTarget(event.target.value); setPage(1) }}>
+          <option value="">全部目标</option>
+          <option value="oronbox">OronBox</option>
+          <option value="bandbbs">米坛</option>
+          <option value="astrobox">AstroBox</option>
+        </select>
+        <select value={state} onChange={(event) => { setState(event.target.value); setPage(1) }}>
+          <option value="">全部状态</option>
+          <option value="pending">排队中</option>
+          <option value="running">执行中</option>
+          <option value="reviewing">外部审核中</option>
+          <option value="failed">失败</option>
+          <option value="published">已发布</option>
+        </select>
+      </div>
       {error && <div className="error">{error}</div>}
       <div className="table-wrap">
         {items.length === 0 && <Empty>没有发布任务</Empty>}
@@ -74,7 +92,7 @@ export function PublicationsPage() {
               {items.map((item) => (
                 <tr key={item.id}>
                   <td>{item.name}</td>
-                  <td>{item.target}</td>
+                  <td>{targetLabel(item.target)}</td>
                   <td>
                     <Status value={item.state} />
                   </td>

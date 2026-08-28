@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react"
 import { useNavigate, useParams } from "react-router"
 import { api, getResource, saveResourceDraft, submitResourceDraft, upload } from "../api"
-import { Dialog, Empty, Field, PageHeader, Status, Tabs, formatRelative, paidLabel, stateLabel, toast } from "../ui"
+import { Dialog, Empty, Field, PageHeader, PublicationCards, Status, Tabs, formatRelative, paidLabel, stateLabel, targetLabel, toast } from "../ui"
 
 type Resource = Record<string, any>
 
@@ -105,6 +105,7 @@ export function ResourcePage() {
         items={[
           { id: "edit", label: "资料" },
           { id: "assets", label: "媒体与安装包" },
+          { id: "publish", label: "发布目标" },
           { id: "governance", label: "治理" },
           { id: "history", label: "历史" },
         ]}
@@ -193,6 +194,31 @@ export function ResourcePage() {
                   }}
                 />
               )}
+            </div>
+          </div>
+        )}
+        {tab === "publish" && (
+          <div className="stack">
+            <PublicationCards plan={data.publication_plan} />
+            <div className="panel">
+              <h3>发布任务</h3>
+              {(data.publications || []).length === 0 && <Empty>这一版还没有发布任务</Empty>}
+              {(data.publications || []).map((item: { id: string; target: string; state: string; error_message?: string; external_url?: string }) => (
+                <div className="file" key={item.id}>
+                  <div>
+                    <div>{targetLabel(item.target)}</div>
+                    <small>
+                      <Status value={item.state} />
+                      {item.error_message ? ` · ${item.error_message}` : ""}
+                    </small>
+                  </div>
+                  {item.external_url ? (
+                    <a className="btn" href={item.external_url} target="_blank" rel="noreferrer">
+                      打开
+                    </a>
+                  ) : null}
+                </div>
+              ))}
             </div>
           </div>
         )}
