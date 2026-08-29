@@ -763,7 +763,7 @@ r.download_count,r.curation_grade,COALESCE((SELECT sum(v.coins) FROM resource_co
 	COALESCE(r.collection_id::text,'') collection_id,COALESCE((SELECT revision.name FROM resource_collections collection JOIN resource_collection_revisions revision ON revision.id=collection.current_revision_id WHERE collection.id=r.collection_id),'') collection_name,
 	0 resource_count,COALESCE(r.published_at,rr.created_at) published_at,r.updated_at,
 	CASE WHEN $6 THEN 0::numeric ELSE ((1.0 + ln(1.0 + COALESCE(recent.unique_coiners,0) + 0.35 * GREATEST(COALESCE(recent.coins,0)-COALESCE(recent.unique_coiners,0),0)) + 0.15 * ln(1.0 + GREATEST(r.download_count,0))) *
-	 (1.0 + exp(-GREATEST(EXTRACT(EPOCH FROM (now()-COALESCE(r.published_at,rr.created_at)))/86400.0,0)/7.0)) *
+	 (1.0 + 3.0 * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-COALESCE(r.published_at,rr.created_at)))/86400.0,0)/7.0)) *
 		 CASE WHEN r.curation_grade='featured' THEN 1.5 ELSE 1.0 END *
 		 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_revision_attributes binding JOIN resource_attributes definition ON definition.id=binding.attribute WHERE binding.revision_id=rr.id),1.0)) *
 		 (0.50 + (((hashtextextended(r.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
@@ -788,7 +788,7 @@ COALESCE((SELECT sum(v.coins) FROM resources child JOIN resource_coin_votes v ON
 		CASE WHEN $6 THEN 0::numeric ELSE ((1.0 + ln(1.0 + COALESCE((SELECT sum(recent.unique_coiners) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
 		0.35 * COALESCE((SELECT sum(GREATEST(recent.coins-recent.unique_coiners,0)) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)) +
 		0.15 * ln(1.0 + COALESCE((SELECT sum(child.download_count) FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible'),0))) *
-		 (1.0 + exp(-GREATEST(EXTRACT(EPOCH FROM (now()-(` + collectionPublishedAtSQL + `)))/86400.0,0)/7.0)) *
+		 (1.0 + 3.0 * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-(` + collectionPublishedAtSQL + `)))/86400.0,0)/7.0)) *
 	CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 1.5 ELSE 1.0 END *
 		COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0)) *
 		(0.50 + (((hashtextextended(c.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
