@@ -424,7 +424,10 @@ func filterBandBBSConfig(raw, detail []byte) ([]byte, map[string]bandbbs.Categor
 	}
 	completed := map[string]bandbbs.CategoryResult{}
 	versionTitle, _ := config["version_title"].(string)
-	needsUpdate := strings.TrimSpace(versionTitle) != ""
+	versionMessage, _ := config["version_message"].(string)
+	// The publish client fills a missing title/notes side from the revision,
+	// so either side present means an update will be created on dispatch.
+	needsUpdate := strings.TrimSpace(versionTitle) != "" || strings.TrimSpace(versionMessage) != ""
 	var status struct {
 		Completed map[string]any `json:"completed_categories"`
 	}

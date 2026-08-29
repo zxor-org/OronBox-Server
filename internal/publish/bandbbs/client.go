@@ -103,6 +103,17 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 	}
 	cfg.VersionTitle = strings.TrimSpace(cfg.VersionTitle)
 	cfg.VersionMessage = strings.TrimSpace(cfg.VersionMessage)
+	// BandBBS builds its version update from the title/notes pair. Plans have
+	// shipped with only one side filled, which used to sink the whole
+	// publication; default the missing side from the revision metadata so the
+	// update stays well-formed instead of failing at dispatch time. Both empty
+	// still means no update at all.
+	if cfg.VersionTitle == "" && cfg.VersionMessage != "" {
+		cfg.VersionTitle = strings.TrimSpace(snap.Revision.Name)
+	}
+	if cfg.VersionMessage == "" && cfg.VersionTitle != "" {
+		cfg.VersionMessage = strings.TrimSpace(snap.Revision.Summary)
+	}
 	purchaseLink := strings.TrimSpace(snap.Revision.PurchaseLink)
 	externalPurchase := purchaseLink != ""
 	if externalPurchase {

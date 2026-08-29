@@ -21,6 +21,7 @@ export function ResourcePage() {
   const [reason, setReason] = useState("")
   const [discarding, setDiscarding] = useState(false)
   const [governance, setGovernance] = useState({ author_name: "", source_url: "", license_name: "", authorization_note: "", collection_id: "", collection_position: 0 })
+  const [bandNotes, setBandNotes] = useState({ title: "", message: "" })
 
   const load = async () => {
     if (!id) {
@@ -46,6 +47,9 @@ export function ResourcePage() {
           collection_id: resource.governance?.collection_id || "",
           collection_position: resource.governance?.collection_position || 0,
         })
+        const plan = Array.isArray(resource.publication_plan) ? resource.publication_plan : []
+        const band = plan.find((item: Row) => item.target === "bandbbs")
+        setBandNotes({ title: band?.config?.version_title || "", message: band?.config?.version_message || "" })
     } catch (err) {
       setData(null)
       setError((err as Error).message)
@@ -68,7 +72,7 @@ export function ResourcePage() {
     ) : <Empty>{loading ? "加载中…" : "无法加载资源"}</Empty>
   }
 
-  const save = async (submit = false) => {
+  const save = async (submit = false, plan?: unknown) => {
     setBusy(true)
     setError("")
     try {
@@ -79,7 +83,7 @@ export function ResourcePage() {
         revision_id: data.revision_id,
         attributes,
         links: data.links || [],
-        publication_plan: data.publication_plan,
+        publication_plan: plan ?? data.publication_plan,
       })
       if (submit) {
         await submitResourceDraft(id, saved.revision_id || data.revision_id)
@@ -94,6 +98,18 @@ export function ResourcePage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const saveBandNotes = async () => {
+    if (!data) return
+    const plan = Array.isArray(data.publication_plan) ? JSON.parse(JSON.stringify(data.publication_plan)) : []
+    const band = plan.find((item: Row) => item.target === "bandbbs")
+    if (band) {
+      band.config = { ...(band.config || {}), version_title: bandNotes.title, version_message: bandNotes.message }
+    } else if (bandNotes.title || bandNotes.message) {
+      plan.push({ target: "bandbbs", config: { version_title: bandNotes.title, version_message: bandNotes.message } })
+    }
+    await save(false, plan)
   }
 
   const sendFile = async (path: string, file: File, extra: Record<string, string> = {}) => {
@@ -229,6 +245,27 @@ export function ResourcePage() {
         {tab === "publish" && (
           <div className="stack">
             <PublicationCards plan={data.publication_plan} />
+            <div className="panel">
+              <h3>米坛版本说明</h3>
+              <p className="hint">米坛发布时版本标题与更新说明必须成对出现，只填一半会被平台拒绝。</p>
+              {(bandNotes.title && !bandNotes.message) || (!bandNotes.title && bandNotes.message) ? (
+                <p className="overdue">当前只填写了一半，发布到米坛会失败。</p>
+              ) : null}
+              <div className="stack">
+                <Field label="版本标题">
+                  <input value={bandNotes.title} onChange={(event) => setBandNotes({ ...bandNotes, title: event.target.value })} />
+                </Field>
+                <Field label="更新说明">
+                  <textarea value={bandNotes.message} onChange={(event) => setBandNotes({ ...bandNotes, message: event.target.value })} />
+                </Field>
+                <div className="actions">
+                  <button className="btn" type="button" disabled={busy || !data.editable} onClick={() => void saveBandNotes()}>
+                    保存米坛版本说明
+                  </button>
+                  {data.pending ? <span className="hint">保存会改待审内容。</span> : null}
+                </div>
+              </div>
+            </div>
             <div className="panel">
               <h3>发布任务</h3>
               {(data.publications || []).length === 0 && <Empty>这一版还没有发布任务</Empty>}
