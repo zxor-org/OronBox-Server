@@ -190,6 +190,15 @@ export function SettingsPage() {
   const [promptTest, setPromptTest] = useState("")
   const [promptVerdict, setPromptVerdict] = useState<Row | null>(null)
   const [busy, setBusy] = useState(false)
+  const [ranking, setRanking] = useState({ coin_extra_weight: 0.35, download_weight: 0.15, freshness_amplitude: 3, freshness_decay_days: 7, featured_boost: 1.5, jitter_base: 0.5 })
+  const rankingFields: { key: keyof typeof ranking; label: string; hint: string }[] = [
+    { key: "coin_extra_weight", label: "硬币加成系数", hint: "投票余额超过投票人数部分的加权" },
+    { key: "download_weight", label: "下载量系数", hint: "下载量的 ln 加成" },
+    { key: "freshness_amplitude", label: "新鲜度幅度", hint: "新资源的峰值加成" },
+    { key: "freshness_decay_days", label: "新鲜度衰减天数", hint: "加成按 e^(-age/days) 衰减" },
+    { key: "featured_boost", label: "精选加成", hint: "精选资源的倍数" },
+    { key: "jitter_base", label: "随机系数", hint: "确定性洗牌偏移，实际抖动范围为该值到 +1" },
+  ]
 
   const load = async () => {
     setLoading(true)
@@ -199,6 +208,9 @@ export function SettingsPage() {
       setConfig((data.items || [])[0] || null)
       setAttributes(data.attributes || [])
       setPrompt(data.moderation_prompt || "")
+      if (data.ranking) {
+        setRanking((current) => ({ ...current, ...data.ranking }))
+      }
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -259,6 +271,18 @@ export function SettingsPage() {
       .finally(() => setBusy(false))
   }
 
+  const saveRanking = () => {
+    setBusy(true)
+    api
+      .post("/admin/api/settings/ranking", ranking)
+      .then((data) => {
+        toast("排序权重已生效")
+        if (data.ranking) setRanking((current) => ({ ...current, ...data.ranking }))
+      })
+      .catch((err: Error) => toast(err.message, "err"))
+      .finally(() => setBusy(false))
+  }
+
   return (
     <>
       <PageHeader title="设置" hint="服务端配置、资源属性与评论审核提示词。">
@@ -308,6 +332,29 @@ export function SettingsPage() {
               </tbody>
             </table>
           </TableState>
+        </div>
+
+        <div className="panel">
+          <div className="section-head"><div><h3>推荐排序权重</h3><p className="hint">即时生效；推荐分 = 参与度 × 新鲜度 × 精选 × 属性系数 × 随机系数</p></div></div>
+          <div className="stack">
+            <div className="form-grid">
+              {rankingFields.map((field) => (
+                <Field key={field.key} label={field.label}>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0.01"
+                    value={ranking[field.key]}
+                    onChange={(event) => setRanking({ ...ranking, [field.key]: Number(event.target.value) })}
+                  />
+                  <small className="hint">{field.hint}</small>
+                </Field>
+              ))}
+            </div>
+            <div className="actions">
+              <button className="btn btn-primary" type="button" disabled={busy} onClick={saveRanking}>保存排序权重</button>
+            </div>
+          </div>
         </div>
 
         <div className="panel">

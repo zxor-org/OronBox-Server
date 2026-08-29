@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -38,11 +40,53 @@ type Limits struct {
 	PreviewMaxCount int
 }
 
+// Ranking holds the tunable multipliers of the recommendation score. Zero
+// fields fall back to the defaults; values are validated before they are
+// formatted into SQL literals.
+type Ranking struct {
+	CoinExtraWeight    float64
+	DownloadWeight     float64
+	FreshnessAmplitude float64
+	FreshnessDecayDays float64
+	FeaturedBoost      float64
+	JitterBase         float64
+}
+
+func (r Ranking) normalized() Ranking {
+	if r.CoinExtraWeight <= 0 {
+		r.CoinExtraWeight = 0.35
+	}
+	if r.DownloadWeight <= 0 {
+		r.DownloadWeight = 0.15
+	}
+	if r.FreshnessAmplitude <= 0 {
+		r.FreshnessAmplitude = 3.0
+	}
+	if r.FreshnessDecayDays <= 0 {
+		r.FreshnessDecayDays = 7.0
+	}
+	if r.FeaturedBoost <= 0 {
+		r.FeaturedBoost = 1.5
+	}
+	if r.JitterBase <= 0 {
+		r.JitterBase = 0.50
+	}
+	for _, value := range []float64{r.CoinExtraWeight, r.DownloadWeight, r.FreshnessAmplitude, r.FreshnessDecayDays, r.FeaturedBoost, r.JitterBase} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return Ranking{}
+		}
+	}
+	return r
+}
+
 type Service struct {
 	db     *sql.DB
 	blobs  blob.Store
 	limits Limits
 	now    func() time.Time
+	// Ranking tunes the recommendation score multipliers. A zero value keeps
+	// the built-in defaults.
+	Ranking Ranking
 	// BandBBSDelete synchronously deletes the given BandBBS resource ids on
 	// behalf of ownerID. Delete aborts when it reports an error.
 	BandBBSDelete func(ctx context.Context, ownerID string, resourceIDs []string) error
@@ -743,7 +787,7 @@ const collectionPublishedAtSQL = `GREATEST(
 
 // Recommendation jitter is deterministic for a resource and request seed so
 // pagination remains stable while a fresh seed reshuffles the catalog.
-const publicCardsSQL = `WITH recent_resource_coins AS (
+const publicCardsSQLTemplate = `WITH recent_resource_coins AS (
 SELECT ledger.reference_id resource_id,
 count(DISTINCT ledger.user_id)::numeric unique_coiners,
 COALESCE(sum(-ledger.delta_units / 10),0)::numeric coins
@@ -762,11 +806,8 @@ COALESCE((SELECT jsonb_agg(attribute ORDER BY attribute) FROM resource_revision_
 r.download_count,r.curation_grade,COALESCE((SELECT sum(v.coins) FROM resource_coin_votes v WHERE v.resource_id=r.id AND v.invalidated_at IS NULL),0)::bigint coins,
 	COALESCE(r.collection_id::text,'') collection_id,COALESCE((SELECT revision.name FROM resource_collections collection JOIN resource_collection_revisions revision ON revision.id=collection.current_revision_id WHERE collection.id=r.collection_id),'') collection_name,
 	0 resource_count,COALESCE(r.published_at,rr.created_at) published_at,r.updated_at,
-	CASE WHEN $6 THEN 0::numeric ELSE ((1.0 + ln(1.0 + COALESCE(recent.unique_coiners,0) + 0.35 * GREATEST(COALESCE(recent.coins,0)-COALESCE(recent.unique_coiners,0),0)) + 0.15 * ln(1.0 + GREATEST(r.download_count,0))) *
-	 (1.0 + 3.0 * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-COALESCE(r.published_at,rr.created_at)))/86400.0,0)/7.0)) *
-		 CASE WHEN r.curation_grade='featured' THEN 1.5 ELSE 1.0 END *
-		 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_revision_attributes binding JOIN resource_attributes definition ON definition.id=binding.attribute WHERE binding.revision_id=rr.id),1.0)) *
-		 (0.50 + (((hashtextextended(r.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
+	CASE WHEN $6 THEN 0::numeric ELSE RESOURCE_SCORE *
+		 RESOURCE_JITTER END recommendation_score
 FROM resources r JOIN resource_revisions rr ON rr.id=r.current_revision_id JOIN users u ON u.id=r.owner_id
 LEFT JOIN recent_resource_coins recent ON recent.resource_id=r.id::text
 WHERE r.moderation_state='visible' AND ($1='' OR rr.name ILIKE '%'||$1||'%' OR rr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR r.kind=$2)
@@ -785,19 +826,80 @@ COALESCE((SELECT sum(child.download_count) FROM resources child WHERE child.coll
 CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 'featured' ELSE 'standard' END,
 COALESCE((SELECT sum(v.coins) FROM resources child JOIN resource_coin_votes v ON v.resource_id=child.id AND v.invalidated_at IS NULL WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)::bigint,
 	c.id::text,cr.name,(SELECT count(*) FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)::integer,` + collectionPublishedAtSQL + ` published_at,c.updated_at,
-		CASE WHEN $6 THEN 0::numeric ELSE ((1.0 + ln(1.0 + COALESCE((SELECT sum(recent.unique_coiners) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
-		0.35 * COALESCE((SELECT sum(GREATEST(recent.coins-recent.unique_coiners,0)) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)) +
-		0.15 * ln(1.0 + COALESCE((SELECT sum(child.download_count) FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible'),0))) *
-		 (1.0 + 3.0 * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-(` + collectionPublishedAtSQL + `)))/86400.0,0)/7.0)) *
-	CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN 1.5 ELSE 1.0 END *
-		COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0)) *
-		(0.50 + (((hashtextextended(c.id::text,$5) % 10000 + 10000) % 10000)::numeric / 10000.0)) END recommendation_score
+		CASE WHEN $6 THEN 0::numeric ELSE COLLECTION_SCORE *
+		COLLECTION_JITTER END recommendation_score
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
 WHERE c.enabled AND ($1='' OR cr.name ILIKE '%'||$1||'%' OR cr.summary ILIKE '%'||$1||'%' OR u.username ILIKE '%'||$1||'%') AND ($2='' OR c.kind=$2)
 AND EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.current_revision_id IS NOT NULL)
 AND (cardinality($3::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN revision_artifacts a ON a.revision_id=child.current_revision_id JOIN revision_artifact_devices b ON b.artifact_id=a.id JOIN devices d ON d.id=b.device_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND d.codename=ANY($3::text[])))
 AND (cardinality($4::text[])=0 OR EXISTS(SELECT 1 FROM resources child JOIN resource_revision_attributes attribute ON attribute.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible' AND attribute.attribute=ANY($4::text[])))
 ) `
+
+// publicCardsSQL renders the cards query with the ranking multipliers baked
+// into the score expressions. The values are normalized first so a bad
+// configuration can never inject a non-finite literal.
+func publicCardsSQL(ranking Ranking) string {
+	ranking = ranking.normalized()
+	resourceScore := fmt.Sprintf(`((1.0 + ln(1.0 + COALESCE(recent.unique_coiners,0) + %g * GREATEST(COALESCE(recent.coins,0)-COALESCE(recent.unique_coiners,0),0)) + %g * ln(1.0 + GREATEST(r.download_count,0))) *
+	 (1.0 + %g * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-COALESCE(r.published_at,rr.created_at)))/86400.0,0)/%g)) *
+	 CASE WHEN r.curation_grade='featured' THEN %g ELSE 1.0 END *
+	 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_revision_attributes binding JOIN resource_attributes definition ON definition.id=binding.attribute WHERE binding.revision_id=rr.id),1.0))`,
+		ranking.CoinExtraWeight, ranking.DownloadWeight, ranking.FreshnessAmplitude, ranking.FreshnessDecayDays, ranking.FeaturedBoost)
+	collectionScore := fmt.Sprintf(`((1.0 + ln(1.0 + COALESCE((SELECT sum(recent.unique_coiners) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0) +
+	 %g * COALESCE((SELECT sum(GREATEST(recent.coins-recent.unique_coiners,0)) FROM resources child JOIN recent_resource_coins recent ON recent.resource_id=child.id::text WHERE child.collection_id=c.id AND child.moderation_state='visible'),0)) +
+	 %g * ln(1.0 + COALESCE((SELECT sum(child.download_count) FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible'),0))) *
+	 (1.0 + %g * exp(-GREATEST(EXTRACT(EPOCH FROM (now()-(`+collectionPublishedAtSQL+`)))/86400.0,0)/%g)) *
+	 CASE WHEN EXISTS(SELECT 1 FROM resources child WHERE child.collection_id=c.id AND child.moderation_state='visible' AND child.curation_grade='featured') THEN %g ELSE 1.0 END *
+	 COALESCE((SELECT exp(sum(ln(definition.coefficient))) FROM resource_attributes definition WHERE definition.id IN (SELECT DISTINCT binding.attribute FROM resources child JOIN resource_revision_attributes binding ON binding.revision_id=child.current_revision_id WHERE child.collection_id=c.id AND child.moderation_state='visible')),1.0))`,
+		ranking.CoinExtraWeight, ranking.DownloadWeight, ranking.FreshnessAmplitude, ranking.FreshnessDecayDays, ranking.FeaturedBoost)
+	resourceJitter := fmt.Sprintf("(%g + (((hashtextextended(r.id::text,$5) %% 10000 + 10000) %% 10000)::numeric / 10000.0))", ranking.JitterBase)
+	collectionJitter := fmt.Sprintf("(%g + (((hashtextextended(c.id::text,$5) %% 10000 + 10000) %% 10000)::numeric / 10000.0))", ranking.JitterBase)
+	sql := strings.ReplaceAll(publicCardsSQLTemplate, "RESOURCE_SCORE", resourceScore)
+	sql = strings.ReplaceAll(sql, "COLLECTION_SCORE", collectionScore)
+	sql = strings.ReplaceAll(sql, "RESOURCE_JITTER", resourceJitter)
+	return strings.ReplaceAll(sql, "COLLECTION_JITTER", collectionJitter)
+}
+
+// RankingSettings returns the effective score multipliers: the environment
+// defaults from s.Ranking, overlaid by any operator overrides stored in
+// server_settings. Unreadable settings keep the defaults rather than failing
+// the feed.
+func (s *Service) RankingSettings(ctx context.Context) Ranking {
+	ranking := s.Ranking
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM server_settings WHERE key=ANY($1::text[])`, []string{
+		store.RankingCoinExtraKey, store.RankingDownloadKey, store.RankingFreshnessAmpKey,
+		store.RankingFreshnessDecay, store.RankingFeaturedKey, store.RankingJitterKey,
+	})
+	if err != nil {
+		return ranking
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return ranking
+		}
+		parsed, parseErr := strconv.ParseFloat(value, 64)
+		if parseErr != nil {
+			continue
+		}
+		switch key {
+		case store.RankingCoinExtraKey:
+			ranking.CoinExtraWeight = parsed
+		case store.RankingDownloadKey:
+			ranking.DownloadWeight = parsed
+		case store.RankingFreshnessAmpKey:
+			ranking.FreshnessAmplitude = parsed
+		case store.RankingFreshnessDecay:
+			ranking.FreshnessDecayDays = parsed
+		case store.RankingFeaturedKey:
+			ranking.FeaturedBoost = parsed
+		case store.RankingJitterKey:
+			ranking.JitterBase = parsed
+		}
+	}
+	return ranking
+}
 
 func normalizePublicQuery(query PublicQuery) PublicQuery {
 	if query.Limit <= 0 || query.Limit > 100 {
@@ -834,7 +936,7 @@ func publicResourceOrder(sortBy string) string {
 
 func (s *Service) publicResourceRows(ctx context.Context, query PublicQuery) ([]PublicResource, error) {
 	query = normalizePublicQuery(query)
-	rows, err := s.db.QueryContext(ctx, publicCardsSQL+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,paid_type,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,published_at,updated_at FROM cards WHERE ($7=false OR paid_type='free') AND ($8=false OR paid_type<>'force_paid') AND ($9=false OR curation_grade='featured') ORDER BY `+publicResourceOrder(query.Sort)+` LIMIT $10 OFFSET $11`, query.Search, query.Kind, query.Devices, query.Attributes, query.Seed, query.SkipRecommendationScore, query.HidePaid, query.HideForcePaid, query.Featured, query.Limit, query.Offset)
+	rows, err := s.db.QueryContext(ctx, publicCardsSQL(s.RankingSettings(ctx))+`SELECT card_type,id,slug,name,summary,owner,bandbbs_user_id,avatar_url,kind,paid_type,preview,icon,cover,version,devices,attributes,download_count,curation_grade,coins,collection_id,collection_name,resource_count,published_at,updated_at FROM cards WHERE ($7=false OR paid_type='free') AND ($8=false OR paid_type<>'force_paid') AND ($9=false OR curation_grade='featured') ORDER BY `+publicResourceOrder(query.Sort)+` LIMIT $10 OFFSET $11`, query.Search, query.Kind, query.Devices, query.Attributes, query.Seed, query.SkipRecommendationScore, query.HidePaid, query.HideForcePaid, query.Featured, query.Limit, query.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -856,7 +958,7 @@ func (s *Service) publicResourceRows(ctx context.Context, query PublicQuery) ([]
 func (s *Service) PublicResources(ctx context.Context, query PublicQuery) ([]PublicResource, int, error) {
 	query = normalizePublicQuery(query)
 	var total int
-	if err := s.db.QueryRowContext(ctx, publicCardsSQL+`SELECT count(*) FROM cards WHERE ($7=false OR paid_type='free') AND ($8=false OR paid_type<>'force_paid') AND ($9=false OR curation_grade='featured')`, query.Search, query.Kind, query.Devices, query.Attributes, query.Seed, query.SkipRecommendationScore, query.HidePaid, query.HideForcePaid, query.Featured).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, publicCardsSQL(s.RankingSettings(ctx))+`SELECT count(*) FROM cards WHERE ($7=false OR paid_type='free') AND ($8=false OR paid_type<>'force_paid') AND ($9=false OR curation_grade='featured')`, query.Search, query.Kind, query.Devices, query.Attributes, query.Seed, query.SkipRecommendationScore, query.HidePaid, query.HideForcePaid, query.Featured).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	result, err := s.publicResourceRows(ctx, query)

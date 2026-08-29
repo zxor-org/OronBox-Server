@@ -308,6 +308,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /admin/api/cleanup", a.requireAdminRole("admin", a.handleAdminAPICleanupJSON))
 	mux.HandleFunc("POST /admin/api/attributes", a.requireAdminRole("admin", a.handleAdminAPIAttribute))
 	mux.HandleFunc("POST /admin/api/attributes/{attribute}/delete", a.requireAdminRole("admin", a.handleAdminAPIAttributeDelete))
+	mux.HandleFunc("POST /admin/api/settings/ranking", a.requireAdminRole("admin", a.handleAdminAPIRankingSave))
 	mux.HandleFunc("GET /admin/api/plugins/{plugin}", a.requireAdmin(a.handleAdminAPIPluginGet))
 	mux.HandleFunc("POST /admin/api/plugins/{plugin}/metadata", a.requireAdmin(a.handleAdminAPIPluginMetadataJSON))
 	mux.HandleFunc("POST /admin/api/plugins/{plugin}/state", a.requireAdminRole("admin", a.handleAdminAPIPluginStateJSON))

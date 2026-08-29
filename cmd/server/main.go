@@ -66,6 +66,14 @@ func main() {
 	log.Info("local blob storage ready", "root", cfg.Storage.LocalRoot, "upload_limit_bytes", cfg.Limits.UploadMaxBytes, "media_limit_bytes", cfg.Limits.PreviewMaxBytes)
 	bandBBSOAuth := bandbbs.NewClient(cfg.BandBBS, 15*time.Second)
 	creatorService := creator.New(db, blobs, creator.Limits{UploadMaxBytes: cfg.Limits.UploadMaxBytes, PreviewMaxBytes: cfg.Limits.PreviewMaxBytes, PreviewMaxCount: cfg.Limits.PreviewMaxCount})
+	creatorService.Ranking = creator.Ranking{
+		CoinExtraWeight:    cfg.Ranking.CoinExtraWeight,
+		DownloadWeight:     cfg.Ranking.DownloadWeight,
+		FreshnessAmplitude: cfg.Ranking.FreshnessAmplitude,
+		FreshnessDecayDays: cfg.Ranking.FreshnessDecayDays,
+		FeaturedBoost:      cfg.Ranking.FeaturedBoost,
+		JitterBase:         cfg.Ranking.JitterBase,
+	}
 	moderationService := moderation.New(
 		moderation.Endpoint{Name: "deepseek", BaseURL: cfg.Moderation.Primary.BaseURL, APIKey: cfg.Moderation.Primary.APIKey, Model: cfg.Moderation.Primary.Model},
 		moderation.Endpoint{Name: "glm", BaseURL: cfg.Moderation.Fallback.BaseURL, APIKey: cfg.Moderation.Fallback.APIKey, Model: cfg.Moderation.Fallback.Model},

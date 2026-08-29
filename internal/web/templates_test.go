@@ -19,7 +19,7 @@ func TestAdminTemplatesRender(t *testing.T) {
 
 func renderableTemplateCases() map[string]any {
 	return map[string]any{
-		"admin_login": map[string]any{"Title": "t", "AuthorizeURL": "/login"},
+		"admin_login":     map[string]any{"Title": "t", "AuthorizeURL": "/login"},
 		"admin_forbidden": map[string]any{"Title": "t", "Path": "/admin/users"},
 		"transition_page": TransitionPageData{
 			Title: "t", Heading: "h", Description: "d", Target: "/admin",

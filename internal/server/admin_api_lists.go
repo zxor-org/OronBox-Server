@@ -352,6 +352,7 @@ func (a *App) handleAdminAPISettings(w http.ResponseWriter, r *http.Request) {
 	if a.store != nil {
 		moderationPrompt, _ = a.store.Setting(r.Context(), "moderation.prompt", defaultModerationPrompt)
 	}
+	ranking := a.rankingWeights(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": []map[string]any{{
 			"bandbbs_client_id": a.cfg.BandBBS.ClientID,
@@ -360,7 +361,31 @@ func (a *App) handleAdminAPISettings(w http.ResponseWriter, r *http.Request) {
 		}},
 		"total": 1, "page": 1, "per_page": 1, "attributes": attributes,
 		"moderation_prompt": moderationPrompt,
+		"ranking":           ranking,
 	})
+}
+
+// rankingWeights resolves the effective recommendation multipliers: env
+// defaults from config, overlaid by server_settings overrides.
+func (a *App) rankingWeights(r *http.Request) map[string]float64 {
+	ranking := map[string]float64{
+		"coin_extra_weight":    a.cfg.Ranking.CoinExtraWeight,
+		"download_weight":      a.cfg.Ranking.DownloadWeight,
+		"freshness_amplitude":  a.cfg.Ranking.FreshnessAmplitude,
+		"freshness_decay_days": a.cfg.Ranking.FreshnessDecayDays,
+		"featured_boost":       a.cfg.Ranking.FeaturedBoost,
+		"jitter_base":          a.cfg.Ranking.JitterBase,
+	}
+	if a.creator != nil {
+		effective := a.creator.RankingSettings(r.Context())
+		ranking["coin_extra_weight"] = effective.CoinExtraWeight
+		ranking["download_weight"] = effective.DownloadWeight
+		ranking["freshness_amplitude"] = effective.FreshnessAmplitude
+		ranking["freshness_decay_days"] = effective.FreshnessDecayDays
+		ranking["featured_boost"] = effective.FeaturedBoost
+		ranking["jitter_base"] = effective.JitterBase
+	}
+	return ranking
 }
 
 func isAdminDraft(rev store.AdminRevision) bool {

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -37,6 +38,7 @@ type Config struct {
 	RefreshTokenTTL   time.Duration
 	Admin             AdminConfig
 	Moderation        ModerationConfig
+	Ranking           RankingConfig
 	Retention         RetentionConfig
 	Version           string
 	Commit            string
@@ -109,6 +111,27 @@ type LimitsConfig struct {
 
 type AdminConfig struct {
 	BandBBSUserIDs []int64
+}
+
+// RankingConfig tunes the multipliers of the recommendation score. Values are
+// formatted into SQL literals, so each is clamped to a positive finite range
+// on load.
+type RankingConfig struct {
+	// CoinExtraWeight scales coin balance beyond the coiner count inside the
+	// ln() engagement term.
+	CoinExtraWeight float64
+	// DownloadWeight scales the download count inside the ln() term.
+	DownloadWeight float64
+	// FreshnessAmplitude is the peak boost of a brand-new item; the boost is
+	// FreshnessAmplitude * exp(-age_days/FreshnessDecayDays).
+	FreshnessAmplitude float64
+	// FreshnessDecayDays is the e-folding window of the freshness boost.
+	FreshnessDecayDays float64
+	// FeaturedBoost multiplies the score of featured items.
+	FeaturedBoost float64
+	// JitterBase is the deterministic shuffle offset; the effective jitter
+	// ranges from JitterBase to JitterBase+1 per request seed.
+	JitterBase float64
 }
 
 type ModerationEndpointConfig struct {
@@ -206,6 +229,14 @@ func Load() Config {
 				Model:   env("MODERATION_FALLBACK_MODEL", "glm-4-flash"),
 			},
 			Timeout: durationEnv("MODERATION_TIMEOUT", 4*time.Second),
+		},
+		Ranking: RankingConfig{
+			CoinExtraWeight:    positiveFloatEnv("RANKING_COIN_EXTRA_WEIGHT", 0.35),
+			DownloadWeight:     positiveFloatEnv("RANKING_DOWNLOAD_WEIGHT", 0.15),
+			FreshnessAmplitude: positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0),
+			FreshnessDecayDays: positiveFloatEnv("RANKING_FRESHNESS_DECAY_DAYS", 7.0),
+			FeaturedBoost:      positiveFloatEnv("RANKING_FEATURED_BOOST", 1.5),
+			JitterBase:         positiveFloatEnv("RANKING_JITTER_BASE", 0.50),
 		},
 		Retention: RetentionConfig{Unpublished: durationEnv("RETENTION_UNPUBLISHED", 180*24*time.Hour), Audit: durationEnv("RETENTION_AUDIT", 180*24*time.Hour), Feedback: durationEnv("RETENTION_FEEDBACK", 365*24*time.Hour), OrphanBlobs: durationEnv("RETENTION_ORPHAN_BLOBS", 7*24*time.Hour), Interval: durationEnv("RETENTION_INTERVAL", 6*time.Hour)},
 		Version:   env("APP_VERSION", "dev"),
@@ -383,6 +414,20 @@ func int64Env(key string, fallback int64) int64 {
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+// positiveFloatEnv parses a ranking multiplier, rejecting anything that is not
+// a positive finite number so invalid values can never reach a SQL literal.
+func positiveFloatEnv(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
 		return fallback
 	}
 	return parsed

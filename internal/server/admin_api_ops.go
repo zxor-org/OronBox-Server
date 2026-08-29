@@ -731,6 +731,43 @@ func (a *App) handleAdminAPICleanupJSON(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": stats})
 }
 
+func (a *App) handleAdminAPIRankingSave(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CoinExtraWeight    *float64 `json:"coin_extra_weight"`
+		DownloadWeight     *float64 `json:"download_weight"`
+		FreshnessAmplitude *float64 `json:"freshness_amplitude"`
+		FreshnessDecayDays *float64 `json:"freshness_decay_days"`
+		FeaturedBoost      *float64 `json:"featured_boost"`
+		JitterBase         *float64 `json:"jitter_base"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody("invalid_request", "invalid json"))
+		return
+	}
+	weights := store.RankingWeights{
+		CoinExtraWeight:    valueOr(body.CoinExtraWeight, a.cfg.Ranking.CoinExtraWeight),
+		DownloadWeight:     valueOr(body.DownloadWeight, a.cfg.Ranking.DownloadWeight),
+		FreshnessAmplitude: valueOr(body.FreshnessAmplitude, a.cfg.Ranking.FreshnessAmplitude),
+		FreshnessDecayDays: valueOr(body.FreshnessDecayDays, a.cfg.Ranking.FreshnessDecayDays),
+		FeaturedBoost:      valueOr(body.FeaturedBoost, a.cfg.Ranking.FeaturedBoost),
+		JitterBase:         valueOr(body.JitterBase, a.cfg.Ranking.JitterBase),
+	}
+	if err := a.store.SaveRankingWeights(r.Context(), weights); err != nil {
+		a.audit(r, "ranking.save", "failure", err.Error())
+		writeJSON(w, http.StatusBadRequest, errorBody("ranking_failed", err.Error()))
+		return
+	}
+	a.audit(r, "ranking.save", "success", "")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ranking": a.rankingWeights(r)})
+}
+
+func valueOr(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
 func (a *App) handleAdminAPIAttribute(w http.ResponseWriter, r *http.Request) {
 	var item creator.ResourceAttribute
 	if err := readJSON(r, &item); err != nil {

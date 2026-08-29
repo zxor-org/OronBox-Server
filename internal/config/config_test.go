@@ -113,6 +113,19 @@ func TestWeakSecretsAreRejectedInProductionOnly(t *testing.T) {
 	}
 }
 
+func TestPositiveFloatEnvRejectsUnusableRankingWeights(t *testing.T) {
+	t.Setenv("RANKING_FRESHNESS_AMPLITUDE", "4")
+	if got := positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0); got != 4 {
+		t.Fatalf("valid ranking weight = %v, want 4", got)
+	}
+	for _, raw := range []string{"0", "-2", "abc", "NaN", "Inf"} {
+		t.Setenv("RANKING_FRESHNESS_AMPLITUDE", raw)
+		if got := positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0); got != 3.0 {
+			t.Errorf("ranking weight %q = %v, want the default", raw, got)
+		}
+	}
+}
+
 func TestOverlyBroadProxyRangeThresholds(t *testing.T) {
 	t.Parallel()
 	tests := map[string]bool{
