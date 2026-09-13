@@ -3,11 +3,37 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+func (s *Store) GitHubAccessTokenCipher(ctx context.Context, userID string) ([]byte, error) {
+	var cipher []byte
+	err := s.db.QueryRowContext(ctx, `SELECT access_token_cipher FROM github_grants WHERE user_id=$1`, userID).Scan(&cipher)
+	return cipher, err
+}
+
+func (s *Store) GitHubGrantScopes(ctx context.Context, userID string) ([]string, error) {
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `SELECT to_json(scopes) FROM github_grants WHERE user_id=$1`, userID).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	var scopes []string
+	if err := json.Unmarshal(raw, &scopes); err != nil {
+		return nil, err
+	}
+	return scopes, err
+}
+
+func (s *Store) GitHubLogin(ctx context.Context, userID string) (string, error) {
+	var login string
+	err := s.db.QueryRowContext(ctx, `SELECT login FROM github_grants WHERE user_id=$1`, userID).Scan(&login)
+	return login, err
+}
 
 type GitHubDeviceFlow struct {
 	ID               string

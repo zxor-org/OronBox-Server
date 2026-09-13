@@ -79,18 +79,39 @@ type snapshot struct {
 		PurchaseLink     string   `json:"purchase_link"`
 		PurchasePrice    *float64 `json:"purchase_price"`
 		PurchaseCurrency string   `json:"purchase_currency"`
+		Links            []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"links"`
 	} `json:"revision"`
 	Media     []media    `json:"media"`
 	Artifacts []artifact `json:"artifacts"`
 }
 type publishConfig struct {
-	Agreement     bool     `json:"agreement"`
-	RepoName      string   `json:"repo_name"`
-	ItemID        string   `json:"item_id"`
-	Tags          []string `json:"tags"`
-	PaidType      string   `json:"paid_type"`
-	Author        string   `json:"author"`
-	BindABAccount bool     `json:"bind_ab_account"`
+	Agreement         bool     `json:"agreement"`
+	RepoName          string   `json:"repo_name"`
+	ItemID            string   `json:"item_id"`
+	Tags              []string `json:"tags"`
+	PaidType          string   `json:"paid_type"`
+	Author            string   `json:"author"`
+	BindABAccount     bool     `json:"bind_ab_account"`
+	UpdateExisting    bool     `json:"update_existing"`
+	PullRequestNumber int      `json:"pull_request_number"`
+}
+
+type existingPullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"html_url"`
+	State  string `json:"state"`
+	Head   struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			Owner struct {
+				Login string `json:"login"`
+			} `json:"owner"`
+			Name string `json:"name"`
+		} `json:"repo"`
+	} `json:"head"`
 }
 
 var catalogHeader = []string{"id", "name", "restype", "repo_owner", "repo_name", "repo_commit_hash", "icon", "cover", "tags", "device_vendors", "devices", "paid_type"}
@@ -103,16 +124,27 @@ const (
 	purchaseLinkTitle         = "购买链接"
 )
 
-func purchaseLinks(rawURL string) []map[string]string {
+func purchaseLinks(rawURL string, extras ...[]struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}) []map[string]string {
 	purchaseURL := strings.TrimSpace(rawURL)
-	if purchaseURL == "" {
-		return []map[string]string{}
+	result := []map[string]string{}
+	if purchaseURL != "" {
+		result = append(result, map[string]string{
+			"title": purchaseLinkTitle,
+			"url":   purchaseURL,
+			"icon":  purchaseLinkIcon,
+		})
 	}
-	return []map[string]string{{
-		"title": purchaseLinkTitle,
-		"url":   purchaseURL,
-		"icon":  purchaseLinkIcon,
-	}}
+	for _, group := range extras {
+		for _, link := range group {
+			if strings.TrimSpace(link.URL) != "" {
+				result = append(result, map[string]string{"title": strings.TrimSpace(link.Title), "url": strings.TrimSpace(link.URL), "icon": "Link"})
+			}
+		}
+	}
+	return result
 }
 
 func buildManifest(
@@ -134,7 +166,7 @@ func buildManifest(
 			"cover":       coverPath,
 			"author":      authors,
 		},
-		"links":     purchaseLinks(snap.Revision.PurchaseLink),
+		"links":     purchaseLinks(snap.Revision.PurchaseLink, snap.Revision.Links),
 		"downloads": downloads,
 		"ext":       map[string]any{},
 	}
@@ -232,7 +264,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err := validateCatalogRow([]string{cfg.ItemID, snap.Revision.Name, restype, "", repoName, "", "", "", strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(uniqueDevices(snap.Artifacts), ";"), cfg.PaidType}); err != nil {
 		return Result{}, err
 	}
-	repo, err := c.ensureRepo(ctx, token, repoName, "AstroBox resource of "+snap.Revision.Name)
+	resourceRepo, err := c.ensureRepo(ctx, token, repoName, "AstroBox resource of "+snap.Revision.Name)
 	if err != nil {
 		return Result{}, fmt.Errorf("prepare AstroBox resource repository: %w", err)
 	}
@@ -290,7 +322,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	manifest := buildManifest(snap, cfg, restype, iconPath, coverPath, authors, previews, downloads)
 	files["manifest_v2.json"], _ = json.MarshalIndent(manifest, "", "  ")
 	files["README.md"] = []byte(buildREADME(snap, cfg, restype, author, coverPath, previews, entries))
-	commit, err := c.uploadFiles(ctx, token, repo, "Publish "+snap.Revision.Name, files)
+	commit, err := c.uploadFiles(ctx, token, resourceRepo, "Publish "+snap.Revision.Name, files)
 	if err != nil {
 		return Result{}, fmt.Errorf("upload AstroBox resource repository: %w", err)
 	}
@@ -311,7 +343,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if len(shortCommit) > 7 {
 		shortCommit = shortCommit[:7]
 	}
-	line := []string{cfg.ItemID, snap.Revision.Name, restype, repo.Owner, repo.Name, shortCommit, iconPath, coverPath, strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(devices, ";"), cfg.PaidType}
+	line := []string{cfg.ItemID, snap.Revision.Name, restype, resourceRepo.Owner, resourceRepo.Name, shortCommit, iconPath, coverPath, strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(devices, ";"), cfg.PaidType}
 	if err := validateCatalogRow(line); err != nil {
 		return Result{}, err
 	}
@@ -321,7 +353,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 		if len(rows[index]) == 0 || rows[index][0] != cfg.ItemID {
 			continue
 		}
-		if len(rows[index]) < len(catalogHeader) || !strings.EqualFold(rows[index][3], repo.Owner) || !strings.EqualFold(rows[index][4], repo.Name) {
+		if len(rows[index]) < len(catalogHeader) || !strings.EqualFold(rows[index][3], resourceRepo.Owner) || !strings.EqualFold(rows[index][4], resourceRepo.Name) {
 			return Result{}, fmt.Errorf("AstroBox item_id %q is already bound to another repository", cfg.ItemID)
 		}
 		mode = "edit"
@@ -357,12 +389,24 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err != nil {
 		return Result{}, fmt.Errorf("read GitHub publisher identity: %w", err)
 	}
-	submissionPath, err := c.submissionPath(login, repo.Name)
+	submissionPath, err := c.submissionPath(login, resourceRepo.Name)
 	if err != nil {
 		return Result{}, err
 	}
 	branch := "oronbox-resource-" + sanitize(cfg.ItemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, forkBaseSHA); err != nil {
+	var existing *existingPullRequest
+	if cfg.UpdateExisting && cfg.PullRequestNumber > 0 {
+		var current existingPullRequest
+		if _, err := c.request(ctx, token, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.api, c.cfg.RepoOwner, c.cfg.RepoName, cfg.PullRequestNumber), nil, &current); err != nil {
+			return Result{}, fmt.Errorf("read existing AstroBox pull request: %w", err)
+		}
+		if current.State != "open" || current.Head.Ref == "" || current.Head.Repo.Name == "" || current.Head.Repo.Owner.Login == "" {
+			return Result{}, fmt.Errorf("AstroBox pull request %d is not open or has no writable branch", cfg.PullRequestNumber)
+		}
+		existing = &current
+		fork = repo{Owner: current.Head.Repo.Owner.Login, Name: current.Head.Repo.Name, Branch: current.Head.Ref}
+		branch = current.Head.Ref
+	} else if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, forkBaseSHA); err != nil {
 		return Result{}, fmt.Errorf("create AstroBox submission branch: %w", err)
 	}
 	if _, err := c.uploadFiles(ctx, token, forkForBranch(fork, branch), "Submit "+snap.Revision.Name, map[string][]byte{
@@ -375,12 +419,15 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if mode == "edit" {
 		operation = "Update"
 	}
-	body := buildPRBody(snap, cfg, restype, repo, shortCommit, iconPath, coverPath, previews, entries)
+	body := buildPRBody(snap, cfg, restype, resourceRepo, shortCommit, iconPath, coverPath, previews, entries)
+	if existing != nil {
+		return Result{PullRequest: existing.URL, PullRequestNumber: existing.Number, Repository: "https://github.com/" + resourceRepo.Owner + "/" + resourceRepo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
+	}
 	pr, err := c.createPR(ctx, token, "[OBCC] "+operation+" "+snap.Revision.Name, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
 	if err != nil {
 		return Result{}, fmt.Errorf("create AstroBox pull request: %w", err)
 	}
-	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + repo.Owner + "/" + repo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
+	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + resourceRepo.Owner + "/" + resourceRepo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
 }
 
 type repo struct {

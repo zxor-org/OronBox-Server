@@ -48,6 +48,10 @@ type snapshot struct {
 		PurchaseLink     string   `json:"purchase_link"`
 		PurchasePrice    *float64 `json:"purchase_price"`
 		PurchaseCurrency string   `json:"purchase_currency"`
+		Links            []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"links"`
 	} `json:"revision"`
 	Media []struct {
 		Blob string `json:"blob_sha256"`
@@ -143,6 +147,21 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 	description := strings.TrimSpace(cfg.Description)
 	if description == "" {
 		description = snap.Revision.Summary
+	}
+	if len(snap.Revision.Links) > 0 {
+		var b strings.Builder
+		b.WriteString("相关链接：\n")
+		for _, link := range snap.Revision.Links {
+			if strings.TrimSpace(link.URL) != "" {
+				title := strings.TrimSpace(link.Title)
+				if title == "" {
+					title = "链接"
+				}
+				fmt.Fprintf(&b, "- %s：%s\n", title, strings.TrimSpace(link.URL))
+			}
+		}
+		b.WriteString("\n")
+		description = b.String() + description
 	}
 	// Previews are shared by every category, so upload them once against the
 	// first target. RM MarketPlace registers no attachment content type for

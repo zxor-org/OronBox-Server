@@ -166,6 +166,24 @@ type ReviewCase struct {
 	UpdatedAt  time.Time   `json:"updated_at"`
 }
 
+type CreatorReviewListItem struct {
+	ID           string       `json:"id"`
+	ResourceID   string       `json:"resource_id"`
+	RevisionID   string       `json:"revision_id"`
+	ResourceName string       `json:"resource_name"`
+	ResourceKind ResourceKind `json:"resource_kind"`
+	ReviewType   string       `json:"review_type"`
+	State        ReviewState  `json:"state"`
+	Note         string       `json:"note,omitempty"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+}
+
+type CreatorReviewPage struct {
+	Items      []CreatorReviewListItem `json:"items"`
+	NextCursor string                  `json:"next_cursor,omitempty"`
+	HasMore    bool                    `json:"has_more"`
+}
+
 type Publication struct {
 	ID           string            `json:"id"`
 	RevisionID   string            `json:"revision_id"`

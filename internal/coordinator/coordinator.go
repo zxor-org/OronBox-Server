@@ -571,12 +571,13 @@ func (c *Coordinator) publishAstroBox(ctx context.Context, item publication, sna
 		return err
 	}
 	detail := map[string]any{
-		"pull_request_number": result.PullRequestNumber,
-		"repository":          result.Repository,
-		"submission_protocol": result.SubmissionProtocol,
-		"submission_path":     result.SubmissionPath,
-		"catalog_row":         result.CatalogRow,
-		"catalog_commit":      result.CatalogCommit,
+		"pull_request_number":     result.PullRequestNumber,
+		"repository":              result.Repository,
+		"pull_request_repository": "https://github.com/" + c.cfg.AstroBox.RepoOwner + "/" + c.cfg.AstroBox.RepoName,
+		"submission_protocol":     result.SubmissionProtocol,
+		"submission_path":         result.SubmissionPath,
+		"catalog_row":             result.CatalogRow,
+		"catalog_commit":          result.CatalogCommit,
 	}
 	var astroConfig struct {
 		ItemID string `json:"item_id"`

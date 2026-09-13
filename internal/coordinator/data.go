@@ -25,6 +25,21 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string) ([]byte, 
 		revision["purchase_price"] = purchasePrice.Float64
 	}
 	result["revision"] = revision
+	linkRows, err := c.db.QueryContext(ctx, `SELECT title,url FROM revision_links WHERE revision_id=$1 ORDER BY position`, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	var links []map[string]any
+	for linkRows.Next() {
+		var title, url string
+		if err := linkRows.Scan(&title, &url); err != nil {
+			linkRows.Close()
+			return nil, err
+		}
+		links = append(links, map[string]any{"title": title, "url": url})
+	}
+	linkRows.Close()
+	revision["links"] = links
 	mediaRows, err := c.db.QueryContext(ctx, `SELECT blob_sha256,role,position FROM revision_media WHERE revision_id=$1 ORDER BY role,position`, revisionID)
 	if err != nil {
 		return nil, err
