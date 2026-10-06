@@ -1,0 +1,37 @@
+# Binaries & build artifacts
+/bin/
+/dist/
+/console/
+/console_prev/
+/server
+/migrate
+/oronbox-server
+*.test
+*.out
+
+# Environment & credentials
+/.env
+/.env.*
+!/.env.example
+
+# Database & SQLite files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local backups, migration scripts & internal notes
+/backups/
+/agent/
+/scripts/
+/tmp/
+/.kimi-code/
+/node_modules/
+
+# Logs & OS / IDE files
+*.log
+.DS_Store
+*.DS_Store
+.idea/
+.vscode/

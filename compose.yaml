@@ -1,0 +1,9 @@
+services:
+  server:
+    build: .
+    container_name: oronbox-server
+    # 与宿主机共享网络：可直接用 127.0.0.1 访问同机 Docker 的 Gitea（GITEA_INTRANET_URL），
+    # 并直接监听宿主 6767；数据库连接串等由 .env 提供。
+    network_mode: host
+    env_file: [.env]
+    restart: unless-stopped

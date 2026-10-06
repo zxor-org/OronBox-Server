@@ -1,0 +1,75 @@
+{{define "auth_head"}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{.Title}} · OronBox</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/theme.js"></script>
+</head>
+<body>
+{{template "icon_sprite"}}
+{{end}}
+
+{{define "auth_tail"}}
+</body></html>
+{{end}}
+
+{{define "transition_page"}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card{{if eqs .Tone "danger"}} danger{{else if eqs .Tone "info"}} info{{end}}">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-{{if eqs .Tone "danger"}}error{{else if eqs .Tone "info"}}open_in_new{{else}}check_circle{{end}}"></use></svg></div>
+    <h1>{{.Heading}}</h1>
+    <p>{{.Description}}</p>
+    {{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" href="{{.Target}}">{{.ButtonLabel}}</a></div>{{end}}
+    {{if and .Target (not .ButtonLabel)}}<a class="transition-retry" href="{{.Target}}">没有自动打开？<span>点此重试</span></a>{{end}}
+  </section>
+</main>
+{{if and .Auto .Target}}<div hidden data-transition-target="{{.Target}}"></div><script src="/assets/transition.js" defer></script>{{end}}
+{{template "auth_tail"}}
+{{end}}
+
+{{define "admin_login"}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card login-card">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></div>
+    <h1>OronBox 管理后台</h1>
+    <p>使用已授权的米坛账号验证管理员身份</p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="{{.AuthorizeURL}}"><span>使用米坛账号登录</span></a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
+{{end}}
+
+{{define "console_syncing"}}
+{{template "auth_head" .}}
+<meta http-equiv="refresh" content="2">
+<main class="standalone-page">
+  <section class="standalone-card info">
+    <div class="standalone-icon"><svg class="icon spin" aria-hidden="true"><use href="#i-sync"></use></svg></div>
+    <h1>正在同步前端</h1>
+    <p>服务端正在从 Gitea 同步最新前端构建的页面，完成后将自动进入后台...</p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="/console/"><span>刷新页面</span></a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
+{{end}}
+
+{{define "console_error"}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card danger">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-error"></use></svg></div>
+    <h1>{{.Title}}</h1>
+    <p>{{.Error}}</p>
+    {{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" href="{{.Target}}"><span>{{.ButtonLabel}}</span></a></div>{{end}}
+  </section>
+</main>
+{{template "auth_tail"}}
+{{end}}
+
