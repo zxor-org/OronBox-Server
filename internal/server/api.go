@@ -672,6 +672,26 @@ func (a *application) exchange(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, "session_create_failed", e.Error(), nil)
 		return
 	}
+	var u userContext
+	if err := a.db.Pool.QueryRow(r.Context(), `SELECT u.id,u.bandbbs_uid,u.username,COALESCE(u.avatar_url,''),u.role,u.banned,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.access_hash=$1 AND s.access_expires_at>now() AND s.revoked_at IS NULL`, ah[:]).Scan(&u.ID, &u.BandBBSUID, &u.Username, &u.AvatarURL, &u.Role, &u.Banned, &u.CreatedAt); err == nil {
+		a.recordOAuthEvent(r, "bandbbs", "exchange", "success", "")
+		jsonResponse(w, 200, map[string]any{
+			"token_type":    "Bearer",
+			"access_token":  access,
+			"refresh_token": refresh,
+			"expires_in":    int(a.cfg.AccessTokenTTL.Seconds()),
+			"user": map[string]any{
+				"id":           u.ID,
+				"bandbbs_uid":  u.BandBBSUID,
+				"username":     u.Username,
+				"avatar_url":   u.AvatarURL,
+				"role":         u.Role,
+				"banned":       u.Banned,
+				"created_at":   u.CreatedAt,
+			},
+		})
+		return
+	}
 	a.recordOAuthEvent(r, "bandbbs", "exchange", "success", "")
 	jsonResponse(w, 200, map[string]any{"token_type": "Bearer", "access_token": access, "refresh_token": refresh, "expires_in": int(a.cfg.AccessTokenTTL.Seconds())})
 }
@@ -704,6 +724,26 @@ func (a *application) refresh(w http.ResponseWriter, r *http.Request) {
 		}
 		a.recordOAuthEvent(r, "bandbbs", "refresh", "failure", "session_refresh_failed")
 		jsonError(w, 500, "session_refresh_failed", e.Error(), nil)
+		return
+	}
+	var u userContext
+	if err := a.db.Pool.QueryRow(r.Context(), `SELECT u.id,u.bandbbs_uid,u.username,COALESCE(u.avatar_url,''),u.role,u.banned,u.created_at FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.access_hash=$1 AND s.access_expires_at>now() AND s.revoked_at IS NULL`, ah[:]).Scan(&u.ID, &u.BandBBSUID, &u.Username, &u.AvatarURL, &u.Role, &u.Banned, &u.CreatedAt); err == nil {
+		a.recordOAuthEvent(r, "bandbbs", "refresh", "success", "")
+		jsonResponse(w, 200, map[string]any{
+			"token_type":    "Bearer",
+			"access_token":  access,
+			"refresh_token": refresh,
+			"expires_in":    int(a.cfg.AccessTokenTTL.Seconds()),
+			"user": map[string]any{
+				"id":           u.ID,
+				"bandbbs_uid":  u.BandBBSUID,
+				"username":     u.Username,
+				"avatar_url":   u.AvatarURL,
+				"role":         u.Role,
+				"banned":       u.Banned,
+				"created_at":   u.CreatedAt,
+			},
+		})
 		return
 	}
 	a.recordOAuthEvent(r, "bandbbs", "refresh", "success", "")
@@ -785,7 +825,7 @@ func (a *application) comments(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 200, map[string]any{"items": []any{}, "pagination": map[string]any{"page": page, "per_page": perPage, "total": 0}})
 		return
 	}
-	rows, e := a.db.Pool.Query(r.Context(), `SELECT c.id,c.user_id,COALESCE(u.username,''),COALESCE(u.avatar_url,''),COALESCE(u.bandbbs_uid,0),c.parent_id,c.content,c.state,c.is_deleted,c.created_at FROM resource_comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.resource_id=$1 ORDER BY c.created_at ASC LIMIT 2000`, resourceID(r))
+	rows, e := a.db.Pool.Query(r.Context(), `SELECT c.id,c.user_id,COALESCE(u.username,''),COALESCE(u.avatar_url,''),COALESCE(u.bandbbs_uid,0),c.parent_id,c.content,c.state,c.is_deleted,c.created_at,COALESCE(c.ai_action,'pass'),COALESCE(c.ai_reason,'') FROM resource_comments c LEFT JOIN users u ON u.id=c.user_id WHERE c.resource_id=$1 ORDER BY c.created_at ASC LIMIT 2000`, resourceID(r))
 	if e != nil {
 		jsonError(w, 500, "comments_failed", e.Error(), nil)
 		return
@@ -800,6 +840,8 @@ func (a *application) comments(w http.ResponseWriter, r *http.Request) {
 		Content    string         `json:"content"`
 		State      string         `json:"state"`
 		IsDeleted  bool           `json:"is_deleted"`
+		AIAction   string         `json:"ai_action"`
+		AIReason   string         `json:"ai_reason"`
 		CreatedAt  time.Time      `json:"created_at"`
 		Replies    []*commentNode `json:"replies"`
 		parent     *string
@@ -807,18 +849,18 @@ func (a *application) comments(w http.ResponseWriter, r *http.Request) {
 	nodes := map[string]*commentNode{}
 	order := []string{}
 	for rows.Next() {
-		var id, uid, username, avatar, content, state string
+		var id, uid, username, avatar, content, state, aiAction, aiReason string
 		var bandBBS int64
 		var parent *string
 		var deleted bool
 		var created time.Time
-		if e := rows.Scan(&id, &uid, &username, &avatar, &bandBBS, &parent, &content, &state, &deleted, &created); e != nil {
+		if e := rows.Scan(&id, &uid, &username, &avatar, &bandBBS, &parent, &content, &state, &deleted, &created, &aiAction, &aiReason); e != nil {
 			continue
 		}
 		if deleted || state == "hidden" {
 			content = ""
 		}
-		nodes[id] = &commentNode{ID: id, UserID: uid, Username: username, AvatarURL: avatar, BandBBSUID: bandBBS, Content: content, State: state, IsDeleted: deleted, CreatedAt: created, Replies: []*commentNode{}, parent: parent}
+		nodes[id] = &commentNode{ID: id, UserID: uid, Username: username, AvatarURL: avatar, BandBBSUID: bandBBS, Content: content, State: state, IsDeleted: deleted, AIAction: aiAction, AIReason: aiReason, CreatedAt: created, Replies: []*commentNode{}, parent: parent}
 		order = append(order, id)
 	}
 	roots := []*commentNode{}
@@ -841,7 +883,8 @@ func (a *application) comments(w http.ResponseWriter, r *http.Request) {
 	if end > total {
 		end = total
 	}
-	jsonResponse(w, 200, map[string]any{"items": roots[start:end], "pagination": map[string]any{"page": page, "per_page": perPage, "total": total}})
+	items := roots[start:end]
+	jsonResponse(w, 200, map[string]any{"items": items, "comments": items, "pagination": map[string]any{"page": page, "per_page": perPage, "total": total}})
 }
 func (a *application) commentCreate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -866,11 +909,51 @@ func (a *application) commentCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		parent = in.ParentID
 	}
-	if _, e := a.db.Pool.Exec(r.Context(), `INSERT INTO resource_comments(id,resource_id,user_id,parent_id,content) VALUES($1,$2,$3,$4,$5)`, id, resourceID(r), u.ID, parent, in.Content); e != nil {
+
+	// 文本 AI 审核与规则校验
+	modRes := a.moderateText(r.Context(), in.Content)
+	state := "visible"
+	isDeleted := false
+	modReason := ""
+	if modRes.Action == "block" {
+		state = "hidden"
+		isDeleted = true
+		modReason = modRes.Reason
+	} else if modRes.Action == "flag" {
+		state = "flagged"
+		modReason = modRes.Reason
+	}
+
+	if _, e := a.db.Pool.Exec(r.Context(), `INSERT INTO resource_comments(id,resource_id,user_id,parent_id,content,state,is_deleted,moderation_reason,ai_action,ai_reason,ai_model) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, id, resourceID(r), u.ID, parent, in.Content, state, isDeleted, modReason, modRes.Action, modRes.Reason, modRes.Model); e != nil {
 		jsonError(w, 500, "comment_create_failed", e.Error(), nil)
 		return
 	}
-	jsonResponse(w, 201, map[string]any{"id": id, "content": in.Content, "is_deleted": false})
+
+	now := time.Now().UTC()
+	jsonResponse(w, 201, map[string]any{
+		"id":                id,
+		"resource_id":       resourceID(r),
+		"user": map[string]any{
+			"id":          u.ID,
+			"username":    u.Username,
+			"avatar_url":  u.AvatarURL,
+			"bandbbs_uid": u.BandBBSUID,
+		},
+		"user_id":           u.ID,
+		"username":          u.Username,
+		"avatar_url":        u.AvatarURL,
+		"bandbbs_user_id":   u.BandBBSUID,
+		"bandbbs_uid":       u.BandBBSUID,
+		"content":           in.Content,
+		"body":              in.Content,
+		"state":             state,
+		"is_deleted":        isDeleted,
+		"moderation_reason": modReason,
+		"ai_action":         modRes.Action,
+		"ai_reason":         modRes.Reason,
+		"created_at":        now.Format(time.RFC3339),
+		"replies":           []any{},
+	})
 }
 func (a *application) commentDelete(w http.ResponseWriter, r *http.Request) {
 	u, _ := userOf(r)
@@ -1027,7 +1110,7 @@ func (a *application) messageItem(w http.ResponseWriter, r *http.Request) {
 func (a *application) feedback(w http.ResponseWriter, r *http.Request) {
 	u, _ := userOf(r)
 	if r.Method == http.MethodGet {
-		rows, err := a.db.Pool.Query(r.Context(), `SELECT id,COALESCE(target_source,''),title,status,created_at,updated_at FROM feedback_tickets WHERE user_id=$1 ORDER BY updated_at DESC`, u.ID)
+		rows, err := a.db.Pool.Query(r.Context(), `SELECT id,COALESCE(target_source,''),title,content,status,created_at,updated_at FROM feedback_tickets WHERE user_id=$1 ORDER BY updated_at DESC`, u.ID)
 		if err != nil {
 			jsonError(w, 500, "feedback_list_failed", err.Error(), nil)
 			return
@@ -1035,10 +1118,10 @@ func (a *application) feedback(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		items := []any{}
 		for rows.Next() {
-			var id, targetSource, title, status string
+			var id, targetSource, title, content, status string
 			var created, updated time.Time
-			if rows.Scan(&id, &targetSource, &title, &status, &created, &updated) == nil {
-				items = append(items, map[string]any{"id": id, "target_source": targetSource, "title": title, "status": status, "created_at": created, "updated_at": updated})
+			if rows.Scan(&id, &targetSource, &title, &content, &status, &created, &updated) == nil {
+				items = append(items, map[string]any{"id": id, "target_source": targetSource, "title": title, "content": content, "status": status, "created_at": created, "updated_at": updated})
 			}
 		}
 		jsonResponse(w, 200, map[string]any{"items": items})
@@ -1050,23 +1133,28 @@ func (a *application) feedback(w http.ResponseWriter, r *http.Request) {
 		Title        string `json:"title"`
 		Content      string `json:"content"`
 	}
-	if !readJSON(w, r, &in) || strings.TrimSpace(in.Title) == "" || strings.TrimSpace(in.Content) == "" {
+	if !readJSON(w, r, &in) {
+		return
+	}
+	title := strings.TrimSpace(in.Title)
+	content := strings.TrimSpace(in.Content)
+	if title == "" || content == "" {
 		jsonError(w, 400, "feedback_fields_required", "title and content are required", nil)
 		return
 	}
 	var id string
 	err := a.db.WithTx(r.Context(), func(tx pgx.Tx) error {
-		if err := tx.QueryRow(r.Context(), `INSERT INTO feedback_tickets(user_id,target_source,target_id,title,content) VALUES($1,$2,$3,$4,$5) RETURNING id`, u.ID, in.TargetSource, in.TargetID, in.Title, in.Content).Scan(&id); err != nil {
+		if err := tx.QueryRow(r.Context(), `INSERT INTO feedback_tickets(user_id,target_source,target_id,title,content) VALUES($1,$2,$3,$4,$5) RETURNING id`, u.ID, in.TargetSource, in.TargetID, title, content).Scan(&id); err != nil {
 			return err
 		}
-		_, err := tx.Exec(r.Context(), `INSERT INTO feedback_replies(ticket_id,author_id,message,is_admin) VALUES($1,$2,$3,false)`, id, u.ID, in.Content)
+		_, err := tx.Exec(r.Context(), `INSERT INTO feedback_replies(ticket_id,author_id,message,is_admin) VALUES($1,$2,$3,false)`, id, u.ID, content)
 		return err
 	})
 	if err != nil {
 		jsonError(w, 500, "feedback_create_failed", err.Error(), nil)
 		return
 	}
-	jsonResponse(w, 201, map[string]any{"id": id, "target_source": in.TargetSource, "target_id": in.TargetID, "title": in.Title, "status": "open"})
+	jsonResponse(w, 201, map[string]any{"id": id, "target_source": in.TargetSource, "target_id": in.TargetID, "title": title, "status": "open"})
 }
 func (a *application) tip(w http.ResponseWriter, r *http.Request) {
 	var in struct {

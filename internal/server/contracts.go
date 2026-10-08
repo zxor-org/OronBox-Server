@@ -10,10 +10,22 @@ import (
 func (a *application) adminContract(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
+	case strings.HasPrefix(p, "/admin/api/analytics") && r.Method == "GET":
+		a.adminAnalytics(w, r)
+	case strings.HasPrefix(p, "/admin/api/blogs") && r.Method == "GET":
+		a.adminBlogs(w, r)
+	case strings.HasPrefix(p, "/admin/api/blogs") && (r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE"):
+		a.adminBlogMutation(w, r)
+	case strings.Contains(p, "/reviews/") && strings.HasSuffix(p, "/detail") && r.Method == "GET":
+		a.adminReviewDetail(w, r)
+	case strings.HasPrefix(p, "/admin/api/resources/") && (r.Method == "PUT" || r.Method == "POST"):
+		a.adminResourceUpdate(w, r)
 	case strings.HasPrefix(p, "/admin/api/plugins") && strings.HasSuffix(p, "/review") && r.Method == "POST":
 		a.adminPluginReview(w, r)
 	case strings.HasPrefix(p, "/admin/api/plugins") && strings.HasSuffix(p, "/state") && r.Method == "POST":
 		a.adminPluginState(w, r)
+	case strings.HasPrefix(p, "/admin/api/plugins") && strings.HasSuffix(p, "/download") && r.Method == "GET":
+		a.adminPluginDownload(w, r)
 	case strings.HasPrefix(p, "/admin/api/plugins") && r.Method == "GET":
 		a.adminPlugins(w, r)
 	case strings.HasPrefix(p, "/admin/api/resources") && r.Method == "GET":

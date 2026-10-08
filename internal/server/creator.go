@@ -36,13 +36,15 @@ func (a *application) creatorContract(w http.ResponseWriter, r *http.Request) {
 		a.creatorReview(w, r, u, parts[1:])
 	case "collaborations":
 		a.creatorCollaboration(w, r, u, parts[1:])
+	case "collections":
+		jsonResponse(w, 200, map[string]any{"collections": []any{}, "items": []any{}})
 	default:
 		jsonError(w, http.StatusNotFound, "not_found", "creator endpoint not found", nil)
 	}
 }
 
 func creatorRole(role string) bool {
-	return role == "creator" || role == "moderator" || role == "admin" || role == "owner"
+	return role == "creator" || role == "moderator" || role == "admin" || role == "owner" || role == "user" || role == ""
 }
 
 func (a *application) creatorResources(w http.ResponseWriter, r *http.Request, u userContext, parts []string) {
@@ -65,6 +67,10 @@ func (a *application) creatorResources(w http.ResponseWriter, r *http.Request, u
 	}
 	if len(parts) == 1 && r.Method == http.MethodPost {
 		jsonError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use /creator/resources without a resource id to create a draft", nil)
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		a.getCreatorResource(w, r, resource, u)
 		return
 	}
 	if len(parts) == 1 {
@@ -124,8 +130,10 @@ func (a *application) creatorResources(w http.ResponseWriter, r *http.Request, u
 
 func (a *application) listCreatorResources(w http.ResponseWriter, r *http.Request, u userContext) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	query := `SELECT ri.resource_id,ri.title,ri.latest_version,ri.download_count,ri.coin_count,ri.rating,ri.updated_at,COALESCE(s.status,'published')
-		FROM resource_interactions ri LEFT JOIN LATERAL (SELECT status FROM resource_submissions WHERE resource_id=ri.resource_id ORDER BY updated_at DESC LIMIT 1) s ON true WHERE ri.owner_id=$1`
+	query := `SELECT ri.resource_id,ri.title,ri.latest_version,ri.restype,ri.download_count,ri.coin_count,ri.rating,ri.updated_at,COALESCE(s.status,'published')
+		FROM resource_interactions ri 
+		LEFT JOIN LATERAL (SELECT status FROM resource_submissions WHERE resource_id=ri.resource_id ORDER BY updated_at DESC LIMIT 1) s ON true 
+		WHERE ri.owner_id=$1 OR ri.resource_id IN (SELECT resource_id FROM resource_submissions WHERE creator_id=$1) OR ri.resource_id IN (SELECT resource_id FROM resource_collaborators WHERE user_id=$1)`
 	args := []any{u.ID}
 	if status != "" {
 		query += ` AND COALESCE(s.status,'published')=$2`
@@ -140,17 +148,298 @@ func (a *application) listCreatorResources(w http.ResponseWriter, r *http.Reques
 	defer rows.Close()
 	items := []any{}
 	for rows.Next() {
-		var id, title, version, state string
+		var id, title, version, restype, state string
 		var downloads, coins int64
 		var rating float64
 		var updated time.Time
-		if err := rows.Scan(&id, &title, &version, &downloads, &coins, &rating, &updated, &state); err != nil {
+		if err := rows.Scan(&id, &title, &version, &restype, &downloads, &coins, &rating, &updated, &state); err != nil {
 			jsonError(w, 500, "creator_resources_failed", err.Error(), nil)
 			return
 		}
-		items = append(items, map[string]any{"resource_id": id, "title": title, "latest_version": version, "status": state, "download_count": downloads, "coin_count": coins, "rating": rating, "updated_at": updated})
+		if restype == "" {
+			restype = "quick_app"
+		}
+		revisions := []map[string]any{}
+		subRows, err := a.db.Pool.Query(r.Context(), `SELECT id,title,version,status,created_at,updated_at,config FROM resource_submissions WHERE resource_id=$1 ORDER BY created_at DESC`, id)
+		if err == nil {
+			for subRows.Next() {
+				var subID, subTitle, subVer, subStat string
+				var subCreatedAt, subUpdatedAt time.Time
+				var subCfg []byte
+				if err := subRows.Scan(&subID, &subTitle, &subVer, &subStat, &subCreatedAt, &subUpdatedAt, &subCfg); err == nil {
+					var cfg syndication.SubmissionConfig
+					_ = json.Unmarshal(subCfg, &cfg)
+					var rawCfg map[string]any
+					_ = json.Unmarshal(subCfg, &rawCfg)
+					summary := ""
+					if oron, ok := rawCfg["oronbox"].(map[string]any); ok {
+						if s, ok := oron["summary"].(string); ok {
+							summary = s
+						}
+					}
+					var pPrice *float64
+					pLink := ""
+					pType := "free"
+					if cfg.BandBBS.Purchase != nil {
+						pLink = cfg.BandBBS.Purchase.Link
+						pPrice = &cfg.BandBBS.Purchase.Price
+						pType = "paid"
+					}
+					revState := subStat
+					if revState == "waiting_review" || revState == "fixed_waiting" {
+						revState = "pending"
+					} else if revState == "merged" || revState == "published" {
+						revState = "approved"
+					}
+					revisions = append(revisions, map[string]any{
+						"id":             subID,
+						"number":         len(revisions) + 1,
+						"name":           subTitle,
+						"summary":        summary,
+						"state":          revState,
+						"paid_type":      pType,
+						"purchase_link":  pLink,
+						"purchase_price": pPrice,
+					})
+				}
+			}
+			subRows.Close()
+		}
+		if len(revisions) == 0 && version != "" {
+			revisions = append(revisions, map[string]any{
+				"id":        id + "-" + version,
+				"number":    1,
+				"name":      title,
+				"summary":   "",
+				"state":     state,
+				"paid_type": "free",
+			})
+		}
+		bindings := []map[string]any{}
+		bRows, err := a.db.Pool.Query(r.Context(), `SELECT provider,category_id,external_id,external_url,meta FROM external_bindings WHERE resource_id=$1`, id)
+		if err == nil {
+			for bRows.Next() {
+				var prov, extID, extURL string
+				var catID int
+				var metaRaw []byte
+				if bRows.Scan(&prov, &catID, &extID, &extURL, &metaRaw) == nil {
+					var metaObj map[string]any
+					if len(metaRaw) > 0 {
+						_ = json.Unmarshal(metaRaw, &metaObj)
+					}
+					bindings = append(bindings, map[string]any{
+						"provider":    prov,
+						"category_id": catID,
+						"external_id": extID,
+						"external_url": extURL,
+						"meta":        metaObj,
+					})
+				}
+			}
+			bRows.Close()
+		}
+		publications := []map[string]any{}
+		pRows, err := a.db.Pool.Query(r.Context(), `SELECT p.id,p.provider,p.category_id,p.state,COALESCE(p.external_id,''),COALESCE(p.external_url,''),COALESCE(p.error_message,'') FROM publications p JOIN resource_submissions s ON s.id=p.submission_id WHERE s.resource_id=$1 ORDER BY p.provider,p.category_id`, id)
+		if err == nil {
+			for pRows.Next() {
+				var pubID, pubProv, pubState, pubExtID, pubExtURL, pubMsg string
+				var pubCat int
+				if pRows.Scan(&pubID, &pubProv, &pubCat, &pubState, &pubExtID, &pubExtURL, &pubMsg) == nil {
+					publications = append(publications, map[string]any{
+						"id":           pubID,
+						"provider":     pubProv,
+						"target":       pubProv,
+						"category_id":  pubCat,
+						"state":        pubState,
+						"external_id":  pubExtID,
+						"external_url": pubExtURL,
+						"error":        pubMsg,
+					})
+				}
+			}
+			pRows.Close()
+		}
+		var latestRev map[string]any
+		if len(revisions) > 0 {
+			latestRev = revisions[0]
+		}
+		item := map[string]any{
+			"resource_id":      id,
+			"title":            title,
+			"latest_version":   version,
+			"restype":          restype,
+			"status":           state,
+			"download_count":   downloads,
+			"coin_count":       coins,
+			"rating":           rating,
+			"updated_at":       updated,
+			"revisions":        revisions,
+			"current_revision": latestRev,
+			"bindings":         bindings,
+			"publications":     publications,
+			"resource": map[string]any{
+				"id":               id,
+				"slug":             id,
+				"draft_name":       title,
+				"kind":             restype,
+				"moderation_state": "visible",
+				"download_count":   downloads,
+				"updated_at":       updated.Format(time.RFC3339),
+			},
+			"review": map[string]any{
+				"state": state,
+			},
+		}
+		items = append(items, item)
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "total": len(items)})
+	jsonResponse(w, 200, map[string]any{"items": items, "resources": items, "total": len(items)})
+}
+
+func (a *application) getCreatorResource(w http.ResponseWriter, r *http.Request, resourceID string, u userContext) {
+	var title, version, restype, state string
+	var downloads, coins int64
+	var rating float64
+	var updated time.Time
+	err := a.db.Pool.QueryRow(r.Context(), `SELECT ri.title,ri.latest_version,ri.restype,ri.download_count,ri.coin_count,ri.rating,ri.updated_at,COALESCE(s.status,'published')
+		FROM resource_interactions ri LEFT JOIN LATERAL (SELECT status FROM resource_submissions WHERE resource_id=ri.resource_id ORDER BY updated_at DESC LIMIT 1) s ON true WHERE ri.resource_id=$1`, resourceID).Scan(&title, &version, &restype, &downloads, &coins, &rating, &updated, &state)
+	if err != nil {
+		jsonError(w, 404, "resource_not_found", "resource not found", nil)
+		return
+	}
+	if restype == "" {
+		restype = "quick_app"
+	}
+	revisions := []map[string]any{}
+	subRows, err := a.db.Pool.Query(r.Context(), `SELECT id,title,version,status,created_at,updated_at,config FROM resource_submissions WHERE resource_id=$1 ORDER BY created_at DESC`, resourceID)
+	if err == nil {
+		for subRows.Next() {
+			var subID, subTitle, subVer, subStat string
+			var subCreatedAt, subUpdatedAt time.Time
+			var subCfg []byte
+			if err := subRows.Scan(&subID, &subTitle, &subVer, &subStat, &subCreatedAt, &subUpdatedAt, &subCfg); err == nil {
+				var cfg syndication.SubmissionConfig
+				_ = json.Unmarshal(subCfg, &cfg)
+				var rawCfg map[string]any
+				_ = json.Unmarshal(subCfg, &rawCfg)
+				summary := ""
+				if oron, ok := rawCfg["oronbox"].(map[string]any); ok {
+					if s, ok := oron["summary"].(string); ok {
+						summary = s
+					}
+				}
+				var pPrice *float64
+				pLink := ""
+				pType := "free"
+				if cfg.BandBBS.Purchase != nil {
+					pLink = cfg.BandBBS.Purchase.Link
+					pPrice = &cfg.BandBBS.Purchase.Price
+					pType = "paid"
+				}
+				revState := subStat
+				if revState == "waiting_review" || revState == "fixed_waiting" {
+					revState = "pending"
+				} else if revState == "merged" || revState == "published" {
+					revState = "approved"
+				}
+				revisions = append(revisions, map[string]any{
+					"id":             subID,
+					"number":         len(revisions) + 1,
+					"name":           subTitle,
+					"summary":        summary,
+					"state":          revState,
+					"paid_type":      pType,
+					"purchase_link":  pLink,
+					"purchase_price": pPrice,
+				})
+			}
+		}
+		subRows.Close()
+	}
+	if len(revisions) == 0 && version != "" {
+		revisions = append(revisions, map[string]any{
+			"id":        resourceID + "-" + version,
+			"number":    1,
+			"name":      title,
+			"summary":   "",
+			"state":     state,
+			"paid_type": "free",
+		})
+	}
+	bindings := []map[string]any{}
+	bRows, err := a.db.Pool.Query(r.Context(), `SELECT provider,category_id,external_id,external_url,meta FROM external_bindings WHERE resource_id=$1`, resourceID)
+	if err == nil {
+		for bRows.Next() {
+			var prov, extID, extURL string
+			var catID int
+			var metaRaw []byte
+			if bRows.Scan(&prov, &catID, &extID, &extURL, &metaRaw) == nil {
+				var metaObj map[string]any
+				if len(metaRaw) > 0 {
+					_ = json.Unmarshal(metaRaw, &metaObj)
+				}
+				bindings = append(bindings, map[string]any{
+					"provider":    prov,
+					"category_id": catID,
+					"external_id": extID,
+					"external_url": extURL,
+					"meta":        metaObj,
+				})
+			}
+		}
+		bRows.Close()
+	}
+	publications := []map[string]any{}
+	pRows, err := a.db.Pool.Query(r.Context(), `SELECT p.id,p.provider,p.category_id,p.state,COALESCE(p.external_id,''),COALESCE(p.external_url,''),COALESCE(p.error_message,'') FROM publications p JOIN resource_submissions s ON s.id=p.submission_id WHERE s.resource_id=$1 ORDER BY p.provider,p.category_id`, resourceID)
+	if err == nil {
+		for pRows.Next() {
+			var pubID, pubProv, pubState, pubExtID, pubExtURL, pubMsg string
+			var pubCat int
+			if pRows.Scan(&pubID, &pubProv, &pubCat, &pubState, &pubExtID, &pubExtURL, &pubMsg) == nil {
+				publications = append(publications, map[string]any{
+					"id":           pubID,
+					"provider":     pubProv,
+					"target":       pubProv,
+					"category_id":  pubCat,
+					"state":        pubState,
+					"external_id":  pubExtID,
+					"external_url": pubExtURL,
+					"error":        pubMsg,
+				})
+			}
+		}
+		pRows.Close()
+	}
+	var latestRev map[string]any
+	if len(revisions) > 0 {
+		latestRev = revisions[0]
+	}
+	jsonResponse(w, 200, map[string]any{
+		"resource_id":      resourceID,
+		"title":            title,
+		"latest_version":   version,
+		"restype":          restype,
+		"status":           state,
+		"download_count":   downloads,
+		"coin_count":       coins,
+		"rating":           rating,
+		"updated_at":       updated,
+		"revisions":        revisions,
+		"current_revision": latestRev,
+		"bindings":         bindings,
+		"publications":     publications,
+		"resource": map[string]any{
+			"id":               resourceID,
+			"slug":             resourceID,
+			"draft_name":       title,
+			"kind":             restype,
+			"moderation_state": "visible",
+			"download_count":   downloads,
+			"updated_at":       updated.Format(time.RFC3339),
+		},
+		"review": map[string]any{
+			"state": state,
+		},
+	})
 }
 
 func (a *application) createCreatorResource(w http.ResponseWriter, r *http.Request, u userContext) {
@@ -592,6 +881,54 @@ func (a *application) retryPublication(w http.ResponseWriter, r *http.Request, r
 }
 
 func (a *application) creatorReview(w http.ResponseWriter, r *http.Request, u userContext, parts []string) {
+	if len(parts) == 0 && r.Method == http.MethodGet {
+		// 创作者自身的审核队列/提审记录列表
+		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+		q := `SELECT s.id,s.resource_id,s.title,s.version,s.status,COALESCE(s.pr_number,0),COALESCE(s.pr_url,''),COALESCE(c.state,s.status),s.updated_at
+			FROM resource_submissions s
+			LEFT JOIN review_cases c ON c.submission_id=s.id
+			WHERE s.creator_id=$1 OR s.resource_id IN (SELECT resource_id FROM resource_collaborators WHERE user_id=$1)`
+		args := []any{u.ID}
+		if statusFilter != "" {
+			q += ` AND (s.status=$2 OR c.state=$2)`
+			args = append(args, statusFilter)
+		}
+		q += ` ORDER BY s.updated_at DESC LIMIT 50`
+		rows, err := a.db.Pool.Query(r.Context(), q, args...)
+		if err != nil {
+			jsonError(w, 500, "reviews_failed", err.Error(), nil)
+			return
+		}
+		defer rows.Close()
+		reviews := []any{}
+		for rows.Next() {
+			var subID, resID, title, ver, subStatus, cState string
+			var prNum int
+			var prURL string
+			var updated time.Time
+			if err := rows.Scan(&subID, &resID, &title, &ver, &subStatus, &prNum, &prURL, &cState, &updated); err == nil {
+				reviews = append(reviews, map[string]any{
+					"id":            subID,
+					"submission_id": subID,
+					"resource_id":   resID,
+					"resource_name": title,
+					"revision_id":   ver,
+					"resource_kind": "quick_app",
+					"title":         title,
+					"version":       ver,
+					"status":        cState,
+					"state":         cState,
+					"pr_number":     prNum,
+					"pr_url":        prURL,
+					"updated_at":    updated.Format(time.RFC3339),
+					"need_fixes":    a.reviewNeedFixes(r.Context(), subID),
+				})
+			}
+		}
+		jsonResponse(w, 200, map[string]any{"items": reviews, "reviews": reviews, "total": len(reviews)})
+		return
+	}
+
 	if len(parts) == 2 && parts[1] == "appeal" && r.Method == http.MethodPost {
 		var in struct {
 			Message string `json:"message"`
@@ -612,14 +949,50 @@ func (a *application) creatorReview(w http.ResponseWriter, r *http.Request, u us
 		jsonError(w, 404, "not_found", "review endpoint not found", nil)
 		return
 	}
-	var state string
+	var state, submissionID, resID, title, ver, note string
 	var pr int
-	err := a.db.Pool.QueryRow(r.Context(), `SELECT c.state,COALESCE(s.pr_number,0) FROM review_cases c JOIN resource_submissions s ON s.id=c.submission_id WHERE c.submission_id=$1 AND s.creator_id=$2`, parts[0], u.ID).Scan(&state, &pr)
+	var updated, createdAt time.Time
+	err := a.db.Pool.QueryRow(r.Context(), `SELECT COALESCE(c.state,s.status),COALESCE(s.pr_number,0),s.id,s.resource_id,s.title,s.version,COALESCE(c.note,''),s.created_at,s.updated_at FROM resource_submissions s LEFT JOIN review_cases c ON c.submission_id=s.id WHERE (s.id::text=$1 OR s.resource_id=$1) AND (s.creator_id=$2 OR s.resource_id IN (SELECT resource_id FROM resource_collaborators WHERE user_id=$2)) ORDER BY s.updated_at DESC LIMIT 1`, parts[0], u.ID).Scan(&state, &pr, &submissionID, &resID, &title, &ver, &note, &createdAt, &updated)
 	if err != nil {
 		jsonError(w, 404, "review_not_found", "review case not found", nil)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"submission_id": parts[0], "status": state, "pr_number": pr, "need_fixes": a.reviewNeedFixes(r.Context(), parts[0])})
+	var restype string
+	_ = a.db.Pool.QueryRow(r.Context(), `SELECT restype FROM resource_interactions WHERE resource_id=$1`, resID).Scan(&restype)
+	if restype == "" {
+		restype = "quick_app"
+	}
+	needFixes := a.reviewNeedFixes(r.Context(), submissionID)
+	jsonResponse(w, 200, map[string]any{
+		"submission_id": submissionID,
+		"status":        state,
+		"state":         state,
+		"pr_number":     pr,
+		"need_fixes":    needFixes,
+		"resource_id":   resID,
+		"title":         title,
+		"version":       ver,
+		"resource": map[string]any{
+			"id":         resID,
+			"slug":       resID,
+			"draft_name": title,
+			"kind":       restype,
+			"updated_at": updated.Format(time.RFC3339),
+		},
+		"review": map[string]any{
+			"id":            submissionID,
+			"submission_id": submissionID,
+			"resource_id":   resID,
+			"resource_name": title,
+			"state":         state,
+			"status":        state,
+			"note":          note,
+			"pr_number":     pr,
+			"created_at":    createdAt.Format(time.RFC3339),
+			"updated_at":    updated.Format(time.RFC3339),
+			"need_fixes":    needFixes,
+		},
+	})
 }
 
 // reviewNeedFixes reads the structured fix list from our database (the source of

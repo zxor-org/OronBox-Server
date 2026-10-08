@@ -406,6 +406,7 @@ FROM plugins p LEFT JOIN users u ON u.id=p.uploader_id ORDER BY p.updated_at DES
 				"state":            state,
 				"moderation_reason": reason,
 				"sha256":           sha,
+				"download_url":     fmt.Sprintf("/admin/api/plugins/%s/download", id),
 				"created_at":       created,
 				"updated_at":       updated,
 			})
@@ -413,6 +414,44 @@ FROM plugins p LEFT JOIN users u ON u.id=p.uploader_id ORDER BY p.updated_at DES
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// adminPluginDownload serves the .obp plugin package for inspection/download by administrators.
+func (a *application) adminPluginDownload(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	var pluginID string
+	for i, part := range parts {
+		if part == "plugins" && i+1 < len(parts) {
+			pluginID = parts[i+1]
+			break
+		}
+	}
+	if pluginID == "" {
+		jsonError(w, http.StatusBadRequest, "id_required", "plugin id is required", nil)
+		return
+	}
+
+	// First try pending plugin file
+	if data, err := readPendingPlugin(pluginID); err == nil {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.obp"`, pluginID))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+		return
+	}
+
+	// Otherwise if listed in Gitea, download from Gitea or redirect
+	owner := pluginRepoOwner
+	repo := pluginRepoName
+	branch := pluginRepoBranch
+	if a.cfg.Gitea.APIURL != "" {
+		redirectURL := fmt.Sprintf("%s/%s/%s/raw/branch/%s/%s/%s.obp",
+			strings.TrimRight(a.cfg.Gitea.APIURL, "/api/v1"), owner, repo, branch, pluginID, pluginID)
+		http.Redirect(w, r, redirectURL, http.StatusFound)
+		return
+	}
+
+	jsonError(w, http.StatusNotFound, "plugin_file_not_found", "plugin package file not found", nil)
 }
 
 // adminPluginReview approves or rejects a pending plugin submission.
@@ -434,9 +473,13 @@ func (a *application) adminPluginReview(w http.ResponseWriter, r *http.Request) 
 	var in struct {
 		Action string `json:"action"` // "approve" or "reject"
 		Note   string `json:"note"`
+		Reason string `json:"reason"`
 	}
 	if !readJSON(w, r, &in) {
 		return
+	}
+	if in.Note == "" {
+		in.Note = in.Reason
 	}
 
 	var uploaderID, name, version, state string
@@ -473,7 +516,7 @@ func (a *application) adminPluginReview(w http.ResponseWriter, r *http.Request) 
 		}
 
 		_, _ = a.db.Pool.Exec(r.Context(), `INSERT INTO user_messages(user_id, kind, event, title, body, ref) VALUES($1, 'plugin', 'plugin.approved', $2, $3, $4)`,
-			uploaderID, "插件审核通过", fmt.Sprintf("您的插件 %s (v%s) 已通过审核并上架。", name, version), pluginID)
+			uploaderID, "插件审核通过", fmt.Sprintf("您的插件 %s (v%s) 已通过审核并上架", name, version), pluginID)
 
 		jsonResponse(w, http.StatusOK, map[string]any{"status": "listed"})
 
@@ -485,7 +528,7 @@ func (a *application) adminPluginReview(w http.ResponseWriter, r *http.Request) 
 		}
 
 		_, _ = a.db.Pool.Exec(r.Context(), `INSERT INTO user_messages(user_id, kind, event, title, body, ref) VALUES($1, 'plugin', 'plugin.rejected', $2, $3, $4)`,
-			uploaderID, "插件审核未通过", fmt.Sprintf("您的插件 %s (v%s) 审核未通过。原因：%s", name, version, in.Note), pluginID)
+			uploaderID, "插件审核未通过", fmt.Sprintf("您的插件 %s (v%s) 审核未通过，原因：%s", name, version, in.Note), pluginID)
 
 		jsonResponse(w, http.StatusOK, map[string]any{"status": "rejected"})
 
@@ -512,9 +555,13 @@ func (a *application) adminPluginState(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Action string `json:"action"` // "delist" or "relist"
 		Note   string `json:"note"`
+		Reason string `json:"reason"`
 	}
 	if !readJSON(w, r, &in) {
 		return
+	}
+	if in.Note == "" {
+		in.Note = in.Reason
 	}
 
 	var uploaderID, name, version string
@@ -537,7 +584,7 @@ func (a *application) adminPluginState(w http.ResponseWriter, r *http.Request) {
 		_ = a.syncPluginDelistToGit(r.Context(), pluginID)
 
 		_, _ = a.db.Pool.Exec(r.Context(), `INSERT INTO user_messages(user_id, kind, event, title, body, ref) VALUES($1, 'plugin', 'plugin.delisted', $2, $3, $4)`,
-			uploaderID, "插件已下架", fmt.Sprintf("您的插件 %s (v%s) 已被管理员下架。原因：%s", name, version, in.Note), pluginID)
+			uploaderID, "插件已下架", fmt.Sprintf("您的插件 %s (v%s) 已被管理员下架，原因：%s", name, version, in.Note), pluginID)
 
 		jsonResponse(w, http.StatusOK, map[string]any{"status": "delisted"})
 
@@ -549,7 +596,7 @@ func (a *application) adminPluginState(w http.ResponseWriter, r *http.Request) {
 		_ = a.syncPluginRelistToGit(r.Context(), pluginID)
 
 		_, _ = a.db.Pool.Exec(r.Context(), `INSERT INTO user_messages(user_id, kind, event, title, body, ref) VALUES($1, 'plugin', 'plugin.relisted', $2, $3, $4)`,
-			uploaderID, "插件已恢复上架", fmt.Sprintf("您的插件 %s (v%s) 已恢复上架。", name, version), pluginID)
+			uploaderID, "插件已恢复上架", fmt.Sprintf("您的插件 %s (v%s) 已恢复上架", name, version), pluginID)
 
 		jsonResponse(w, http.StatusOK, map[string]any{"status": "listed"})
 

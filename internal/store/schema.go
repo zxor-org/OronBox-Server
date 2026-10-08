@@ -57,6 +57,11 @@ ALTER TABLE resource_submissions ADD COLUMN IF NOT EXISTS repo_commit_hash varch
 ALTER TABLE resource_submissions ADD COLUMN IF NOT EXISTS config jsonb NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS download_events_resource_idx ON download_events(resource_id,ip,created_at);
 CREATE INDEX IF NOT EXISTS user_coin_ledger_idx ON coin_ledger(user_id,created_at);
+ALTER TABLE resource_comments ADD COLUMN IF NOT EXISTS ai_action varchar(16) NOT NULL DEFAULT 'pass';
+ALTER TABLE resource_comments ADD COLUMN IF NOT EXISTS ai_reason text NOT NULL DEFAULT '';
+ALTER TABLE resource_comments ADD COLUMN IF NOT EXISTS ai_model varchar(64) NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS blogs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), title varchar(256) NOT NULL, slug varchar(128) UNIQUE NOT NULL, summary text NOT NULL DEFAULT '', content text NOT NULL, cover_url text NOT NULL DEFAULT '', category varchar(32) NOT NULL DEFAULT 'announcement', status varchar(16) NOT NULL DEFAULT 'published', author_id uuid REFERENCES users(id) ON DELETE SET NULL, view_count integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS blogs_status_idx ON blogs(status, created_at DESC);
 `
 
 func Migrate(ctx context.Context, s *Store) error {

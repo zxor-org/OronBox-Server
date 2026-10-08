@@ -71,17 +71,32 @@ func (a *application) feedbackItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = a.db.Pool.Exec(r.Context(), `UPDATE feedback_tickets SET updated_at=now() WHERE id=$1`, ticketID)
-		jsonResponse(w, 201, map[string]any{"id": id, "ticket_id": ticketID, "message": in.Message})
+		var targetSource, title, content, status string
+		var created, updated time.Time
+		_ = a.db.Pool.QueryRow(r.Context(), `SELECT COALESCE(target_source,''),title,content,status,created_at,updated_at FROM feedback_tickets WHERE id=$1`, ticketID).Scan(&targetSource, &title, &content, &status, &created, &updated)
+		rows, err := a.db.Pool.Query(r.Context(), `SELECT id,author_id,message,created_at FROM feedback_replies WHERE ticket_id=$1 ORDER BY created_at`, ticketID)
+		replies := []any{}
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var rid, author, body string
+				var at time.Time
+				if rows.Scan(&rid, &author, &body, &at) == nil {
+					replies = append(replies, map[string]any{"id": rid, "author_id": author, "message": body, "created_at": at})
+				}
+			}
+		}
+		jsonResponse(w, 201, map[string]any{"ticket": map[string]any{"id": ticketID, "target_source": targetSource, "title": title, "content": content, "status": status, "created_at": created, "updated_at": updated}, "replies": replies})
 		return
 	}
 	if r.Method != http.MethodGet {
 		jsonError(w, 405, "method_not_allowed", "method not allowed", nil)
 		return
 	}
-	var targetSource, title, status string
+	var targetSource, title, content, status string
 	var owner string
 	var created, updated time.Time
-	if err := a.db.Pool.QueryRow(r.Context(), `SELECT user_id,COALESCE(target_source,''),title,status,created_at,updated_at FROM feedback_tickets WHERE id=$1`, ticketID).Scan(&owner, &targetSource, &title, &status, &created, &updated); err != nil || owner != u.ID {
+	if err := a.db.Pool.QueryRow(r.Context(), `SELECT user_id,COALESCE(target_source,''),title,content,status,created_at,updated_at FROM feedback_tickets WHERE id=$1`, ticketID).Scan(&owner, &targetSource, &title, &content, &status, &created, &updated); err != nil || owner != u.ID {
 		jsonError(w, 404, "ticket_not_found", "feedback ticket not found", nil)
 		return
 	}
@@ -99,5 +114,5 @@ func (a *application) feedbackItem(w http.ResponseWriter, r *http.Request) {
 			replies = append(replies, map[string]any{"id": id, "author_id": author, "message": body, "created_at": at})
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"ticket": map[string]any{"id": ticketID, "target_source": targetSource, "title": title, "status": status, "created_at": created, "updated_at": updated}, "replies": replies})
+	jsonResponse(w, 200, map[string]any{"ticket": map[string]any{"id": ticketID, "target_source": targetSource, "title": title, "content": content, "status": status, "created_at": created, "updated_at": updated}, "replies": replies})
 }

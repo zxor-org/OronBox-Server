@@ -56,18 +56,22 @@ func (a *application) githubWebStatus(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		FlowID string `json:"flow_id"`
 	}
-	if !readJSON(w, r, &in) || strings.TrimSpace(in.FlowID) == "" {
+	if !readJSON(w, r, &in) {
+		return
+	}
+	flowID := strings.TrimSpace(in.FlowID)
+	if flowID == "" {
 		jsonError(w, http.StatusBadRequest, "invalid_request", "flow_id is required", nil)
 		return
 	}
 	u, _ := userOf(r)
-	if v, ok := a.states.Load("ghwebdone:" + in.FlowID); ok {
+	if v, ok := a.states.Load("ghwebdone:" + flowID); ok {
 		if done, ok := v.(ghWebDone); ok && done.userID == u.ID {
 			jsonResponse(w, http.StatusOK, map[string]string{"state": "connected", "login": done.login})
 			return
 		}
 	}
-	if v, ok := a.states.Load("ghweb:" + in.FlowID); ok {
+	if v, ok := a.states.Load("ghweb:" + flowID); ok {
 		if flow, ok := v.(ghWebFlow); ok && flow.userID == u.ID && time.Now().Before(flow.expires) {
 			jsonResponse(w, http.StatusAccepted, map[string]string{"state": "pending"})
 			return
