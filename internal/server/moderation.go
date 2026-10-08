@@ -29,7 +29,41 @@ func (a *application) moderateText(ctx context.Context, text string) ModerationR
 		return ModerationResult{Action: "pass", Reason: "空内容", Model: "built-in"}
 	}
 
-	apiKey := strings.TrimSpace(os.Getenv("MODERATION_API_KEY"))
+	apiKey := ""
+	apiURL := ""
+	model := ""
+	customPrompt := ""
+	enabled := true
+
+	// 1. Try reading from server_settings database table
+	var rawSettings []byte
+	if err := a.db.Pool.QueryRow(ctx, `SELECT value FROM server_settings WHERE key='ai_moderation'`).Scan(&rawSettings); err == nil && len(rawSettings) > 0 {
+		var cfg struct {
+			Enabled      *bool  `json:"enabled"`
+			APIKey       string `json:"api_key"`
+			APIURL       string `json:"api_url"`
+			Model        string `json:"model"`
+			SystemPrompt string `json:"system_prompt"`
+		}
+		if json.Unmarshal(rawSettings, &cfg) == nil {
+			if cfg.Enabled != nil && !*cfg.Enabled {
+				enabled = false
+			}
+			apiKey = strings.TrimSpace(cfg.APIKey)
+			apiURL = strings.TrimSpace(cfg.APIURL)
+			model = strings.TrimSpace(cfg.Model)
+			customPrompt = strings.TrimSpace(cfg.SystemPrompt)
+		}
+	}
+
+	if !enabled {
+		return checkBuiltinRules(trimmed)
+	}
+
+	// 2. Fall back to environment variables
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("MODERATION_API_KEY"))
+	}
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
 	}
@@ -37,21 +71,26 @@ func (a *application) moderateText(ctx context.Context, text string) ModerationR
 		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	}
 
-	// Fallback to built-in rule checks if no AI key configured
 	if apiKey == "" {
 		return checkBuiltinRules(trimmed)
 	}
 
-	apiURL := strings.TrimSpace(os.Getenv("MODERATION_API_URL"))
+	if apiURL == "" {
+		apiURL = strings.TrimSpace(os.Getenv("MODERATION_API_URL"))
+	}
 	if apiURL == "" {
 		apiURL = "https://api.deepseek.com/chat/completions"
 	}
-	model := strings.TrimSpace(os.Getenv("MODERATION_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("MODERATION_MODEL"))
+	}
 	if model == "" {
 		model = "deepseek-v4-flash"
 	}
 
-	systemPrompt := `你是一个专业的内容安全审核员，请对用户评论进行审查
+	systemPrompt := customPrompt
+	if systemPrompt == "" {
+		systemPrompt = `你是一个专业的内容安全审核员，请对用户评论进行审查
 判断内容是否存在：政治敏感、违法暴恐、色情低俗、恶意辱骂人身攻击、垃圾引流欺诈广告
 你必须严格输出且仅输出一个合法的 JSON 对象，格式如下：
 {"action": "pass" | "flag" | "block", "reason": "审核结论说明", "categories": ["违规类型标签"]}
@@ -59,6 +98,7 @@ action 规则：
 - pass: 正常言论、健康讨论、客观批评或赞美
 - flag: 轻微争议、疑似擦边或需要人工复核
 - block: 严重违规、明显人身攻击污言秽语、政治敏感、广告骚扰欺诈`
+	}
 
 	reqBody, err := json.Marshal(map[string]any{
 		"model": model,

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,11 +52,117 @@ func (a *application) adminReviews(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]any{"items": items})
 }
 
-func (a *application) adminResources(w http.ResponseWriter, r *http.Request) {
-	owner, _ := splitGiteaRepo(a.cfg.Gitea.CatalogRepo)
-	if owner == "" {
-		owner = "OronBoxBot"
+type catalogCacheEntry struct {
+	items     []map[string]any
+	itemsByID map[string]map[string]any
+	updatedAt time.Time
+}
+
+var (
+	adminCatalogMu    sync.RWMutex
+	adminCatalogCache catalogCacheEntry
+)
+
+func (a *application) loadCentralCatalog(r *http.Request) ([]map[string]any, map[string]map[string]any, error) {
+	adminCatalogMu.RLock()
+	if time.Since(adminCatalogCache.updatedAt) < 15*time.Second && len(adminCatalogCache.items) > 0 {
+		items := adminCatalogCache.items
+		byID := adminCatalogCache.itemsByID
+		adminCatalogMu.RUnlock()
+		return items, byID, nil
 	}
+	adminCatalogMu.RUnlock()
+
+	owner, catalog := splitGiteaRepo(a.cfg.Gitea.CatalogRepo)
+	if owner == "" || catalog == "" {
+		owner = "OronBoxCommunity"
+		catalog = "OronBox-Repo"
+	}
+
+	client := syndication.GiteaClient{BaseURL: a.cfg.Gitea.APIURL, Token: a.cfg.Gitea.ClientSecret}
+	indexBytes, err := client.ReadFile(r.Context(), owner, catalog, "index.csv", "main")
+	if err != nil {
+		adminCatalogMu.RLock()
+		if len(adminCatalogCache.items) > 0 {
+			items := adminCatalogCache.items
+			byID := adminCatalogCache.itemsByID
+			adminCatalogMu.RUnlock()
+			return items, byID, nil
+		}
+		adminCatalogMu.RUnlock()
+		return nil, nil, fmt.Errorf("read central index.csv: %w", err)
+	}
+
+	csvReader := csv.NewReader(strings.NewReader(string(indexBytes)))
+	csvReader.FieldsPerRecord = -1
+	records, err := csvReader.ReadAll()
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse central index.csv: %w", err)
+	}
+
+	if len(records) <= 1 {
+		return nil, nil, nil
+	}
+
+	headerMap := make(map[string]int)
+	for i, col := range records[0] {
+		headerMap[strings.TrimSpace(col)] = i
+	}
+
+	items := make([]map[string]any, 0, len(records)-1)
+	byID := make(map[string]map[string]any, len(records)-1)
+
+	getCol := func(row []string, col string) string {
+		idx, ok := headerMap[col]
+		if !ok || idx >= len(row) {
+			return ""
+		}
+		return strings.TrimSpace(row[idx])
+	}
+
+	for _, row := range records[1:] {
+		if len(row) == 0 {
+			continue
+		}
+		id := getCol(row, "id")
+		if id == "" || id == "<placeholder>" {
+			continue
+		}
+
+		item := map[string]any{
+			"id":               id,
+			"name":             getCol(row, "name"),
+			"restype":          getCol(row, "restype"),
+			"type":             getCol(row, "restype"),
+			"author":           getCol(row, "author"),
+			"repo":             getCol(row, "repo"),
+			"repo_commit_hash": getCol(row, "repo_commit_hash"),
+			"icon":             getCol(row, "icon"),
+			"cover":            getCol(row, "cover"),
+			"tags":             getCol(row, "tags"),
+			"device_vendors":   getCol(row, "device_vendors"),
+			"devices":          getCol(row, "devices"),
+			"paid_type":        getCol(row, "paid_type"),
+			"status":           "published",
+		}
+		items = append(items, item)
+		byID[id] = item
+	}
+
+	adminCatalogMu.Lock()
+	adminCatalogCache = catalogCacheEntry{
+		items:     items,
+		itemsByID: byID,
+		updatedAt: time.Now(),
+	}
+	adminCatalogMu.Unlock()
+
+	return items, byID, nil
+}
+
+func (a *application) adminResources(w http.ResponseWriter, r *http.Request) {
+	catalogItems, _, _ := a.loadCentralCatalog(r)
+
 	rows, err := a.db.Pool.Query(r.Context(), `
 		SELECT
 			ri.resource_id,
@@ -72,27 +180,187 @@ func (a *application) adminResources(w http.ResponseWriter, r *http.Request) {
 		LIMIT 200
 	`)
 	if err != nil {
+		if len(catalogItems) > 0 {
+			jsonResponse(w, 200, map[string]any{"items": catalogItems})
+			return
+		}
 		jsonError(w, 500, "resources_failed", err.Error(), nil)
 		return
 	}
 	defer rows.Close()
-	items := []any{}
+
+	type dbRes struct {
+		id, title, restype, author, status string
+		updated                            time.Time
+	}
+	dbMap := make(map[string]dbRes)
 	for rows.Next() {
-		var id, title, restype, author, status string
-		var updated time.Time
-		if rows.Scan(&id, &title, &restype, &author, &status, &updated) == nil {
-			items = append(items, map[string]any{
-				"id":         id,
-				"name":       title,
-				"type":       restype,
-				"author":     author,
-				"repo":       owner + "/oronbox-resource-" + id,
-				"status":     status,
-				"updated_at": updated.Format(time.RFC3339),
-			})
+		var d dbRes
+		if rows.Scan(&d.id, &d.title, &d.restype, &d.author, &d.status, &d.updated) == nil {
+			dbMap[d.id] = d
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"items": items})
+
+	result := make([]map[string]any, 0, len(catalogItems)+len(dbMap))
+	seen := make(map[string]bool)
+
+	for _, item := range catalogItems {
+		id, _ := item["id"].(string)
+		seen[id] = true
+		entry := make(map[string]any, len(item)+2)
+		for k, v := range item {
+			entry[k] = v
+		}
+		if dbItem, ok := dbMap[id]; ok {
+			if dbItem.status != "" {
+				entry["status"] = dbItem.status
+			}
+			if dbItem.restype != "" {
+				entry["restype"] = dbItem.restype
+				entry["type"] = dbItem.restype
+			}
+			if dbItem.title != "" {
+				entry["name"] = dbItem.title
+			}
+			if !dbItem.updated.IsZero() {
+				entry["updated_at"] = dbItem.updated.Format(time.RFC3339)
+			}
+		}
+		result = append(result, entry)
+	}
+
+	for id, dbItem := range dbMap {
+		if seen[id] {
+			continue
+		}
+		repoPath := "OronBoxBot/oronbox-resource-" + id
+		result = append(result, map[string]any{
+			"id":         id,
+			"name":       dbItem.title,
+			"type":       dbItem.restype,
+			"restype":    dbItem.restype,
+			"author":     dbItem.author,
+			"repo":       repoPath,
+			"status":     dbItem.status,
+			"updated_at": dbItem.updated.Format(time.RFC3339),
+		})
+	}
+
+	jsonResponse(w, 200, map[string]any{"items": result})
+}
+
+func (a *application) adminResourceDetail(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 {
+		jsonError(w, 400, "invalid_id", "resource id is required", nil)
+		return
+	}
+	resourceID := parts[3]
+
+	_, catalogByID, _ := a.loadCentralCatalog(r)
+	catItem := catalogByID[resourceID]
+
+	var title, restype, status, author string
+	var updatedAt time.Time
+	_ = a.db.Pool.QueryRow(r.Context(), `
+		SELECT
+			COALESCE(NULLIF(ri.title, ''), ri.resource_id) AS title,
+			ri.restype,
+			COALESCE(u.username, '') AS author,
+			COALESCE(s.status, 'published') AS status,
+			ri.updated_at
+		FROM resource_interactions ri
+		LEFT JOIN users u ON u.id = ri.owner_id
+		LEFT JOIN LATERAL (
+			SELECT status FROM resource_submissions WHERE resource_id = ri.resource_id ORDER BY updated_at DESC LIMIT 1
+		) s ON true
+		WHERE ri.resource_id = $1
+		LIMIT 1
+	`, resourceID).Scan(&title, &restype, &author, &status, &updatedAt)
+
+	res := map[string]any{
+		"id":         resourceID,
+		"name":       title,
+		"restype":    restype,
+		"type":       restype,
+		"status":     status,
+		"author":     author,
+		"updated_at": "",
+	}
+	if !updatedAt.IsZero() {
+		res["updated_at"] = updatedAt.Format(time.RFC3339)
+	}
+
+	if catItem != nil {
+		for k, v := range catItem {
+			if _, exists := res[k]; !exists || res[k] == "" {
+				res[k] = v
+			}
+		}
+		if res["name"] == "" {
+			res["name"] = catItem["name"]
+		}
+		if res["restype"] == "" {
+			res["restype"] = catItem["restype"]
+			res["type"] = catItem["restype"]
+		}
+		if res["author"] == "" {
+			res["author"] = catItem["author"]
+		}
+		if res["repo"] == "" {
+			res["repo"] = catItem["repo"]
+		}
+	}
+
+	if res["name"] == "" {
+		res["name"] = resourceID
+	}
+	if res["status"] == "" {
+		res["status"] = "published"
+	}
+	if res["restype"] == "" {
+		res["restype"] = "quick_app"
+		res["type"] = "quick_app"
+	}
+
+	repoOwner, repoName := "OronBoxBot", "oronbox-resource-"+resourceID
+	if repoStr, ok := res["repo"].(string); ok && repoStr != "" {
+		if parts := strings.Split(repoStr, "/"); len(parts) == 2 {
+			repoOwner = parts[0]
+			repoName = parts[1]
+		}
+	}
+
+	if a.cfg.Gitea.APIURL != "" {
+		client := syndication.GiteaClient{BaseURL: a.cfg.Gitea.APIURL, Token: a.cfg.Gitea.ClientSecret}
+		if rawManifest, err := client.ReadFile(r.Context(), repoOwner, repoName, "manifest.json", "main"); err == nil {
+			var m syndication.Manifest
+			if json.Unmarshal(rawManifest, &m) == nil {
+				res["tagline"] = m.Item.Tagline
+				res["description"] = m.Item.Description
+				res["preview"] = m.Item.Preview
+				if m.Item.Icon != "" {
+					res["icon"] = m.Item.Icon
+				}
+				if m.Item.Cover != "" {
+					res["cover"] = m.Item.Cover
+				}
+				if len(m.Item.Author) > 0 {
+					var names []string
+					for _, auth := range m.Item.Author {
+						if auth.Name != "" {
+							names = append(names, auth.Name)
+						}
+					}
+					if len(names) > 0 {
+						res["author"] = strings.Join(names, ";")
+					}
+				}
+			}
+		}
+	}
+
+	jsonResponse(w, 200, res)
 }
 
 func (a *application) adminResourceUpdate(w http.ResponseWriter, r *http.Request) {
@@ -103,31 +371,55 @@ func (a *application) adminResourceUpdate(w http.ResponseWriter, r *http.Request
 	}
 	resourceID := parts[3]
 	var in struct {
-		Title   string `json:"title"`
-		Restype string `json:"restype"`
-		Status  string `json:"status"`
+		Name          string `json:"name"`
+		Title         string `json:"title"`
+		Restype       string `json:"restype"`
+		Status        string `json:"status"`
+		Author        string `json:"author"`
+		Tags          string `json:"tags"`
+		PaidType      string `json:"paid_type"`
+		Tagline       string `json:"tagline"`
+		Description   string `json:"description"`
+		Devices       string `json:"devices"`
+		DeviceVendors string `json:"device_vendors"`
 	}
 	if !readJSON(w, r, &in) {
 		return
 	}
+
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = strings.TrimSpace(in.Title)
+	}
+	restype := strings.TrimSpace(in.Restype)
+	status := strings.TrimSpace(in.Status)
+
 	_, err := a.db.Pool.Exec(r.Context(), `
-		UPDATE resource_interactions 
-		SET title = CASE WHEN $1 <> '' THEN $1 ELSE title END,
-		    restype = CASE WHEN $2 <> '' THEN $2 ELSE restype END,
+		INSERT INTO resource_interactions (resource_id, title, restype, owner_id, updated_at)
+		VALUES ($1, $2, CASE WHEN $3 <> '' THEN $3 ELSE 'quick_app' END, (SELECT id FROM users ORDER BY created_at ASC LIMIT 1), now())
+		ON CONFLICT (resource_id) DO UPDATE
+		SET title = CASE WHEN $2 <> '' THEN $2 ELSE resource_interactions.title END,
+		    restype = CASE WHEN $3 <> '' THEN $3 ELSE resource_interactions.restype END,
 		    updated_at = now()
-		WHERE resource_id = $3
-	`, in.Title, in.Restype, resourceID)
+	`, resourceID, name, restype)
 	if err != nil {
 		jsonError(w, 500, "resource_update_failed", err.Error(), nil)
 		return
 	}
-	if in.Status != "" {
+
+	if status != "" {
 		_, _ = a.db.Pool.Exec(r.Context(), `
 			UPDATE resource_submissions
 			SET status = $1, updated_at = now()
-			WHERE id = (SELECT id FROM resource_submissions WHERE resource_id = $2 ORDER BY updated_at DESC LIMIT 1)
-		`, in.Status, resourceID)
+			WHERE resource_id = $2
+		`, status, resourceID)
 	}
+
+	// Invalidate catalog cache so next request fetches fresh data
+	adminCatalogMu.Lock()
+	adminCatalogCache.updatedAt = time.Time{}
+	adminCatalogMu.Unlock()
+
 	jsonResponse(w, 200, map[string]any{"status": "updated"})
 }
 
@@ -345,17 +637,20 @@ func (a *application) adminCommentsBulk(w http.ResponseWriter, r *http.Request) 
 func (a *application) adminUsers(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) == 4 {
+		target := parts[3]
 		var id, username, avatar, role string
 		var uid int64
 		var banned bool
 		var created time.Time
 		var coinBalance int64
-		if err := a.db.Pool.QueryRow(r.Context(), `
+		err := a.db.Pool.QueryRow(r.Context(), `
 			SELECT u.id, u.bandbbs_uid, u.username, COALESCE(u.avatar_url,''), u.role, u.banned, u.created_at, COALESCE(c.balance, 0)
 			FROM users u
 			LEFT JOIN user_coin_accounts c ON c.user_id = u.id
-			WHERE u.id=$1
-		`, parts[3]).Scan(&id, &uid, &username, &avatar, &role, &banned, &created, &coinBalance); err != nil {
+			WHERE u.id=$1 OR (CASE WHEN $1 ~ '^[0-9]+$' THEN u.bandbbs_uid=$1::bigint ELSE false END)
+			LIMIT 1
+		`, target).Scan(&id, &uid, &username, &avatar, &role, &banned, &created, &coinBalance)
+		if err != nil {
 			jsonError(w, 404, "user_not_found", "user not found", nil)
 			return
 		}
@@ -370,13 +665,47 @@ func (a *application) adminUsers(w http.ResponseWriter, r *http.Request) {
 	if perPage < 1 || perPage > 200 {
 		perPage = 50
 	}
-	rows, err := a.db.Pool.Query(r.Context(), `
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	roleFilter := strings.TrimSpace(r.URL.Query().Get("role"))
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+
+	whereClauses := []string{"1=1"}
+	args := []any{}
+	argIdx := 1
+
+	if q != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("(u.username ILIKE $%d OR (CASE WHEN $%d ~ '^[0-9]+$' THEN u.bandbbs_uid=$%d::bigint ELSE false END))", argIdx, argIdx, argIdx))
+		args = append(args, "%"+q+"%")
+		argIdx++
+	}
+	if roleFilter != "" && roleFilter != "all" {
+		whereClauses = append(whereClauses, fmt.Sprintf("u.role=$%d", argIdx))
+		args = append(args, roleFilter)
+		argIdx++
+	}
+	if statusFilter == "banned" {
+		whereClauses = append(whereClauses, "u.banned = true")
+	} else if statusFilter == "normal" {
+		whereClauses = append(whereClauses, "u.banned = false")
+	}
+
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	var totalCount int
+	countQuery := "SELECT count(*) FROM users u WHERE " + whereSQL
+	_ = a.db.Pool.QueryRow(r.Context(), countQuery, args...).Scan(&totalCount)
+
+	query := fmt.Sprintf(`
 		SELECT u.id, u.bandbbs_uid, u.username, COALESCE(u.avatar_url,''), u.role, u.banned, u.created_at, COALESCE(c.balance, 0)
 		FROM users u
 		LEFT JOIN user_coin_accounts c ON c.user_id = u.id
+		WHERE %s
 		ORDER BY u.created_at DESC
-		LIMIT $1 OFFSET $2
-	`, perPage, (page-1)*perPage)
+		LIMIT $%d OFFSET $%d
+	`, whereSQL, argIdx, argIdx+1)
+	args = append(args, perPage, (page-1)*perPage)
+
+	rows, err := a.db.Pool.Query(r.Context(), query, args...)
 	if err != nil {
 		jsonError(w, 500, "users_failed", err.Error(), nil)
 		return
@@ -393,7 +722,7 @@ func (a *application) adminUsers(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"id": id, "bandbbs_uid": uid, "username": username, "avatar_url": avatar, "role": role, "banned": banned, "coins": coinBalance, "created_at": created})
 		}
 	}
-	jsonResponse(w, 200, map[string]any{"items": items, "page": page, "per_page": perPage})
+	jsonResponse(w, 200, map[string]any{"items": items, "total": totalCount, "page": page, "per_page": perPage})
 }
 
 func (a *application) adminTickets(w http.ResponseWriter, r *http.Request) {
@@ -736,6 +1065,116 @@ func (a *application) adminBlogMutation(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		jsonResponse(w, 200, map[string]any{"status": "updated"})
+		return
+	}
+
+	jsonError(w, 405, "method_not_allowed", "method not allowed", nil)
+}
+
+func (a *application) adminModerationTemplates(w http.ResponseWriter, r *http.Request) {
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	query := `SELECT id, scope, decision, title, body, position, enabled FROM moderation_reason_templates`
+	args := []any{}
+	if scope != "" && scope != "all" {
+		query += ` WHERE scope = $1`
+		args = append(args, scope)
+	}
+	query += ` ORDER BY position ASC, title ASC`
+
+	rows, err := a.db.Pool.Query(r.Context(), query, args...)
+	if err != nil {
+		jsonError(w, 500, "templates_failed", err.Error(), nil)
+		return
+	}
+	defer rows.Close()
+
+	items := []any{}
+	for rows.Next() {
+		var id, sc, dec, title, body string
+		var pos int
+		var enabled bool
+		if rows.Scan(&id, &sc, &dec, &title, &body, &pos, &enabled) == nil {
+			items = append(items, map[string]any{
+				"id":       id,
+				"scope":    sc,
+				"decision": dec,
+				"title":    title,
+				"body":     body,
+				"position": pos,
+				"enabled":  enabled,
+			})
+		}
+	}
+	jsonResponse(w, 200, map[string]any{"items": items})
+}
+
+func (a *application) adminModerationTemplateMutation(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.Method == "DELETE" {
+		if len(parts) < 4 {
+			jsonError(w, 400, "id_required", "template id required", nil)
+			return
+		}
+		templateID := parts[3]
+		_, err := a.db.Pool.Exec(r.Context(), `DELETE FROM moderation_reason_templates WHERE id=$1`, templateID)
+		if err != nil {
+			jsonError(w, 500, "template_delete_failed", err.Error(), nil)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"ok": true})
+		return
+	}
+
+	if r.Method == "POST" {
+		var in struct {
+			ID       string `json:"id"`
+			Scope    string `json:"scope"`
+			Decision string `json:"decision"`
+			Title    string `json:"title"`
+			Body     string `json:"body"`
+			Position int    `json:"position"`
+			Enabled  *bool  `json:"enabled"`
+		}
+		if !readJSON(w, r, &in) {
+			return
+		}
+		if in.Title == "" || in.Body == "" {
+			jsonError(w, 400, "invalid_payload", "title and body are required", nil)
+			return
+		}
+		enabled := true
+		if in.Enabled != nil {
+			enabled = *in.Enabled
+		}
+		if in.Scope == "" {
+			in.Scope = "review"
+		}
+
+		if in.ID != "" {
+			_, err := a.db.Pool.Exec(r.Context(), `
+				UPDATE moderation_reason_templates
+				SET scope=$1, decision=$2, title=$3, body=$4, position=$5, enabled=$6
+				WHERE id=$7
+			`, in.Scope, in.Decision, in.Title, in.Body, in.Position, enabled, in.ID)
+			if err != nil {
+				jsonError(w, 500, "template_update_failed", err.Error(), nil)
+				return
+			}
+			jsonResponse(w, 200, map[string]any{"ok": true, "id": in.ID})
+			return
+		}
+
+		var newID string
+		err := a.db.Pool.QueryRow(r.Context(), `
+			INSERT INTO moderation_reason_templates(scope, decision, title, body, position, enabled)
+			VALUES($1, $2, $3, $4, $5, $6)
+			RETURNING id
+		`, in.Scope, in.Decision, in.Title, in.Body, in.Position, enabled).Scan(&newID)
+		if err != nil {
+			jsonError(w, 500, "template_create_failed", err.Error(), nil)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"ok": true, "id": newID})
 		return
 	}
 
