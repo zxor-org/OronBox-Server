@@ -316,3 +316,30 @@ func TestCodebaseSQLColumnConsistency(t *testing.T) {
 		t.Fatalf("walk failed: %v", err)
 	}
 }
+
+// TestResourceRevisionsDownloadsKeyContract asserts that downloads JSONB key accesses
+// across the codebase use blob_sha256 as required by the schema and specs.
+func TestResourceRevisionsDownloadsKeyContract(t *testing.T) {
+	root := ".."
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		code := string(content)
+		for _, sql := range extractSQLStrings(code) {
+			if strings.Contains(sql, "resource_revisions") && strings.Contains(sql, "downloads") {
+				if strings.Contains(sql, "value->>'sha256'") && !strings.Contains(sql, "blob_sha256") {
+					t.Errorf("file %s accesses downloads using obsolete 'sha256' key without 'blob_sha256'", path)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk failed: %v", err)
+	}
+}

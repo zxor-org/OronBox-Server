@@ -121,11 +121,11 @@ func (a *application) runCoordinator(ctx context.Context) {
 				FROM resources 
 				WHERE jsonb_typeof(preview_shas) = 'array'
 				UNION ALL
-				SELECT value->>'sha256' AS sha 
+				SELECT COALESCE(value->>'blob_sha256', value->>'sha256') AS sha 
 				FROM resource_revisions, jsonb_each(downloads) 
 				WHERE jsonb_typeof(downloads) = 'object' 
-				  AND value->>'sha256' IS NOT NULL 
-				  AND length(value->>'sha256') = 64
+				  AND COALESCE(value->>'blob_sha256', value->>'sha256') IS NOT NULL 
+				  AND length(COALESCE(value->>'blob_sha256', value->>'sha256')) = 64
 				UNION ALL
 				SELECT icon_sha256 AS sha FROM resource_collection_revisions WHERE icon_sha256 <> ''
 				UNION ALL
