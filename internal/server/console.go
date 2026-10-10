@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zxor-org/OronBox-Server/internal/httputil"
 	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
@@ -245,7 +246,7 @@ func (a *application) consoleSyncPost(w http.ResponseWriter, r *http.Request) {
 	globalConsoleState.mu.RLock()
 	if globalConsoleState.Syncing {
 		globalConsoleState.mu.RUnlock()
-		jsonResponse(w, http.StatusOK, consoleSyncResult{
+		httputil.JSON(w, http.StatusOK, consoleSyncResult{
 			Synced:  false,
 			Syncing: true,
 			Message: "sync_already_in_progress",
@@ -260,10 +261,10 @@ func (a *application) consoleSyncPost(w http.ResponseWriter, r *http.Request) {
 
 	result, err := a.syncConsole(syncCtx)
 	if err != nil {
-		jsonError(w, http.StatusBadGateway, "console_sync_failed", err.Error(), nil)
+		httputil.Error(w, http.StatusBadGateway, "console_sync_failed", err.Error())
 		return
 	}
-	jsonResponse(w, http.StatusOK, result)
+	httputil.JSON(w, http.StatusOK, result)
 }
 
 func (a *application) consoleStatusGet(w http.ResponseWriter, r *http.Request) {
@@ -316,7 +317,7 @@ func (a *application) consoleStatusGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	jsonResponse(w, http.StatusOK, map[string]any{
+	httputil.JSON(w, http.StatusOK, map[string]any{
 		"installed":  installed,
 		"syncing":    syncing,
 		"has_update": hasUpdate,

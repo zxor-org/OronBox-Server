@@ -7,7 +7,18 @@ import (
 )
 
 func TestSchemaDefinesAllDynamicTables(t *testing.T) {
-	for _, name := range []string{"users", "oauth_states", "oauth_events", "oauth_grants", "login_tickets", "sessions", "admin_sessions", "github_grants", "resource_interactions", "resource_comments", "resource_coin_votes", "resource_submissions", "resource_collaborators", "publications", "publication_attempts", "external_bindings", "review_cases", "review_case_events", "review_appeals", "moderation_reason_templates", "user_messages", "user_coin_accounts", "daily_coin_checkins", "coin_ledger", "feedback_tickets", "feedback_replies", "feedback_internal_notes", "feedback_status_history", "app_releases", "download_events", "audit_logs", "server_settings", "plugins"} {
+	tables := []string{
+		"users", "oauth_states", "oauth_events", "oauth_grants", "login_tickets", "sessions", "admin_sessions", "github_grants",
+		"resources", "resource_ratings", "resource_collections", "resource_collection_revisions", "tags", "resource_comments", "resource_coin_votes",
+		"resource_revisions", "resource_collaborators", "publications", "publication_attempts", "external_bindings",
+		"review_cases", "review_case_events", "review_appeals", "moderation_reason_templates",
+		"user_messages",
+		"user_coin_accounts", "daily_coin_checkins", "coin_ledger",
+		"feedback_tickets", "feedback_replies", "feedback_internal_notes", "feedback_status_history",
+		"plugins", "plugin_versions", "app_releases", "download_events", "audit_logs", "server_settings",
+		"blobs", "blob_replicas",
+	}
+	for _, name := range tables {
 		if !strings.Contains(SchemaSQL, "CREATE TABLE IF NOT EXISTS "+name+" ") {
 			t.Errorf("missing table %s", name)
 		}

@@ -10,8 +10,18 @@ import (
 	"time"
 )
 
+type R2Config struct {
+	AccountID       string
+	AccessKeyID     string
+	SecretAccessKey string
+	BucketName      string
+	PublicURL       string
+}
+
 type Config struct {
 	Addr, PublicURL, DatabaseURL, SessionSecret, TokenEncryptionKey string
+	BaseURL, BlobStorageDir                                         string
+	R2                                                              R2Config
 	GitHubReleaseToken                                              string
 	GiteaPublicURL                                                  string
 	AttestationMasterKey                                            []byte
@@ -37,8 +47,17 @@ type AstroBoxConfig struct{ RepoOwner, RepoName, RepoBranch, CatalogPath string 
 
 func Load() Config {
 	loadDotEnv(".env")
+	baseURL := env("BASE_URL", env("PUBLIC_URL", "http://localhost:6767"))
 	return Config{
-		Addr: env("ADDR", ":6767"), PublicURL: strings.TrimRight(env("PUBLIC_URL", "http://localhost:6767"), "/"), DatabaseURL: env("DATABASE_URL", ""),
+		Addr: env("ADDR", ":6767"), PublicURL: strings.TrimRight(baseURL, "/"), BaseURL: strings.TrimRight(baseURL, "/"), DatabaseURL: env("DATABASE_URL", ""),
+		BlobStorageDir: env("BLOB_STORAGE_DIR", "/var/lib/oronbox/blobs"),
+		R2: R2Config{
+			AccountID:       env("R2_ACCOUNT_ID", ""),
+			AccessKeyID:     env("R2_ACCESS_KEY_ID", ""),
+			SecretAccessKey: env("R2_SECRET_ACCESS_KEY", ""),
+			BucketName:      env("R2_BUCKET_NAME", ""),
+			PublicURL:       strings.TrimRight(env("R2_PUBLIC_URL", ""), "/"),
+		},
 		SessionSecret: env("SESSION_SECRET", ""), TokenEncryptionKey: env("TOKEN_ENCRYPTION_KEY", ""), GitHubReleaseToken: env("GITHUB_TOKEN", ""), GiteaPublicURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"),
 		AttestationMasterKey: decodeHexKey(env("OB_AUTH_MASTER", "")), ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true), ClientAttestationSkew: durationEnv("CLIENT_ATTESTATION_SKEW_SEC", 300*time.Second),
 		ConsoleDir: env("CONSOLE_DIR", "console"),
