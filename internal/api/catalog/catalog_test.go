@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
 )
 
@@ -90,5 +93,51 @@ func TestDownloadDeviceRedirectInvalidPath(t *testing.T) {
 	handler.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for empty id/device, got %d", rec2.Code)
+	}
+}
+
+func TestR2ClientSigV4Signing(t *testing.T) {
+	client := NewR2Client(config.R2Config{
+		AccountID:       "acc123",
+		AccessKeyID:     "key123",
+		SecretAccessKey: "secret123",
+		BucketName:      "test-bucket",
+		PublicURL:       "https://pub.r2.dev",
+	})
+
+	if !client.IsConfigured() {
+		t.Fatal("expected client to be configured")
+	}
+
+	req, _ := http.NewRequest("PUT", "https://acc123.r2.cloudflarestorage.com/test-bucket/ab/cd/testfile", nil)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	payloadHash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+	client.signSigV4(req, "acc123.r2.cloudflarestorage.com", "/test-bucket/ab/cd/testfile", "PUT", payloadHash, now)
+
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=key123/20261010/auto/s3/aws4_request") {
+		t.Errorf("unexpected authorization header: %s", auth)
+	}
+	if !strings.Contains(auth, "SignedHeaders=host;x-amz-content-sha256;x-amz-date") {
+		t.Errorf("expected SignedHeaders in auth header: %s", auth)
+	}
+	if !strings.Contains(auth, "Signature=") {
+		t.Errorf("expected Signature in auth header: %s", auth)
+	}
+
+	if req.Header.Get("x-amz-date") != "20261010T120000Z" {
+		t.Errorf("unexpected amz date: %s", req.Header.Get("x-amz-date"))
+	}
+	if req.Header.Get("x-amz-content-sha256") != payloadHash {
+		t.Errorf("unexpected content sha256: %s", req.Header.Get("x-amz-content-sha256"))
+	}
+}
+
+func TestEscapeObjectKey(t *testing.T) {
+	key := "ab/cd/foo bar.bin"
+	escaped := escapeObjectKey(key)
+	if escaped != "ab/cd/foo%20bar.bin" {
+		t.Errorf("expected ab/cd/foo%%20bar.bin, got %s", escaped)
 	}
 }

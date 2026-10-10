@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
@@ -125,19 +126,107 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 				query += ` ORDER BY random()`
 			}
 		case "recommendation":
-			// Spec §3.1.1: 综合排序 (冷启动扶持 + 时间衰减 + 投币与下载 + 评分 + 编辑部精选保底)
-			query += ` ORDER BY (
+			// Spec §3.1.1: 动态综合推荐算法 (冷启动扶持 + 时间衰减 + 投币与下载 + 评分 + 标签权重系数 + 精选保底 + 20%受控随机扰动)
+			seedVal := seed
+			if seedVal <= 0 {
+				seedVal = int(time.Now().Unix() / 86400)
+			}
+
+			// Spec §3.1.1 默认推荐因子配置
+			coldStartDays := 14.0
+			coldStartMaxBoost := 45.0
+			timeDecayHalfDays := 45.0
+			timeDecayExponent := 1.2
+			weightCoins := 6.0
+			weightDownloads := 3.0
+			weightRating := 2.0
+			featuredBonus := 20.0
+			jitterRatio := 0.20
+
+			var configJSON []byte
+			_ = s.Pool.QueryRow(r.Context(), `SELECT value FROM server_settings WHERE key = 'recommendation_algorithm_config'`).Scan(&configJSON)
+			if len(configJSON) > 0 {
+				var cfg struct {
+					ColdStartDays     float64 `json:"cold_start_days"`
+					ColdStartMaxBoost float64 `json:"cold_start_max_boost"`
+					TimeDecayHalfDays float64 `json:"time_decay_half_days"`
+					TimeDecayExponent float64 `json:"time_decay_exponent"`
+					WeightCoins       float64 `json:"weight_coins"`
+					WeightDownloads   float64 `json:"weight_downloads"`
+					WeightRating      float64 `json:"weight_rating"`
+					FeaturedBonus     float64 `json:"featured_bonus"`
+					JitterRatio       float64 `json:"jitter_ratio"`
+				}
+				if json.Unmarshal(configJSON, &cfg) == nil {
+					if cfg.ColdStartDays > 0 {
+						coldStartDays = cfg.ColdStartDays
+					}
+					if cfg.ColdStartMaxBoost > 0 {
+						coldStartMaxBoost = cfg.ColdStartMaxBoost
+					}
+					if cfg.TimeDecayHalfDays > 0 {
+						timeDecayHalfDays = cfg.TimeDecayHalfDays
+					}
+					if cfg.TimeDecayExponent > 0 {
+						timeDecayExponent = cfg.TimeDecayExponent
+					}
+					if cfg.WeightCoins > 0 {
+						weightCoins = cfg.WeightCoins
+					}
+					if cfg.WeightDownloads > 0 {
+						weightDownloads = cfg.WeightDownloads
+					}
+					if cfg.WeightRating > 0 {
+						weightRating = cfg.WeightRating
+					}
+					if cfg.FeaturedBonus > 0 {
+						featuredBonus = cfg.FeaturedBonus
+					}
+					if cfg.JitterRatio > 0 {
+						jitterRatio = cfg.JitterRatio
+					}
+				}
+			}
+
+			jitterMod := int(jitterRatio*2000.0) + 1
+			jitterHalf := int(jitterRatio * 1000.0)
+
+			query += fmt.Sprintf(` ORDER BY (
 				(
-					CASE 
-						WHEN GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) <= 3.0 THEN 45.0
-						WHEN GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) <= 14.0 THEN 45.0 * (1.0 - (EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0 - 3.0) / 11.0)
-						ELSE 0.0
-					END
-					+ (6.0 * (LN(r.coin_count + 1) / 0.693147) + 3.0 * (LN(r.download_count + 1) / 2.302585) + 2.0 * r.rating)
-					* POWER(0.5, GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) / 45.0)
+					(
+						CASE 
+							WHEN GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) <= 3.0 THEN %f
+							WHEN GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) <= %f THEN %f * (1.0 - (EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0 - 3.0) / (%f - 3.0))
+							ELSE 0.0
+						END
+						+ (%f * (LN(r.coin_count + 1) / 0.693147) + %f * (LN(r.download_count + 1) / 2.302585) + %f * r.rating)
+						* POWER(0.5, POWER(GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) / %f, %f))
+					)
+					* COALESCE((
+						SELECT MAX(t.coefficient) 
+						FROM tags t 
+						WHERE jsonb_typeof(r.tags) = 'array' 
+						  AND t.name IN (SELECT jsonb_array_elements_text(r.tags)) 
+						  AND t.enabled = true
+					), 1.0)
+					+ CASE WHEN r.curation_grade = 'featured' THEN %f ELSE 0.0 END
 				)
-				+ CASE WHEN r.curation_grade = 'featured' THEN 20.0 ELSE 0.0 END
-			) DESC, r.last_released_at DESC NULLS LAST`
+				* (1.0 + (abs(('x' || substr(md5(r.resource_id || '%d'), 1, 8))::bit(32)::bigint) %%%% %d - %d) / 1000.0)
+			) DESC, r.last_released_at DESC NULLS LAST`,
+				coldStartMaxBoost,
+				coldStartDays,
+				coldStartMaxBoost,
+				coldStartDays,
+				weightCoins,
+				weightDownloads,
+				weightRating,
+				timeDecayHalfDays,
+				timeDecayExponent,
+				featuredBonus,
+				seedVal,
+				jitterMod,
+				jitterHalf,
+			)
 		default:
 			query += ` ORDER BY r.last_released_at DESC NULLS LAST`
 		}

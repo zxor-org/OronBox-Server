@@ -47,6 +47,7 @@ func New(d Dependencies) http.Handler {
 		blobDir = "/var/lib/oronbox/blobs"
 	}
 	r2PublicURL := d.Config.R2.PublicURL
+	r2Client := catalog.NewR2Client(d.Config.R2)
 
 	authSvc := auth.NewService(d.Config, d.Store, app.cipher, &app.states)
 
@@ -98,7 +99,7 @@ func New(d Dependencies) http.Handler {
 	// Spec §3.3: 公开分机型安装包直下 (免构建鉴权)
 	mux.HandleFunc("GET /api/v1/resources/{id}/download/{device}", catalog.HandleDownloadDeviceRedirect(d.Store, baseURL))
 	mux.Handle("GET /api/v1/blobs/", catalog.HandleServeBlob(d.Store, blobDir, r2PublicURL))
-	mux.Handle("POST /api/v1/blobs", app.withAttestation(authRequired(app, catalog.HandleUploadBlob(d.Store, blobDir))))
+	mux.Handle("POST /api/v1/blobs", app.withAttestation(authRequired(app, catalog.HandleUploadBlob(d.Store, blobDir, r2Client))))
 
 	// Spec §3.1 / §3.2 / §3.5 / §3.6: 资源探索与详情 (构建鉴权)
 	mux.Handle("GET /api/v1/resources", app.withAttestation(catalog.HandleGetResources(d.Store, baseURL)))
@@ -141,8 +142,8 @@ func New(d Dependencies) http.Handler {
 	// 4. Client Plugins & Releases
 	mux.Handle("GET /api/v1/plugins", app.withAttestation(catalog.HandleGetPlugins(d.Store)))
 	mux.HandleFunc("GET /api/v1/plugins/{id}/package", catalog.HandleDownloadPluginPackage(d.Store, baseURL))
-	mux.Handle("GET /api/v1/plugins/", app.withAttestation(catalog.HandleGetPluginDetail(d.Store)))
 	mux.Handle("GET /api/v1/app/releases", app.withAttestation(catalog.HandleGetLatestRelease(d.Store)))
+	// Deprecated alias: preserved for backward compatibility
 	mux.Handle("GET /api/v1/releases/latest", app.withAttestation(catalog.HandleGetLatestRelease(d.Store)))
 
 	// 5. User Profile & Messages & Coins (with Attestation)
@@ -199,7 +200,7 @@ func New(d Dependencies) http.Handler {
 		httputil.Error(w, http.StatusNotFound, "not_found", "接口不存在")
 	})))
 
-	// Creator Submissions Compatibility Aliases
+	// Deprecated aliases: preserved for backward compatibility
 	mux.Handle("POST /api/v1/creator/submissions", app.withAttestation(authRequired(app, creator.HandleCreatorSubmit(d.Store))))
 	mux.Handle("GET /api/v1/creator/submissions", app.withAttestation(authRequired(app, creator.HandleCreatorGetSubmissions(d.Store))))
 

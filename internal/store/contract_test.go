@@ -31,7 +31,8 @@ func parseTableColumns() map[string]map[string]bool {
 			upper := strings.ToUpper(line)
 			if strings.HasPrefix(upper, "PRIMARY KEY") ||
 				strings.HasPrefix(upper, "UNIQUE") ||
-				strings.HasPrefix(upper, "CHECK") ||
+				strings.HasPrefix(upper, "CHECK ") ||
+				strings.HasPrefix(upper, "CHECK(") ||
 				strings.HasPrefix(upper, "FOREIGN KEY") ||
 				strings.HasPrefix(upper, "CONSTRAINT") {
 				continue
@@ -185,7 +186,43 @@ func TestCodebaseSQLColumnConsistency(t *testing.T) {
 			t.Errorf("file %s references non-existent rc.id column in resource_collaborators SQL", path)
 		}
 
-		_ = tables
+		// General verification: INSERT INTO <table> (<cols>)
+		reGenericInsert := regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([^)]+)\)`)
+		for _, m := range reGenericInsert.FindAllStringSubmatch(code, -1) {
+			tbl := strings.ToLower(strings.TrimSpace(m[1]))
+			if cols, ok := tables[tbl]; ok {
+				colNames := strings.Split(m[2], ",")
+				for _, c := range colNames {
+					c = strings.ToLower(strings.TrimSpace(c))
+					if c == "" {
+						continue
+					}
+					if !cols[c] {
+						t.Errorf("file %s: table %s does not have column %s in INSERT statement", path, tbl, c)
+					}
+				}
+			}
+		}
+
+		// General verification: UPDATE <table> SET <assignments>
+		reGenericUpdate := regexp.MustCompile(`(?is)UPDATE\s+([a-zA-Z0-9_]+)\s+(?:[a-zA-Z0-9_]+\s+)?SET\s+(.+?)(?:\s+FROM|\s+WHERE|\s+RETURNING|\s*;|$)`)
+		reColAssign := regexp.MustCompile(`(?i)(?:^|,)\s*([a-zA-Z0-9_]+)\s*=`)
+		for _, m := range reGenericUpdate.FindAllStringSubmatch(code, -1) {
+			tbl := strings.ToLower(strings.TrimSpace(m[1]))
+			if cols, ok := tables[tbl]; ok {
+				assignments := m[2]
+				for _, cm := range reColAssign.FindAllStringSubmatch(assignments, -1) {
+					c := strings.ToLower(strings.TrimSpace(cm[1]))
+					if c == "" || c == "case" || c == "when" || c == "then" || c == "else" || c == "end" {
+						continue
+					}
+					if !cols[c] {
+						t.Errorf("file %s: table %s does not have column %s in UPDATE statement", path, tbl, c)
+					}
+				}
+			}
+		}
+
 		return nil
 	})
 

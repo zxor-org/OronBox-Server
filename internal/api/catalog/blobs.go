@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -74,7 +75,7 @@ func HandleServeBlob(s *store.Store, baseStorageDir string, r2PublicURL string) 
 }
 
 // HandleUploadBlob implements POST /api/v1/blobs
-func HandleUploadBlob(s *store.Store, baseStorageDir string) http.HandlerFunc {
+func HandleUploadBlob(s *store.Store, baseStorageDir string, r2 *R2Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := httputil.ExtractBearerToken(r)
 		userUID, err := httputil.AuthenticateUser(r.Context(), s, token)
@@ -120,10 +121,11 @@ func HandleUploadBlob(s *store.Store, baseStorageDir string) http.HandlerFunc {
 			_ = copyFile(tempFile.Name(), targetPath)
 		}
 
+		// Initial ref_count is 0 for unattached uploaded blobs; incremented when attached to a revision/plugin/collection
 		_, err = s.Pool.Exec(r.Context(), `
 			INSERT INTO blobs (sha256, size_bytes, media_type, ref_count, created_at)
-			VALUES ($1, $2, $3, 1, now())
-			ON CONFLICT (sha256) DO UPDATE SET ref_count = blobs.ref_count + 1
+			VALUES ($1, $2, $3, 0, now())
+			ON CONFLICT (sha256) DO NOTHING
 		`, sha, size, mtype)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -134,8 +136,46 @@ func HandleUploadBlob(s *store.Store, baseStorageDir string) http.HandlerFunc {
 		_, _ = s.Pool.Exec(r.Context(), `
 			INSERT INTO blob_replicas (blob_sha256, backend, object_key, state, updated_at)
 			VALUES ($1, 'local', $2, 'ready', now())
-			ON CONFLICT (blob_sha256, backend) DO UPDATE SET state = 'ready', updated_at = now()
+			ON CONFLICT (blob_sha256, backend) DO UPDATE SET object_key = $2, state = 'ready', updated_at = now()
 		`, sha, objectKey)
+
+		if r2 != nil && r2.IsConfigured() {
+			_, _ = s.Pool.Exec(r.Context(), `
+				INSERT INTO blob_replicas (blob_sha256, backend, object_key, state, updated_at)
+				VALUES ($1, 'r2', $2, 'pending', now())
+				ON CONFLICT (blob_sha256, backend) DO UPDATE SET object_key = $2, updated_at = now()
+			`, sha, objectKey)
+
+			go func(blobSha, key, mt string, sz int64, filePath string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				f, err := os.Open(filePath)
+				if err != nil {
+					_, _ = s.Pool.Exec(ctx, `
+						UPDATE blob_replicas 
+						SET state = 'failed', error_message = $2, attempts = attempts + 1, updated_at = now()
+						WHERE blob_sha256 = $1 AND backend = 'r2'
+					`, blobSha, err.Error())
+					return
+				}
+				defer f.Close()
+
+				if err := r2.PutObject(ctx, key, mt, f, sz, blobSha); err != nil {
+					_, _ = s.Pool.Exec(ctx, `
+						UPDATE blob_replicas 
+						SET state = 'failed', error_message = $2, attempts = attempts + 1, updated_at = now()
+						WHERE blob_sha256 = $1 AND backend = 'r2'
+					`, blobSha, err.Error())
+					return
+				}
+
+				_, _ = s.Pool.Exec(ctx, `
+					UPDATE blob_replicas 
+					SET state = 'ready', error_message = '', updated_at = now()
+					WHERE blob_sha256 = $1 AND backend = 'r2'
+				`, blobSha)
+			}(sha, objectKey, mtype, size, targetPath)
+		}
 
 		httputil.JSON(w, http.StatusOK, map[string]any{
 			"sha256":     sha,
