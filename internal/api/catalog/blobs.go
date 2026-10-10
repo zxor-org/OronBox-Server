@@ -121,11 +121,11 @@ func HandleUploadBlob(s *store.Store, baseStorageDir string, r2 *R2Client) http.
 			_ = copyFile(tempFile.Name(), targetPath)
 		}
 
-		// Initial ref_count is 0 for unattached uploaded blobs; incremented when attached to a revision/plugin/collection
+		// Uploaded blob starts with ref_count = 1 to guarantee protection until reconciled
 		_, err = s.Pool.Exec(r.Context(), `
 			INSERT INTO blobs (sha256, size_bytes, media_type, ref_count, created_at)
-			VALUES ($1, $2, $3, 0, now())
-			ON CONFLICT (sha256) DO NOTHING
+			VALUES ($1, $2, $3, 1, now())
+			ON CONFLICT (sha256) DO UPDATE SET ref_count = blobs.ref_count + 1
 		`, sha, size, mtype)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
@@ -147,7 +147,7 @@ func HandleUploadBlob(s *store.Store, baseStorageDir string, r2 *R2Client) http.
 			`, sha, objectKey)
 
 			go func(blobSha, key, mt string, sz int64, filePath string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 				defer cancel()
 				f, err := os.Open(filePath)
 				if err != nil {

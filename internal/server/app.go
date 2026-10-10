@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -110,58 +111,46 @@ func (a *application) runCoordinator(ctx context.Context) {
 		}
 
 		// 1. Mark Phase: Reconcile active references across all resource/revision/collection/plugin tables
-		_, _ = a.db.Pool.Exec(ctx, `
-			UPDATE blobs b
-			SET ref_count = sub.cnt
-			FROM (
+		markQuery := `
+			WITH active_refs AS (
+				SELECT icon_sha256 AS sha FROM resources WHERE icon_sha256 <> ''
+				UNION ALL
+				SELECT cover_sha256 AS sha FROM resources WHERE cover_sha256 <> ''
+				UNION ALL
+				SELECT jsonb_array_elements_text(preview_shas) AS sha 
+				FROM resources 
+				WHERE jsonb_typeof(preview_shas) = 'array'
+				UNION ALL
+				SELECT value->>'sha256' AS sha 
+				FROM resource_revisions, jsonb_each(downloads) 
+				WHERE jsonb_typeof(downloads) = 'object' 
+				  AND value->>'sha256' IS NOT NULL 
+				  AND length(value->>'sha256') = 64
+				UNION ALL
+				SELECT icon_sha256 AS sha FROM resource_collection_revisions WHERE icon_sha256 <> ''
+				UNION ALL
+				SELECT cover_sha256 AS sha FROM resource_collection_revisions WHERE cover_sha256 <> ''
+				UNION ALL
+				SELECT package_sha256 AS sha FROM plugin_versions WHERE package_sha256 <> ''
+			),
+			ref_counts AS (
 				SELECT sha, COUNT(*)::int AS cnt
-				FROM (
-					SELECT icon_sha256 AS sha FROM resources WHERE icon_sha256 <> ''
-					UNION ALL
-					SELECT cover_sha256 AS sha FROM resources WHERE cover_sha256 <> ''
-					UNION ALL
-					SELECT icon_sha256 AS sha FROM resource_revisions WHERE icon_sha256 <> ''
-					UNION ALL
-					SELECT cover_sha256 AS sha FROM resource_revisions WHERE cover_sha256 <> ''
-					UNION ALL
-					SELECT icon_sha256 AS sha FROM resource_collections WHERE icon_sha256 <> ''
-					UNION ALL
-					SELECT cover_sha256 AS sha FROM resource_collections WHERE cover_sha256 <> ''
-					UNION ALL
-					SELECT icon_sha256 AS sha FROM resource_collection_revisions WHERE icon_sha256 <> ''
-					UNION ALL
-					SELECT cover_sha256 AS sha FROM resource_collection_revisions WHERE cover_sha256 <> ''
-					UNION ALL
-					SELECT package_sha256 AS sha FROM plugin_versions WHERE package_sha256 <> ''
-				) all_refs
+				FROM active_refs
+				WHERE sha IS NOT NULL AND length(sha) = 64
 				GROUP BY sha
-			) sub
-			WHERE b.sha256 = sub.sha
-		`)
-
-		_, _ = a.db.Pool.Exec(ctx, `
-			UPDATE blobs
-			SET ref_count = 0
-			WHERE sha256 NOT IN (
-				SELECT icon_sha256 FROM resources WHERE icon_sha256 <> ''
-				UNION
-				SELECT cover_sha256 FROM resources WHERE cover_sha256 <> ''
-				UNION
-				SELECT icon_sha256 FROM resource_revisions WHERE icon_sha256 <> ''
-				UNION
-				SELECT cover_sha256 FROM resource_revisions WHERE cover_sha256 <> ''
-				UNION
-				SELECT icon_sha256 FROM resource_collections WHERE icon_sha256 <> ''
-				UNION
-				SELECT cover_sha256 FROM resource_collections WHERE cover_sha256 <> ''
-				UNION
-				SELECT icon_sha256 FROM resource_collection_revisions WHERE icon_sha256 <> ''
-				UNION
-				SELECT cover_sha256 FROM resource_collection_revisions WHERE cover_sha256 <> ''
-				UNION
-				SELECT package_sha256 FROM plugin_versions WHERE package_sha256 <> ''
 			)
-		`)
+			UPDATE blobs b
+			SET ref_count = COALESCE(rc.cnt, 0)
+			FROM (
+				SELECT b2.sha256, rc2.cnt
+				FROM blobs b2
+				LEFT JOIN ref_counts rc2 ON b2.sha256 = rc2.sha
+			) rc
+			WHERE b.sha256 = rc.sha256
+		`
+		if _, err := a.db.Pool.Exec(ctx, markQuery); err != nil {
+			log.Printf("[coordinator] mark ref_count error: %v", err)
+		}
 
 		// 2. Sweep Phase: Find orphaned blobs created > 24 hours ago
 		blobDir := a.cfg.BlobStorageDir
@@ -174,7 +163,9 @@ func (a *application) runCoordinator(ctx context.Context) {
 			WHERE ref_count <= 0 AND created_at < now() - interval '24 hours'
 			RETURNING sha256
 		`)
-		if err == nil {
+		if err != nil {
+			log.Printf("[coordinator] sweep query error: %v", err)
+		} else {
 			var deletedSHAs []string
 			for rows.Next() {
 				var sha string
@@ -206,7 +197,9 @@ func (a *application) runCoordinator(ctx context.Context) {
 				WHERE br.backend = 'r2' AND br.state IN ('pending', 'failed') AND br.attempts < 5
 				LIMIT 20
 			`)
-			if err == nil {
+			if err != nil {
+				log.Printf("[coordinator] r2 sync query error: %v", err)
+			} else {
 				type pendingRep struct {
 					sha   string
 					mtype string

@@ -51,6 +51,28 @@ func parseTableColumns() map[string]map[string]bool {
 	return tableCols
 }
 
+// extractSQLStrings extracts raw SQL query literals from Go source code
+func extractSQLStrings(code string) []string {
+	var sqls []string
+	reRaw := regexp.MustCompile("(?s)`([^`]+)`")
+	for _, m := range reRaw.FindAllStringSubmatch(code, -1) {
+		s := m[1]
+		upper := strings.ToUpper(s)
+		if strings.Contains(upper, "SELECT") || strings.Contains(upper, "UPDATE") || strings.Contains(upper, "INSERT") || strings.Contains(upper, "DELETE") || strings.Contains(upper, "WITH") {
+			sqls = append(sqls, s)
+		}
+	}
+	reQuoted := regexp.MustCompile(`"([^"\\]*(?:\\.[^"\\]*)*)"`)
+	for _, m := range reQuoted.FindAllStringSubmatch(code, -1) {
+		s := m[1]
+		upper := strings.ToUpper(s)
+		if strings.Contains(upper, "SELECT") || strings.Contains(upper, "UPDATE") || strings.Contains(upper, "INSERT") || strings.Contains(upper, "DELETE") || strings.Contains(upper, "WITH") {
+			sqls = append(sqls, s)
+		}
+	}
+	return sqls
+}
+
 func TestSchemaColumnContracts(t *testing.T) {
 	tables := parseTableColumns()
 
@@ -186,38 +208,102 @@ func TestCodebaseSQLColumnConsistency(t *testing.T) {
 			t.Errorf("file %s references non-existent rc.id column in resource_collaborators SQL", path)
 		}
 
-		// General verification: INSERT INTO <table> (<cols>)
-		reGenericInsert := regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([^)]+)\)`)
-		for _, m := range reGenericInsert.FindAllStringSubmatch(code, -1) {
-			tbl := strings.ToLower(strings.TrimSpace(m[1]))
-			if cols, ok := tables[tbl]; ok {
-				colNames := strings.Split(m[2], ",")
-				for _, c := range colNames {
-					c = strings.ToLower(strings.TrimSpace(c))
-					if c == "" {
-						continue
-					}
-					if !cols[c] {
-						t.Errorf("file %s: table %s does not have column %s in INSERT statement", path, tbl, c)
+		// Extract all SQL string literals in this Go file and validate them
+		for _, sqlQuery := range extractSQLStrings(code) {
+			// 1. General verification: INSERT INTO <table> (<cols>)
+			reGenericInsert := regexp.MustCompile(`(?is)INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([^)]+)\)`)
+			for _, m := range reGenericInsert.FindAllStringSubmatch(sqlQuery, -1) {
+				tbl := strings.ToLower(strings.TrimSpace(m[1]))
+				if cols, ok := tables[tbl]; ok {
+					colNames := strings.Split(m[2], ",")
+					for _, c := range colNames {
+						c = strings.ToLower(strings.TrimSpace(c))
+						if c == "" {
+							continue
+						}
+						if !cols[c] {
+							t.Errorf("file %s: table %s does not have column %s in INSERT statement", path, tbl, c)
+						}
 					}
 				}
 			}
-		}
 
-		// General verification: UPDATE <table> SET <assignments>
-		reGenericUpdate := regexp.MustCompile(`(?is)UPDATE\s+([a-zA-Z0-9_]+)\s+(?:[a-zA-Z0-9_]+\s+)?SET\s+(.+?)(?:\s+FROM|\s+WHERE|\s+RETURNING|\s*;|$)`)
-		reColAssign := regexp.MustCompile(`(?i)(?:^|,)\s*([a-zA-Z0-9_]+)\s*=`)
-		for _, m := range reGenericUpdate.FindAllStringSubmatch(code, -1) {
-			tbl := strings.ToLower(strings.TrimSpace(m[1]))
-			if cols, ok := tables[tbl]; ok {
-				assignments := m[2]
-				for _, cm := range reColAssign.FindAllStringSubmatch(assignments, -1) {
-					c := strings.ToLower(strings.TrimSpace(cm[1]))
-					if c == "" || c == "case" || c == "when" || c == "then" || c == "else" || c == "end" {
-						continue
+			// 2. General verification: UPDATE <table> SET <assignments>
+			reGenericUpdate := regexp.MustCompile(`(?is)UPDATE\s+([a-zA-Z0-9_]+)\s+(?:[a-zA-Z0-9_]+\s+)?SET\s+(.+?)(?:\s+FROM|\s+WHERE|\s+RETURNING|\s*;|$)`)
+			reColAssign := regexp.MustCompile(`(?i)(?:^|,)\s*([a-zA-Z0-9_]+)\s*=`)
+			for _, m := range reGenericUpdate.FindAllStringSubmatch(sqlQuery, -1) {
+				tbl := strings.ToLower(strings.TrimSpace(m[1]))
+				if cols, ok := tables[tbl]; ok {
+					assignments := m[2]
+					for _, cm := range reColAssign.FindAllStringSubmatch(assignments, -1) {
+						c := strings.ToLower(strings.TrimSpace(cm[1]))
+						if c == "" || c == "case" || c == "when" || c == "then" || c == "else" || c == "end" {
+							continue
+						}
+						if !cols[c] {
+							t.Errorf("file %s: table %s does not have column %s in UPDATE statement", path, tbl, c)
+						}
 					}
-					if !cols[c] {
-						t.Errorf("file %s: table %s does not have column %s in UPDATE statement", path, tbl, c)
+				}
+			}
+
+			// 3. General verification: alias.column and table.column references in this SQL query
+			reFromJoin := regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+([a-zA-Z0-9_]+)\s+([a-zA-Z0-9_]+)\b`)
+			aliases := make(map[string]string)
+			for _, m := range reFromJoin.FindAllStringSubmatch(sqlQuery, -1) {
+				tbl := strings.ToLower(strings.TrimSpace(m[1]))
+				alias := strings.ToLower(strings.TrimSpace(m[2]))
+				if _, ok := tables[tbl]; ok {
+					if alias != "where" && alias != "on" && alias != "left" && alias != "right" && alias != "inner" && alias != "join" && alias != "order" && alias != "group" && alias != "limit" && alias != "set" {
+						aliases[alias] = tbl
+					}
+				}
+			}
+
+			reDotCol := regexp.MustCompile(`(?i)\b([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\b`)
+			for _, m := range reDotCol.FindAllStringSubmatch(sqlQuery, -1) {
+				prefix := strings.ToLower(strings.TrimSpace(m[1]))
+				col := strings.ToLower(strings.TrimSpace(m[2]))
+				targetTable := ""
+				if tbl, ok := aliases[prefix]; ok {
+					targetTable = tbl
+				} else if _, ok := tables[prefix]; ok {
+					targetTable = prefix
+				}
+
+				if targetTable != "" {
+					if cols, ok := tables[targetTable]; ok {
+						if !cols[col] {
+							t.Errorf("file %s: table %s (prefix %s) does not have column %s in query", path, targetTable, prefix, col)
+						}
+					}
+				}
+			}
+
+			// 4. General verification: SELECT col [AS alias] FROM table [WHERE|...]
+			reSimpleSelect := regexp.MustCompile(`(?is)SELECT\s+([a-zA-Z0-9_,\s]+?)\s+FROM\s+([a-zA-Z0-9_]+)\b(?:\s+(?:WHERE|ORDER|LIMIT|GROUP|HAVING|UNION|;)|$)`)
+			for _, m := range reSimpleSelect.FindAllStringSubmatch(sqlQuery, -1) {
+				tbl := strings.ToLower(strings.TrimSpace(m[2]))
+				if cols, ok := tables[tbl]; ok {
+					rawCols := strings.Split(m[1], ",")
+					for _, raw := range rawCols {
+						raw = strings.TrimSpace(raw)
+						if raw == "" || strings.EqualFold(raw, "count(*)") || strings.EqualFold(raw, "*") {
+							continue
+						}
+						parts := strings.Fields(raw)
+						if len(parts) >= 1 {
+							colName := strings.ToLower(parts[0])
+							if colName == "distinct" && len(parts) >= 2 {
+								colName = strings.ToLower(parts[1])
+							}
+							if colName == "true" || colName == "false" || colName == "null" || colName == "1" || colName == "now()" {
+								continue
+							}
+							if !cols[colName] {
+								t.Errorf("file %s: table %s does not have column %s in SELECT query", path, tbl, colName)
+							}
+						}
 					}
 				}
 			}

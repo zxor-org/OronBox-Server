@@ -24,7 +24,7 @@ type R2Client struct {
 func NewR2Client(cfg config.R2Config) *R2Client {
 	return &R2Client{
 		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 90 * time.Second},
+		httpClient: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
