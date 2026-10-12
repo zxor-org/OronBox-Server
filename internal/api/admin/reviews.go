@@ -54,17 +54,17 @@ func HandleAdminGetReviews(s *store.Store) http.HandlerFunc {
 		                 state, creator_uid, creator_name, reviewer_uid, review_note, created_at
 		          FROM (
 					SELECT 'resource' AS kind, rc.id AS case_id, rr.id AS revision_id, rr.resource_id, rr.name AS title, rr.version,
-					       rr.changelog, rr.downloads, rc.state, rr.creator_uid, COALESCE(u.username, ''),
-					       rc.assigned_reviewer_uid, rc.note,
+					       rr.changelog, rr.downloads, rc.state, rr.creator_uid, COALESCE(u.username, '') AS creator_name,
+					       rc.assigned_reviewer_uid AS reviewer_uid, rc.note AS review_note,
 					       to_char(rc.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS created_at
 					FROM review_cases rc
 					JOIN resource_revisions rr ON rc.revision_id = rr.id
 					LEFT JOIN users u ON rr.creator_uid = u.bandbbs_uid
 					UNION ALL
-					SELECT 'collection' AS kind, 0::bigint AS case_id, cr.id AS revision_id, cr.collection_id AS resource_id, cr.name,
-					       '' AS version, cr.summary, cr.items,
-					       CASE WHEN cr.state = 'waiting_review' THEN 'pending' ELSE cr.state END,
-					       c.owner_uid, COALESCE(u.username, ''),
+					SELECT 'collection' AS kind, 0::bigint AS case_id, cr.id AS revision_id, cr.collection_id AS resource_id, cr.name AS title,
+					       '' AS version, cr.summary AS changelog, cr.items AS downloads,
+					       CASE WHEN cr.state = 'waiting_review' THEN 'pending' ELSE cr.state END AS state,
+					       c.owner_uid AS creator_uid, COALESCE(u.username, '') AS creator_name,
 					       cr.reviewer_uid, cr.review_note,
 					       to_char(cr.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS created_at
 					FROM resource_collection_revisions cr
