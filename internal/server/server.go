@@ -269,21 +269,6 @@ func New(d Dependencies) http.Handler {
 	mux.Handle("POST /api/v1/auth/ticket/exchange", app.withAttestation(http.HandlerFunc(authSvc.HandleTicketExchange)))
 	mux.Handle("POST /api/v1/auth/session/refresh", app.withAttestation(http.HandlerFunc(authSvc.HandleSessionRefresh)))
 
-	// Legacy client maintenance fallback
-	mux.HandleFunc("GET /api/announcements/unread", func(w http.ResponseWriter, r *http.Request) {
-		httputil.JSON(w, http.StatusOK, map[string]any{
-			"announcements": []map[string]any{
-				{
-					"id":    "legacy_maintenance_notice",
-					"title": "服务器维护迁移公告 / Maintenance Notice",
-					"body":  "服务器正在更新迁移，米坛登录和 OronBox 资源及创作者相关功能暂不可用，请耐心等待迁移完成\n\nThe server is undergoing migration and maintenance. BandBBS login, resources, and creator features are temporarily unavailable. Please be patient.",
-				},
-			},
-		})
-	})
-	mux.HandleFunc("POST /api/announcements/read", func(w http.ResponseWriter, r *http.Request) {
-		httputil.JSON(w, http.StatusOK, map[string]any{"status": "read"})
-	})
 	mux.Handle("POST /api/v1/auth/bandbbs/token/refresh", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleBandBBSTokenRefresh))))
 	mux.Handle("POST /api/v1/auth/session/revoke", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleRevokeSession))))
 
@@ -385,10 +370,29 @@ func New(d Dependencies) http.Handler {
 	mux.Handle("GET /api/blog", http.HandlerFunc(blogs.PublicList))
 	mux.Handle("GET /api/blog/", http.HandlerFunc(blogs.PublicGet))
 	mux.HandleFunc("GET /api/home", func(w http.ResponseWriter, r *http.Request) {
-		// The canonical home feed lives in the community Gitea repository. This
-		// response keeps older clients functional when they fall back to Server;
-		// current clients read explore/manifest.json directly from Gitea first.
 		httputil.JSON(w, http.StatusOK, map[string]any{"banners": []any{}, "sections": []any{}, "resource_feed_available": false})
+	})
+
+	// 10. Legacy client fallbacks (v1.1.3 and older)
+	legacyNotice := map[string]any{
+		"id":         "migration-maintenance-notice",
+		"name":       "服务器正在更新迁移 / Maintenance Notice",
+		"kind":       "quick_app",
+		"owner":      "OronBox Team",
+		"summary":    "服务器正在进行架构升级与数据迁移，米坛登录和 OronBox 资源及创作者功能暂不可用，请耐心等待迁移完成\n\nThe server is undergoing architecture upgrade and migration. BandBBS login, resources, and creator features are temporarily unavailable.",
+		"version":    "1.0.0",
+		"devices":    []string{},
+		"attributes": []string{"公告", "维护"},
+		"updated_at": "2026-10-13T00:00:00Z",
+	}
+	mux.HandleFunc("GET /api/resources", func(w http.ResponseWriter, r *http.Request) {
+		httputil.JSON(w, http.StatusOK, map[string]any{"total": 1, "resources": []any{legacyNotice}})
+	})
+	mux.HandleFunc("GET /api/resources/", func(w http.ResponseWriter, r *http.Request) {
+		httputil.JSON(w, http.StatusOK, legacyNotice)
+	})
+	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {
+		httputil.JSON(w, http.StatusOK, map[string]any{"devices": []any{}})
 	})
 
 	return requestLogger(recoverMiddleware(rateLimitMiddleware(app, mux)))

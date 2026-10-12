@@ -35,6 +35,20 @@ func TestDeriveAndRequestVerification(t *testing.T) {
 	if _, err := Verify(tag, commit, sign(otherNonce), "1760000000", otherNonce, "POST", "/api/v1/coins", body, opts); err != ErrRevoked {
 		t.Fatalf("revoked error=%v", err)
 	}
+
+	// Test dev and prerelease build tag support
+	devTag, devCommit := "v1.1.3-dev.6a27aa7.dirty", "6a27aa7a733ec36a3f6572cf1058722a484e2f0f"
+	devKey := DeriveReleaseKey(master, devTag, devCommit)
+	devSign := func(n string) string {
+		mac := hmac.New(sha256.New, devKey)
+		mac.Write([]byte(CanonicalString("GET", "/api/v1/resources", now.Unix(), n, nil)))
+		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	}
+	devNonce := "c1b2c3d4e5f60718293a4b5c6d7e8f90"
+	devOpts := Options{MasterKey: master, Clock: func() time.Time { return now }, NonceStore: NewNonceStore(time.Minute)}
+	if _, err := Verify(devTag, devCommit, devSign(devNonce), "1760000000", devNonce, "GET", "/api/v1/resources", nil, devOpts); err != nil {
+		t.Fatalf("prerelease tag verify failed: %v", err)
+	}
 }
 
 func TestVerifyRejectsWrongKeyAndExpired(t *testing.T) {

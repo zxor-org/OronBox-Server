@@ -145,6 +145,11 @@ func Verify(tag, commit, signature, timestamp, nonce, method, path string, body 
 
 func validTag(tag string) bool {
 	v := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(tag), "v"))
+	if v == "" {
+		return false
+	}
+	v = strings.SplitN(v, "+", 2)[0]
+	v = strings.SplitN(v, "-", 2)[0]
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
 		return false
@@ -164,7 +169,7 @@ func validTag(tag string) bool {
 
 func validCommit(commit string) bool {
 	v := strings.TrimSpace(commit)
-	if len(v) != 40 && len(v) != 64 {
+	if len(v) < 7 || len(v) > 64 {
 		return false
 	}
 	for _, c := range v {

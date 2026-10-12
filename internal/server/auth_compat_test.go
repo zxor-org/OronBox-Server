@@ -20,24 +20,13 @@ func TestLegacySessionRoutesDisabled(t *testing.T) {
 	}
 }
 
-func TestLegacyAnnouncementEndpoints(t *testing.T) {
+func TestLegacyResourcesFallback(t *testing.T) {
 	handler := New(Dependencies{})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/announcements/unread", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "announcements") || !strings.Contains(body, "服务器正在更新迁移") {
-		t.Fatalf("unexpected announcement body: %s", body)
-	}
-
-	reqRead := httptest.NewRequest(http.MethodPost, "/api/announcements/read", nil)
-	recRead := httptest.NewRecorder()
-	handler.ServeHTTP(recRead, reqRead)
-	if recRead.Code != http.StatusOK || !strings.Contains(recRead.Body.String(), "read") {
-		t.Fatalf("expected 200 read status, got %d %s", recRead.Code, recRead.Body.String())
+	reqRes := httptest.NewRequest(http.MethodGet, "/api/resources", nil)
+	recRes := httptest.NewRecorder()
+	handler.ServeHTTP(recRes, reqRes)
+	if recRes.Code != http.StatusOK || !strings.Contains(recRes.Body.String(), "migration-maintenance-notice") {
+		t.Fatalf("expected legacy resources shell notice, got %d %s", recRes.Code, recRes.Body.String())
 	}
 }

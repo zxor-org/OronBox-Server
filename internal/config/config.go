@@ -65,7 +65,7 @@ func Load() Config {
 			PublicURL:       strings.TrimRight(env("R2_PUBLIC_URL", ""), "/"),
 		},
 		SessionSecret: env("SESSION_SECRET", ""), TokenEncryptionKey: env("TOKEN_ENCRYPTION_KEY", ""), GitHubReleaseToken: env("GITHUB_TOKEN", ""), GiteaPublicURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"),
-		AttestationMasterKey: decodeHexKey(env("OB_AUTH_MASTER", "")), ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true), ClientAttestationSkew: durationEnv("CLIENT_ATTESTATION_SKEW_SEC", 300*time.Second),
+		AttestationMasterKey: decodeHexKey(env("ORONBOX_AUTH_MASTER", "")), ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true), ClientAttestationSkew: durationEnv("CLIENT_ATTESTATION_SKEW_SEC", 300*time.Second),
 		ConsoleDir: env("CONSOLE_DIR", "console"),
 		BandBBS:    EndpointConfig{ClientID: env("BANDBBS_CLIENT_ID", ""), ClientSecret: env("BANDBBS_CLIENT_SECRET", ""), RedirectURI: env("BANDBBS_REDIRECT_URI", ""), AuthorizeURL: env("BANDBBS_AUTHORIZE_URL", "https://www.bandbbs.cn/oauth2/authorize"), TokenURL: env("BANDBBS_TOKEN_URL", "https://www.bandbbs.cn/api/oauth2/token"), APIURL: env("BANDBBS_API_URL", "https://www.bandbbs.cn/api"), MeURL: env("BANDBBS_ME_URL", "https://www.bandbbs.cn/api/me"), IntrospectURL: env("BANDBBS_INTROSPECT_URL", "https://www.bandbbs.cn/api/oauth2/introspect"), RevokeURL: env("BANDBBS_REVOKE_URL", "https://www.bandbbs.cn/api/oauth2/revoke"), Scopes: env("BANDBBS_SCOPES", ""), PublishScopes: fieldsEnv("BANDBBS_PUBLISH_SCOPES", "resource:read resource_category:read resource_check:read resource_rating:read thread:read attachment:read resource:write thread:write attachment:write")},
 		Gitea:      EndpointConfig{APIURL: env("GITEA_INTRANET_URL", env("GITEA_URL", "https://git.zxor.org")), ClientSecret: env("GITEA_BOT_TOKEN", ""), CatalogRepo: env("GITEA_CATALOG_REPO", "OronBoxCommunity/OronBox-Repo"), ConsoleRepo: env("GITEA_CONSOLE_REPO", "OronBoxCommunity/OronBox-Server-Console")}, GitHub: EndpointConfig{ClientID: env("GITHUB_CLIENT_ID", ""), ClientSecret: env("GITHUB_CLIENT_SECRET", ""), RedirectURI: env("GITHUB_REDIRECT_URI", ""), AuthorizeURL: env("GITHUB_AUTHORIZE_URL", "https://github.com/login/oauth/authorize"), TokenURL: env("GITHUB_TOKEN_URL", "https://github.com/login/oauth/access_token"), APIURL: env("GITHUB_API_URL", "https://api.github.com"), DeviceCodeURL: env("GITHUB_DEVICE_CODE_URL", "https://github.com/login/device/code"), Scopes: env("GITHUB_SCOPES", "repo read:user")},
@@ -90,7 +90,7 @@ func (c Config) Validate() error {
 		missing = append(missing, "ADDR")
 	}
 	if c.ClientAttestationEnabled && len(c.AttestationMasterKey) != 32 {
-		missing = append(missing, "OB_AUTH_MASTER (32-byte hex)")
+		missing = append(missing, "ORONBOX_AUTH_MASTER (32-byte hex)")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(missing, ", "))
