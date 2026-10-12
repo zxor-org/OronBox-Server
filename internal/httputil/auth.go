@@ -24,40 +24,39 @@ func AuthenticateUser(ctx context.Context, s *store.Store, token string) (int, e
 	hash := sha256.Sum256([]byte(token))
 	var uid int
 	err := s.Pool.QueryRow(ctx, `
-		SELECT user_uid FROM sessions 
-		WHERE access_hash = $1 AND access_expires_at > now() AND revoked_at IS NULL
+		SELECT s.user_uid FROM sessions s
+		JOIN users u ON u.bandbbs_uid = s.user_uid
+		WHERE s.access_hash = $1 AND s.access_expires_at > now()
+		  AND s.revoked_at IS NULL AND u.banned = false
 	`, hash[:]).Scan(&uid)
 	return uid, err
 }
 
 // AuthenticateAdmin verifies cookie token against admin_sessions table.
 func AuthenticateAdmin(ctx context.Context, s *store.Store, r *http.Request) (int, string, error) {
+	uid, username, _, err := AuthenticateAdminRole(ctx, s, r)
+	return uid, username, err
+}
+
+// AuthenticateAdminRole verifies the isolated admin session and returns the
+// current database role for route-level authorization.
+func AuthenticateAdminRole(ctx context.Context, s *store.Store, r *http.Request) (int, string, string, error) {
 	if s == nil || s.Pool == nil {
-		return 0, "", pgx.ErrNoRows
+		return 0, "", "", pgx.ErrNoRows
 	}
 	cookie, err := r.Cookie("oronbox_admin")
 	if err != nil || cookie.Value == "" {
-		token := ExtractBearerToken(r)
-		if token == "" {
-			return 0, "", pgx.ErrNoRows
-		}
-		hash := sha256.Sum256([]byte(token))
-		var uid int
-		var username string
-		err = s.Pool.QueryRow(ctx, `
-			SELECT user_uid, username FROM admin_sessions 
-			WHERE session_hash = $1 AND expires_at > now()
-		`, hash[:]).Scan(&uid, &username)
-		return uid, username, err
+		return 0, "", "", pgx.ErrNoRows
 	}
 	hash := sha256.Sum256([]byte(cookie.Value))
 	var uid int
-	var username string
+	var username, role string
 	err = s.Pool.QueryRow(ctx, `
-		SELECT user_uid, username FROM admin_sessions 
-		WHERE session_hash = $1 AND expires_at > now()
-	`, hash[:]).Scan(&uid, &username)
-	return uid, username, err
+		SELECT a.user_uid, a.username, u.role FROM admin_sessions a
+		JOIN users u ON u.bandbbs_uid = a.user_uid
+		WHERE a.session_hash = $1 AND a.expires_at > now() AND u.banned = false
+	`, hash[:]).Scan(&uid, &username, &role)
+	return uid, username, role, err
 }
 
 // WithUserUID returns a new context with userUIDKey set.

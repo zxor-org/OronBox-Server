@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
 // HandleGithubWebStart implements GET /api/v1/auth/github/web/start (Spec §7.1)
@@ -24,9 +26,16 @@ func (s *Service) HandleGithubWebStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stateBytes := make([]byte, 16)
-	_, _ = rand.Read(stateBytes)
+	if _, err := rand.Read(stateBytes); err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "state_generation_failed", "无法生成安全授权状态")
+		return
+	}
 	state := hex.EncodeToString(stateBytes)
-	s.States.Store("gh_"+state, userUID)
+	ttl := s.Cfg.StateTTL
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	s.States.Store("gh_"+state, githubState{UserUID: userUID, ExpiresAt: time.Now().Add(ttl)})
 
 	authURL := fmt.Sprintf("https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=read:user&state=%s",
 		url.QueryEscape(s.Cfg.GitHub.ClientID),
@@ -77,29 +86,35 @@ func (s *Service) HandleGithubWebCallback(w http.ResponseWriter, r *http.Request
 		httputil.Error(w, http.StatusBadRequest, "invalid_state", "无效的绑定会话")
 		return
 	}
-	uid, _ := val.(int)
+	entry, ok := val.(githubState)
+	if !ok || !time.Now().Before(entry.ExpiresAt) {
+		httputil.Error(w, http.StatusBadRequest, "invalid_state", "绑定会话已过期")
+		return
+	}
+	uid := entry.UserUID
 
 	token, err := s.exchangeGitHubCode(r.Context(), code)
 	if err != nil {
-		httputil.Error(w, http.StatusBadGateway, "exchange_failed", err.Error())
+		slog.Default().Error("github oauth exchange failed", "request_id", observability.RequestID(r.Context()), "error", observability.SafeError(err))
+		httputil.Error(w, http.StatusBadGateway, "exchange_failed", "第三方授权服务暂时不可用")
 		return
 	}
 
 	login, ghID, err := s.fetchGitHubProfile(r.Context(), token)
 	if err != nil {
-		httputil.Error(w, http.StatusBadGateway, "profile_failed", err.Error())
+		slog.Default().Error("github oauth profile failed", "request_id", observability.RequestID(r.Context()), "error", observability.SafeError(err))
+		httputil.Error(w, http.StatusBadGateway, "profile_failed", "第三方用户信息获取失败")
 		return
 	}
 
-	// Bug 3.1: Encrypt token with AES-GCM cipher and save to access_token_cipher
-	var cipherBytes []byte
-	if s.Cipher != nil && token != "" {
-		cipherBytes, err = s.Cipher.Encrypt([]byte(token))
-		if err != nil {
-			cipherBytes = []byte(token)
-		}
-	} else {
-		cipherBytes = []byte(token)
+	if s.Cipher == nil || token == "" {
+		httputil.Error(w, http.StatusInternalServerError, "credential_storage_unavailable", "无法安全保存 GitHub 凭据")
+		return
+	}
+	cipherBytes, err := s.Cipher.Encrypt([]byte(token))
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "credential_encryption_failed", "无法安全保存 GitHub 凭据")
+		return
 	}
 
 	_, err = s.Store.Pool.Exec(r.Context(), `
@@ -117,6 +132,13 @@ func (s *Service) HandleGithubWebCallback(w http.ResponseWriter, r *http.Request
 
 	httputil.JSON(w, http.StatusOK, map[string]any{"status": "bound", "login": login})
 }
+
+type githubState struct {
+	UserUID   int
+	ExpiresAt time.Time
+}
+
+func (s githubState) Expiry() time.Time { return s.ExpiresAt }
 
 // HandleGithubRevoke implements POST/DELETE /api/v1/auth/github/grant
 func (s *Service) HandleGithubRevoke(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +167,7 @@ func (s *Service) exchangeGitHubCode(ctx context.Context, code string) (string, 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -168,7 +190,7 @@ func (s *Service) fetchGitHubProfile(ctx context.Context, token string) (string,
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}

@@ -108,3 +108,18 @@ func TestMissingScopeDetection(t *testing.T) {
 		t.Fatalf("expected missing_scope, got %v", err)
 	}
 }
+
+func TestMarkdownToBBCodeUsesXenForoTags(t *testing.T) {
+	input := "# 标题\n\n**粗体**、*斜体*、`code`\n\n- 一\n- 二\n\n> 引用\n\n[文档](https://example.com/a?q=1)\n\n[raw]"
+	want := "[B]标题[/B]\n\n[B]粗体[/B]、[I]斜体[/I]、[CODE]code[/CODE]\n\n[LIST][*]一[*]二[/LIST]\n\n[QUOTE]引用[/QUOTE]\n\n[URL=https://example.com/a?q=1]文档[/URL]\n\n&#91;raw&#93;"
+	if got := MarkdownToBBCode(input); got != want {
+		t.Fatalf("converted BBCode = %q, want %q", got, want)
+	}
+}
+
+func TestMarkdownToBBCodeRejectsUnsafeLinksAndImages(t *testing.T) {
+	got := MarkdownToBBCode(`[x](javascript:alert(1)) ![x](https://example.com/a]b)`)
+	if strings.Contains(got, "[URL=") || strings.Contains(got, "[IMG]") {
+		t.Fatalf("unsafe markup was converted: %q", got)
+	}
+}

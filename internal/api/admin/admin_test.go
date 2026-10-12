@@ -43,3 +43,15 @@ func TestAdminResItemSerialization(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicationSeedsFanOutAndFailClosed(t *testing.T) {
+	raw := json.RawMessage(`{"targets":["bandbbs","astrobox"],"bandbbs":{"categories":{"watch":{"category_id":102,"device_compat_ids":["s4"]}},"purchase":{"link":"https://example.test"}}}`)
+	seeds := buildPublicationSeeds([]string{"bandbbs", "astrobox"}, raw, json.RawMessage(`{"xmb9p":{}}`), "")
+	if len(seeds) != 2 || seeds[0].CategoryID != 100 || seeds[1].Provider != "astrobox" {
+		t.Fatalf("unexpected seeds: %#v", seeds)
+	}
+	missing := buildPublicationSeeds([]string{"bandbbs"}, json.RawMessage(`{"targets":["bandbbs"]}`), json.RawMessage(`{"unknown":{}}`), "")
+	if len(missing) != 1 || missing[0].State != "failed" {
+		t.Fatalf("missing mapping should fail closed: %#v", missing)
+	}
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ func main() {
 	defer stop()
 	cfg := config.Load()
 	log := observability.NewLogger(cfg.LogLevel, cfg.LogFormat)
+	slog.SetDefault(log)
 	if err := cfg.Validate(); err != nil {
 		log.Error("configuration invalid", "error", err)
 		os.Exit(1)

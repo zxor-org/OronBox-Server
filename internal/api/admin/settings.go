@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
 	"github.com/zxor-org/OronBox-Server/internal/store"
@@ -21,12 +22,18 @@ type TemplateItem struct {
 // HandleAdminGetTemplates implements GET /admin/api/templates
 func HandleAdminGetTemplates(s *store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, _, err := httputil.AuthenticateAdmin(r.Context(), s, r); err != nil {
+			httputil.Error(w, http.StatusUnauthorized, "unauthorized", "未授权")
+			return
+		}
+		includeDisabled := r.URL.Query().Get("include_disabled") == "1"
+		scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 		rows, err := s.Pool.Query(r.Context(), `
 			SELECT id, scope, decision, title, body, position, enabled
 			FROM moderation_reason_templates
-			WHERE enabled = true
+			WHERE (enabled = true OR $1) AND ($2 = '' OR scope = $2)
 			ORDER BY position ASC
-		`)
+		`, includeDisabled, scope)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
@@ -139,9 +146,21 @@ func HandleAdminGetAIModeration(s *store.Store) http.HandlerFunc {
 				"system_prompt": "你是一个严格的手表应用与评论合规审查助手，请检查是否有违规引流、恶意代码或低俗内容"
 			}`)
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(raw)
+		var cfg struct {
+			Enabled      bool   `json:"enabled"`
+			APIURL       string `json:"api_url"`
+			APIKey       string `json:"api_key"`
+			Model        string `json:"model"`
+			SystemPrompt string `json:"system_prompt"`
+		}
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			httputil.Error(w, http.StatusInternalServerError, "invalid_settings", "AI审核配置损坏")
+			return
+		}
+		if cfg.APIKey != "" {
+			cfg.APIKey = "********"
+		}
+		httputil.JSON(w, http.StatusOK, cfg)
 	}
 }
 
@@ -154,17 +173,39 @@ func HandleAdminUpdateAIModeration(s *store.Store) http.HandlerFunc {
 			return
 		}
 
-		var req json.RawMessage
+		var req struct {
+			Enabled      bool   `json:"enabled"`
+			APIURL       string `json:"api_url"`
+			APIKey       string `json:"api_key"`
+			Model        string `json:"model"`
+			SystemPrompt string `json:"system_prompt"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httputil.Error(w, http.StatusBadRequest, "invalid_body", "参数格式错误")
 			return
 		}
+		if strings.TrimSpace(req.APIURL) == "" || strings.TrimSpace(req.Model) == "" || strings.TrimSpace(req.SystemPrompt) == "" {
+			httputil.Error(w, http.StatusBadRequest, "invalid_settings", "AI审核配置不完整")
+			return
+		}
+		var previous json.RawMessage
+		_ = s.Pool.QueryRow(r.Context(), `SELECT value FROM server_settings WHERE key = 'ai_moderation'`).Scan(&previous)
+		if req.APIKey == "********" || strings.TrimSpace(req.APIKey) == "" {
+			var old struct {
+				APIKey string `json:"api_key"`
+			}
+			if json.Unmarshal(previous, &old) == nil {
+				req.APIKey = old.APIKey
+			}
+		}
+		stored, _ := json.Marshal(req)
+		auditPayload, _ := json.Marshal(map[string]any{"enabled": req.Enabled, "api_url": req.APIURL, "model": req.Model, "system_prompt": req.SystemPrompt, "api_key_configured": strings.TrimSpace(req.APIKey) != ""})
 
 		_, err = s.Pool.Exec(r.Context(), `
 			INSERT INTO server_settings (key, value, updated_at)
 			VALUES ('ai_moderation', $1, now())
 			ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = now()
-		`, req)
+		`, stored)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
@@ -173,7 +214,7 @@ func HandleAdminUpdateAIModeration(s *store.Store) http.HandlerFunc {
 		_, _ = s.Pool.Exec(r.Context(), `
 			INSERT INTO audit_logs (actor_uid, action, result, ip, target_data)
 			VALUES ($1, 'update_ai_moderation_settings', 'success', $2, $3)
-		`, adminUID, r.RemoteAddr, req)
+		`, adminUID, r.RemoteAddr, auditPayload)
 
 		httputil.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
 	}

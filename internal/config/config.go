@@ -21,6 +21,9 @@ type R2Config struct {
 type Config struct {
 	Addr, PublicURL, DatabaseURL, SessionSecret, TokenEncryptionKey string
 	BaseURL, BlobStorageDir                                         string
+	PublicationConfigDir                                            string
+	GiteaCatalogRef                                                 string
+	GitHubReleaseRepo                                               string
 	R2                                                              R2Config
 	GitHubReleaseToken                                              string
 	GiteaPublicURL                                                  string
@@ -38,8 +41,8 @@ type Config struct {
 }
 type EndpointConfig struct {
 	ClientID, ClientSecret, RedirectURI, AuthorizeURL, TokenURL, APIURL, DeviceCodeURL, MeURL, Scopes, CatalogRepo, ConsoleRepo string
-	IntrospectURL, RevokeURL                                                                                       string
-	PublishScopes                                                                                                  []string
+	IntrospectURL, RevokeURL                                                                                                    string
+	PublishScopes                                                                                                               []string
 }
 
 // AstroBoxConfig is the downstream AstroBox catalog repo (staging submission target).
@@ -50,7 +53,10 @@ func Load() Config {
 	baseURL := env("BASE_URL", env("PUBLIC_URL", "http://localhost:6767"))
 	return Config{
 		Addr: env("ADDR", ":6767"), PublicURL: strings.TrimRight(baseURL, "/"), BaseURL: strings.TrimRight(baseURL, "/"), DatabaseURL: env("DATABASE_URL", ""),
-		BlobStorageDir: env("BLOB_STORAGE_DIR", "/var/lib/oronbox/blobs"),
+		BlobStorageDir:       env("BLOB_STORAGE_DIR", "/var/lib/oronbox/blobs"),
+		PublicationConfigDir: env("PUBLICATION_CONFIG_DIR", ""),
+		GiteaCatalogRef:      env("GITEA_CATALOG_REF", "main"),
+		GitHubReleaseRepo:    env("GITHUB_RELEASE_REPO", "zxor-org/oronbox"),
 		R2: R2Config{
 			AccountID:       env("R2_ACCOUNT_ID", ""),
 			AccessKeyID:     env("R2_ACCESS_KEY_ID", ""),
@@ -61,8 +67,8 @@ func Load() Config {
 		SessionSecret: env("SESSION_SECRET", ""), TokenEncryptionKey: env("TOKEN_ENCRYPTION_KEY", ""), GitHubReleaseToken: env("GITHUB_TOKEN", ""), GiteaPublicURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"),
 		AttestationMasterKey: decodeHexKey(env("OB_AUTH_MASTER", "")), ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true), ClientAttestationSkew: durationEnv("CLIENT_ATTESTATION_SKEW_SEC", 300*time.Second),
 		ConsoleDir: env("CONSOLE_DIR", "console"),
-		BandBBS: EndpointConfig{ClientID: env("BANDBBS_CLIENT_ID", ""), ClientSecret: env("BANDBBS_CLIENT_SECRET", ""), RedirectURI: env("BANDBBS_REDIRECT_URI", ""), AuthorizeURL: env("BANDBBS_AUTHORIZE_URL", "https://www.bandbbs.cn/oauth2/authorize"), TokenURL: env("BANDBBS_TOKEN_URL", "https://www.bandbbs.cn/api/oauth2/token"), APIURL: env("BANDBBS_API_URL", "https://www.bandbbs.cn/api"), MeURL: env("BANDBBS_ME_URL", "https://www.bandbbs.cn/api/me"), IntrospectURL: env("BANDBBS_INTROSPECT_URL", "https://www.bandbbs.cn/api/oauth2/introspect"), RevokeURL: env("BANDBBS_REVOKE_URL", "https://www.bandbbs.cn/api/oauth2/revoke"), Scopes: env("BANDBBS_SCOPES", ""), PublishScopes: fieldsEnv("BANDBBS_PUBLISH_SCOPES", "resource:read resource_category:read resource_check:read resource_rating:read thread:read attachment:read resource:write thread:write attachment:write")},
-		Gitea:   EndpointConfig{APIURL: env("GITEA_INTRANET_URL", env("GITEA_URL", "https://git.zxor.org")), ClientSecret: env("GITEA_BOT_TOKEN", ""), CatalogRepo: env("GITEA_CATALOG_REPO", "OronBoxCommunity/OronBox-Repo"), ConsoleRepo: env("GITEA_CONSOLE_REPO", "OronBoxCommunity/OronBox-Server-Console")}, GitHub: EndpointConfig{ClientID: env("GITHUB_CLIENT_ID", ""), ClientSecret: env("GITHUB_CLIENT_SECRET", ""), RedirectURI: env("GITHUB_REDIRECT_URI", ""), AuthorizeURL: env("GITHUB_AUTHORIZE_URL", "https://github.com/login/oauth/authorize"), TokenURL: env("GITHUB_TOKEN_URL", "https://github.com/login/oauth/access_token"), APIURL: env("GITHUB_API_URL", "https://api.github.com"), DeviceCodeURL: env("GITHUB_DEVICE_CODE_URL", "https://github.com/login/device/code"), Scopes: env("GITHUB_SCOPES", "repo read:user")},
+		BandBBS:    EndpointConfig{ClientID: env("BANDBBS_CLIENT_ID", ""), ClientSecret: env("BANDBBS_CLIENT_SECRET", ""), RedirectURI: env("BANDBBS_REDIRECT_URI", ""), AuthorizeURL: env("BANDBBS_AUTHORIZE_URL", "https://www.bandbbs.cn/oauth2/authorize"), TokenURL: env("BANDBBS_TOKEN_URL", "https://www.bandbbs.cn/api/oauth2/token"), APIURL: env("BANDBBS_API_URL", "https://www.bandbbs.cn/api"), MeURL: env("BANDBBS_ME_URL", "https://www.bandbbs.cn/api/me"), IntrospectURL: env("BANDBBS_INTROSPECT_URL", "https://www.bandbbs.cn/api/oauth2/introspect"), RevokeURL: env("BANDBBS_REVOKE_URL", "https://www.bandbbs.cn/api/oauth2/revoke"), Scopes: env("BANDBBS_SCOPES", ""), PublishScopes: fieldsEnv("BANDBBS_PUBLISH_SCOPES", "resource:read resource_category:read resource_check:read resource_rating:read thread:read attachment:read resource:write thread:write attachment:write")},
+		Gitea:      EndpointConfig{APIURL: env("GITEA_INTRANET_URL", env("GITEA_URL", "https://git.zxor.org")), ClientSecret: env("GITEA_BOT_TOKEN", ""), CatalogRepo: env("GITEA_CATALOG_REPO", "OronBoxCommunity/OronBox-Repo"), ConsoleRepo: env("GITEA_CONSOLE_REPO", "OronBoxCommunity/OronBox-Server-Console")}, GitHub: EndpointConfig{ClientID: env("GITHUB_CLIENT_ID", ""), ClientSecret: env("GITHUB_CLIENT_SECRET", ""), RedirectURI: env("GITHUB_REDIRECT_URI", ""), AuthorizeURL: env("GITHUB_AUTHORIZE_URL", "https://github.com/login/oauth/authorize"), TokenURL: env("GITHUB_TOKEN_URL", "https://github.com/login/oauth/access_token"), APIURL: env("GITHUB_API_URL", "https://api.github.com"), DeviceCodeURL: env("GITHUB_DEVICE_CODE_URL", "https://github.com/login/device/code"), Scopes: env("GITHUB_SCOPES", "repo read:user")},
 		AstroBox:         AstroBoxConfig{RepoOwner: env("ASTROBOX_REPO_OWNER", "AstralSightStudios"), RepoName: env("ASTROBOX_REPO_NAME", "AstroBox-Repo"), RepoBranch: env("ASTROBOX_REPO_BRANCH", "main"), CatalogPath: env("ASTROBOX_CATALOG_PATH", "index_v2.csv")},
 		AdminBandBBSUIDs: listEnv("ADMIN_BANDBBS_UIDS", "ADMIN_BANDBBS_USER_IDS"), ClientRedirectURI: env("CLIENT_REDIRECT_URI", "oronbox://oauth/bandbbs"), WebClientOrigins: listEnv("WEB_CLIENT_ORIGINS"),
 		StateTTL: durationEnv("STATE_TTL", 10*time.Minute), LoginTicketTTL: durationEnv("LOGIN_TICKET_TTL", 3*time.Minute), AccessTokenTTL: durationEnv("ACCESS_TOKEN_TTL", 15*time.Minute), RefreshTokenTTL: durationEnv("REFRESH_TOKEN_TTL", 720*time.Hour), LogLevel: env("LOG_LEVEL", "info"), LogFormat: env("LOG_FORMAT", "text"),

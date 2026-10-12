@@ -3,6 +3,7 @@ package catalog
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -54,12 +55,12 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 		          LEFT JOIN users u ON r.owner_uid = u.bandbbs_uid
 		          LEFT JOIN resource_revisions rr ON r.current_revision_id = rr.id
 		          WHERE r.moderation_state = 'visible'`
-		countQuery := `SELECT count(*) FROM resources r WHERE r.moderation_state = 'visible'`
+		countQuery := `SELECT count(*) FROM resources r LEFT JOIN users u ON r.owner_uid = u.bandbbs_uid WHERE r.moderation_state = 'visible'`
 		var args []any
 
 		if q != "" {
 			idx := len(args) + 1
-			cond := fmt.Sprintf(` AND (r.title ILIKE $%d OR r.summary ILIKE $%d OR r.resource_id ILIKE $%d)`, idx, idx, idx)
+			cond := fmt.Sprintf(` AND (r.title ILIKE $%d OR COALESCE(u.username, '') ILIKE $%d OR r.summary ILIKE $%d OR r.resource_id ILIKE $%d)`, idx, idx, idx, idx)
 			query += cond
 			countQuery += cond
 			args = append(args, "%"+q+"%")
@@ -142,20 +143,22 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 			weightRating := 2.0
 			featuredBonus := 20.0
 			jitterRatio := 0.20
+			tagCoefficientEnabled := true
 
 			var configJSON []byte
 			_ = s.Pool.QueryRow(r.Context(), `SELECT value FROM server_settings WHERE key = 'recommendation_algorithm_config'`).Scan(&configJSON)
 			if len(configJSON) > 0 {
 				var cfg struct {
-					ColdStartDays     float64 `json:"cold_start_days"`
-					ColdStartMaxBoost float64 `json:"cold_start_max_boost"`
-					TimeDecayHalfDays float64 `json:"time_decay_half_days"`
-					TimeDecayExponent float64 `json:"time_decay_exponent"`
-					WeightCoins       float64 `json:"weight_coins"`
-					WeightDownloads   float64 `json:"weight_downloads"`
-					WeightRating      float64 `json:"weight_rating"`
-					FeaturedBonus     float64 `json:"featured_bonus"`
-					JitterRatio       float64 `json:"jitter_ratio"`
+					ColdStartDays         float64 `json:"cold_start_days"`
+					ColdStartMaxBoost     float64 `json:"cold_start_max_boost"`
+					TimeDecayHalfDays     float64 `json:"time_decay_half_days"`
+					TimeDecayExponent     float64 `json:"time_decay_exponent"`
+					WeightCoins           float64 `json:"weight_coins"`
+					WeightDownloads       float64 `json:"weight_downloads"`
+					WeightRating          float64 `json:"weight_rating"`
+					FeaturedBonus         float64 `json:"featured_bonus"`
+					JitterRatio           float64 `json:"jitter_ratio"`
+					TagCoefficientEnabled *bool   `json:"tag_coefficient_enabled"`
 				}
 				if json.Unmarshal(configJSON, &cfg) == nil {
 					if cfg.ColdStartDays > 0 {
@@ -185,12 +188,19 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 					if cfg.JitterRatio > 0 {
 						jitterRatio = cfg.JitterRatio
 					}
+					if cfg.TagCoefficientEnabled != nil {
+						tagCoefficientEnabled = *cfg.TagCoefficientEnabled
+					}
 				}
 			}
 
 			jitterMod := int(jitterRatio*2000.0) + 1
 			jitterHalf := int(jitterRatio * 1000.0)
 
+			tagFactor := "1.0"
+			if tagCoefficientEnabled {
+				tagFactor = `COALESCE((SELECT MAX(t.coefficient) FROM tags t WHERE jsonb_typeof(r.tags) = 'array' AND t.name IN (SELECT jsonb_array_elements_text(r.tags)) AND t.enabled = true), 1.0)`
+			}
 			query += fmt.Sprintf(` ORDER BY (
 				(
 					(
@@ -202,13 +212,7 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 						+ (%f * (LN(r.coin_count + 1) / 0.693147) + %f * (LN(r.download_count + 1) / 2.302585) + %f * r.rating)
 						* POWER(0.5, POWER(GREATEST(0.0, EXTRACT(EPOCH FROM (now() - COALESCE(r.last_released_at, r.created_at))) / 86400.0) / %f, %f))
 					)
-					* COALESCE((
-						SELECT MAX(t.coefficient) 
-						FROM tags t 
-						WHERE jsonb_typeof(r.tags) = 'array' 
-						  AND t.name IN (SELECT jsonb_array_elements_text(r.tags)) 
-						  AND t.enabled = true
-					), 1.0)
+					* %s
 					+ CASE WHEN r.curation_grade = 'featured' THEN %f ELSE 0.0 END
 				)
 				* (1.0 + (abs(('x' || substr(md5(r.resource_id || '%d'), 1, 8))::bit(32)::bigint) %%%% %d - %d) / 1000.0)
@@ -222,6 +226,7 @@ func HandleGetResources(s *store.Store, baseURL string) http.HandlerFunc {
 				weightRating,
 				timeDecayHalfDays,
 				timeDecayExponent,
+				tagFactor,
 				featuredBonus,
 				seedVal,
 				jitterMod,
@@ -491,9 +496,9 @@ func HandleDownloadDeviceRedirect(s *store.Store, baseURL string) http.HandlerFu
 		}
 
 		// Track download event
-		ip := strings.Split(r.RemoteAddr, ":")[0]
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			ip = strings.TrimSpace(strings.Split(fwd, ",")[0])
+		ip := strings.TrimSpace(r.RemoteAddr)
+		if host, _, splitErr := net.SplitHostPort(ip); splitErr == nil {
+			ip = host
 		}
 
 		var userUID *int

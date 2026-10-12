@@ -139,6 +139,15 @@ CREATE TABLE IF NOT EXISTS resources (
   last_released_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS resource_sources (
+  resource_id varchar(128) PRIMARY KEY REFERENCES resources(resource_id) ON DELETE CASCADE,
+  author_name varchar(256) NOT NULL DEFAULT '',
+  source_url varchar(1024) NOT NULL DEFAULT '',
+  license_name varchar(128) NOT NULL DEFAULT '',
+  authorization_note text NOT NULL DEFAULT '',
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS resource_ratings (
   resource_id varchar(128) NOT NULL REFERENCES resources(resource_id) ON DELETE CASCADE,
   user_uid integer NOT NULL REFERENCES users(bandbbs_uid) ON DELETE CASCADE,
@@ -541,12 +550,6 @@ func Migrate(ctx context.Context, s *Store) error {
 	return s.WithTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(4242)`); err != nil {
 			return err
-		}
-		var legacy bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='app_releases' AND column_name='download_url')`).Scan(&legacy); err == nil && legacy {
-			if _, err := tx.Exec(ctx, `DROP TABLE app_releases`); err != nil {
-				return err
-			}
 		}
 		for _, statement := range strings.Split(SchemaSQL, ";") {
 			statement = strings.TrimSpace(statement)

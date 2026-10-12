@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zxor-org/OronBox-Server/internal/api/catalog"
+
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
@@ -39,7 +41,7 @@ func HandleAdminGetPlugins(s *store.Store) http.HandlerFunc {
 			       to_char(p.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'),
 			       to_char(p.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')
 			FROM plugins p
-			LEFT JOIN plugin_versions pv ON p.current_version_id = pv.id
+			LEFT JOIN LATERAL (SELECT * FROM plugin_versions v WHERE v.plugin_id=p.id ORDER BY (v.state IN ('pending','waiting_review')) DESC, v.created_at DESC LIMIT 1) pv ON true
 			ORDER BY p.updated_at DESC
 		`)
 		if err != nil {
@@ -60,6 +62,28 @@ func HandleAdminGetPlugins(s *store.Store) http.HandlerFunc {
 		}
 
 		httputil.JSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// HandleAdminDownloadPlugin permits reviewing pending packages with the isolated
+// administrator session, without requiring client attestation headers.
+func HandleAdminDownloadPlugin(s *store.Store, blobDir, r2PublicURL string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, _, err := httputil.AuthenticateAdmin(r.Context(), s, r); err != nil {
+			httputil.Error(w, 401, "unauthorized", "未授权")
+			return
+		}
+		id := r.PathValue("id")
+		var sha string
+		err := s.Pool.QueryRow(r.Context(), `SELECT package_sha256 FROM plugin_versions WHERE plugin_id=$1 ORDER BY (state IN ('pending','waiting_review')) DESC, created_at DESC LIMIT 1`, id).Scan(&sha)
+		if err != nil || sha == "" {
+			httputil.Error(w, 404, "package_not_found", "插件安装包不存在")
+			return
+		}
+		w.Header().Set("Cache-Control", "private, no-store")
+		clone := r.Clone(r.Context())
+		clone.URL.Path = "/api/v1/blobs/" + sha
+		catalog.HandleServeBlob(s, blobDir, r2PublicURL)(w, clone)
 	}
 }
 
@@ -90,16 +114,36 @@ func HandleAdminReviewPlugin(s *store.Store) http.HandlerFunc {
 			return
 		}
 
-		newState := "approved"
-		if req.Action == "reject" {
-			newState = "rejected"
+		if req.Action != "approve" && req.Action != "reject" {
+			httputil.Error(w, http.StatusBadRequest, "invalid_action", "不支持的审核动作")
+			return
 		}
-
-		_, err = s.Pool.Exec(r.Context(), `
-			UPDATE plugins SET state = $1, updated_at = now() WHERE id = $2
-		`, newState, pluginID)
+		newState := "approved"
+		versionState := "approved"
+		if req.Action == "reject" {
+			newState, versionState = "rejected", "rejected"
+		}
+		result, err := s.Pool.Exec(r.Context(), `
+			WITH target AS (
+				SELECT id FROM plugin_versions
+				WHERE plugin_id = $2 AND state IN ('pending', 'waiting_review')
+				  AND ($1 = 'rejected' OR (package_sha256 ~ '^[0-9a-fA-F]{64}$'
+				       AND EXISTS (SELECT 1 FROM blobs b WHERE b.sha256 = plugin_versions.package_sha256)))
+				ORDER BY created_at DESC LIMIT 1
+			), updated_version AS (
+				UPDATE plugin_versions pv SET state = $1, reviewer_uid = $3, review_note = $4, reviewed_at = now()
+				FROM target WHERE pv.id = target.id RETURNING pv.id
+			)
+			UPDATE plugins p SET state = CASE WHEN $1 = 'approved' THEN 'visible' WHEN p.current_version_id IS NULL THEN 'hidden' ELSE p.state END,
+				current_version_id = CASE WHEN $1 = 'approved' THEN (SELECT id FROM updated_version) ELSE p.current_version_id END,
+				updated_at = now() WHERE p.id = $2 AND EXISTS (SELECT 1 FROM updated_version)
+		`, versionState, pluginID, adminUID, req.Reason)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if result.RowsAffected() == 0 {
+			httputil.Error(w, http.StatusConflict, "version_not_pending", "没有可审核的待审插件版本")
 			return
 		}
 
@@ -140,16 +184,26 @@ func HandleAdminStatePlugin(s *store.Store) http.HandlerFunc {
 			return
 		}
 
+		if req.Action != "hide" && req.Action != "delist" && req.Action != "relist" {
+			httputil.Error(w, http.StatusBadRequest, "invalid_action", "不支持的状态动作")
+			return
+		}
 		newState := "hidden"
 		if req.Action == "relist" {
 			newState = "visible"
 		}
-
-		_, err = s.Pool.Exec(r.Context(), `
-			UPDATE plugins SET state = $1, updated_at = now() WHERE id = $2
+		result, err := s.Pool.Exec(r.Context(), `
+			UPDATE plugins SET state = $1, updated_at = now()
+			WHERE id = $2 AND ($1 = 'hidden' OR EXISTS (
+				SELECT 1 FROM plugin_versions pv WHERE pv.id = plugins.current_version_id AND pv.state = 'approved'
+			))
 		`, newState, pluginID)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if result.RowsAffected() == 0 {
+			httputil.Error(w, http.StatusNotFound, "plugin_not_found", "插件不存在或没有可见版本")
 			return
 		}
 

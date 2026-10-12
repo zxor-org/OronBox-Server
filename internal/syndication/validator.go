@@ -171,3 +171,13 @@ func webpSize(b []byte) (int, int, error) {
 	}
 	return 0, 0, fmt.Errorf("unsupported webp chunk")
 }
+
+// ValidateIconWebP enforces the resource icon contract independently of the
+// package validator so multipart icon uploads receive the same check.
+func ValidateIconWebP(data []byte) error {
+	w, h, err := webpSize(data)
+	if err != nil || w != 512 || h != 512 {
+		return fmt.Errorf("icon must be a 512x512 WebP")
+	}
+	return nil
+}

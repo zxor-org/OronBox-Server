@@ -141,3 +141,14 @@ func TestEscapeObjectKey(t *testing.T) {
 		t.Errorf("expected ab/cd/foo%%20bar.bin, got %s", escaped)
 	}
 }
+
+func TestSafeMediaTypeBlocksExecutableContent(t *testing.T) {
+	for _, input := range []string{"text/html", "image/svg+xml", "application/javascript", "text/html; charset=utf-8"} {
+		if got := safeMediaType(input); got != "application/octet-stream" {
+			t.Fatalf("%q normalized to %q", input, got)
+		}
+	}
+	if got := safeMediaType("image/webp"); got != "image/webp" {
+		t.Fatalf("safe image type normalized to %q", got)
+	}
+}

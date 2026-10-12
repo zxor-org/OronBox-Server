@@ -5,11 +5,14 @@
 package astrobox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -132,7 +135,12 @@ func (e CatalogEntry) row() []string {
 
 // BuildResourceCSV renders the 1-row submission CSV (header + data).
 func BuildResourceCSV(e CatalogEntry) []byte {
-	return []byte(resourceCSVHead + "\n" + strings.Join(e.row(), ",") + "\n")
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	_ = w.Write(strings.Split(resourceCSVHead, ","))
+	_ = w.Write(e.row())
+	w.Flush()
+	return buf.Bytes()
 }
 
 // SubmissionRequest mirrors ABCC request.json.
@@ -164,13 +172,14 @@ func DeriveSubmission(entry CatalogEntry, upstreamCSV, upstreamCommit string) Su
 		c := upstreamCommit
 		req.BaseCatalogCommit = &c
 	}
-	rows := strings.Split(strings.ReplaceAll(upstreamCSV, "\r\n", "\n"), "\n")
-	for i, line := range rows {
-		if i == 0 || strings.TrimSpace(line) == "" {
-			continue
+	reader := csv.NewReader(strings.NewReader(upstreamCSV))
+	reader.FieldsPerRecord = -1
+	for i := 0; ; i++ {
+		cols, err := reader.Read()
+		if err == io.EOF {
+			break
 		}
-		cols := strings.Split(line, ",")
-		if len(cols) < 12 || cols[0] != entry.ID {
+		if err != nil || i == 0 || len(cols) < 12 || cols[0] != entry.ID {
 			continue
 		}
 		id := entry.ID
@@ -184,11 +193,15 @@ func DeriveSubmission(entry CatalogEntry, upstreamCSV, upstreamCommit string) Su
 }
 
 func rowDigest(cols []string) string {
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
 	canonical := make([]string, len(cols))
 	for i, c := range cols {
 		canonical[i] = strings.TrimSpace(c)
 	}
-	sum := sha256.Sum256([]byte(strings.Join(canonical, ",")))
+	_ = w.Write(canonical)
+	w.Flush()
+	sum := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(sum[:])
 }
 
@@ -295,7 +308,7 @@ func (c Client) Submit(ctx context.Context, token, login string, ri Repo, entry 
 	if forkHEAD != upstreamHEAD {
 		return 0, "", "", fmt.Errorf("fork %s/%s is not synced to upstream (upstream %s, fork %s)", forkOwner, forkRepo, short(upstreamHEAD), short(forkHEAD))
 	}
-	branch := fmt.Sprintf("astrobox-submit-%d", time.Now().Unix())
+	branch := fmt.Sprintf("astrobox-submit-%d", time.Now().UnixNano())
 	if err := gh.CreateBranch(ctx, forkOwner, forkRepo, branch, forkHEAD); err != nil {
 		return 0, "", "", fmt.Errorf("create submission branch: %w", err)
 	}
@@ -317,15 +330,20 @@ func (c Client) Submit(ctx context.Context, token, login string, ri Repo, entry 
 	return prNumber, prURL, submissionPath, nil
 }
 
-// UpstreamCatalog reads index_v2.csv from the upstream repo and returns (content, commit).
-func (c Client) UpstreamCatalog(ctx context.Context, token string) (string, string) {
+// UpstreamCatalog reads index_v2.csv from the upstream repo and returns
+// (content, commit). A read failure is returned so callers do not accidentally
+// turn an edit into a create submission.
+func (c Client) UpstreamCatalog(ctx context.Context, token string) (string, string, error) {
 	gh := c.gh(token)
-	commit, _ := gh.GetRefSHA(ctx, c.RepoOwner, c.RepoName, "heads/"+c.RepoBranch)
+	commit, err := gh.GetRefSHA(ctx, c.RepoOwner, c.RepoName, "heads/"+c.RepoBranch)
+	if err != nil {
+		return "", "", err
+	}
 	raw, err := gh.ReadFile(ctx, c.RepoOwner, c.RepoName, c.CatalogPath, c.RepoBranch)
 	if err != nil {
-		return "", commit
+		return "", commit, err
 	}
-	return string(raw), commit
+	return string(raw), commit, nil
 }
 
 // ReviewComments fetches issue-comment bodies for ABCC tag derivation.
@@ -350,6 +368,36 @@ func (c Client) PRStatus(ctx context.Context, token string, number int) (bool, s
 		return false, "", "", err
 	}
 	return pr.Merged, pr.State, pr.HTMLURL, nil
+}
+
+// AppendPRFiles adds a corrective commit to the existing PR head branch. It
+// preserves the PR and lets the upstream reviewer continue the same thread.
+func (c Client) AppendPRFiles(ctx context.Context, token string, number int, message string, files map[string][]byte) error {
+	gh := c.gh(token)
+	pr, err := gh.GetPullRequest(ctx, c.RepoOwner, c.RepoName, number)
+	if err != nil {
+		return err
+	}
+	if pr.Head.Ref == "" || pr.Head.Repo.FullName == "" {
+		return fmt.Errorf("pull request head unavailable")
+	}
+	owner, repo, err := syndication.SplitRepository(pr.Head.Repo.FullName)
+	if err != nil {
+		return err
+	}
+	sha := pr.Head.SHA
+	if sha == "" {
+		sha, err = gh.GetRefSHA(ctx, owner, repo, "heads/"+pr.Head.Ref)
+		if err != nil {
+			return err
+		}
+	}
+	tree, err := gh.CommitTree(ctx, owner, repo, sha)
+	if err != nil {
+		return err
+	}
+	_, err = gh.CommitFilesTreeBase(ctx, owner, repo, pr.Head.Ref, message, tree, files)
+	return err
 }
 
 // SortedDeviceKeys is a small stable-order helper for devices.

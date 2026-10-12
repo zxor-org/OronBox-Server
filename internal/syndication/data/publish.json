@@ -1,0 +1,136 @@
+{
+  "resource_prefixes": {
+    "watchface": 81,
+    "app": 82
+  },
+  "bandbbs": {
+    "m67": {
+      "category_id": 94,
+      "forum_id": 235,
+      "thread_prefixes": {
+        "watchface": 120,
+        "app": 122
+      }
+    },
+    "n66": {
+      "category_id": 95,
+      "forum_id": 243,
+      "thread_prefixes": {
+        "watchface": 136,
+        "app": 140
+      }
+    },
+    "n67": {
+      "category_id": 100,
+      "forum_id": 244,
+      "thread_prefixes": {
+        "watchface": 145,
+        "app": 148
+      }
+    },
+    "o66": {
+      "category_id": 103,
+      "forum_id": 247,
+      "thread_prefixes": {
+        "watchface": 145,
+        "app": 148
+      }
+    },
+    "o66nfc": {
+      "category_id": 103,
+      "forum_id": 247,
+      "thread_prefixes": {
+        "watchface": 145,
+        "app": 148
+      }
+    },
+    "p67": {
+      "category_id": 108,
+      "forum_id": 252,
+      "thread_prefixes": {
+        "watchface": 145,
+        "app": 148
+      }
+    },
+    "l61": {
+      "category_id": 102,
+      "forum_id": 236,
+      "thread_prefixes": {
+        "watchface": 124,
+        "app": 125
+      }
+    },
+    "n62": {
+      "category_id": 102,
+      "forum_id": 236,
+      "thread_prefixes": {
+        "watchface": 124,
+        "app": 125
+      }
+    },
+    "o62": {
+      "category_id": 102,
+      "forum_id": 236,
+      "thread_prefixes": {
+        "watchface": 124,
+        "app": 125
+      }
+    },
+    "o62m": {
+      "category_id": 102,
+      "forum_id": 236,
+      "thread_prefixes": {
+        "watchface": 124,
+        "app": 125
+      }
+    },
+    "o63": {
+      "category_id": 102,
+      "forum_id": 236,
+      "thread_prefixes": {
+        "watchface": 124,
+        "app": 125
+      }
+    },
+    "p62": {
+      "category_id": 107,
+      "forum_id": 245,
+      "thread_prefixes": {
+        "watchface": 164,
+        "app": 148
+      }
+    },
+    "n65": {
+      "category_id": 96,
+      "forum_id": 242,
+      "thread_prefixes": {
+        "watchface": 133,
+        "app": 134
+      }
+    },
+    "o65": {
+      "category_id": 101,
+      "forum_id": 246,
+      "thread_prefixes": {
+        "watchface": 152,
+        "app": 153
+      }
+    },
+    "o65m": {
+      "category_id": 101,
+      "forum_id": 246,
+      "thread_prefixes": {
+        "watchface": 152,
+        "app": 153
+      }
+    },
+    "p65": {
+      "category_id": 101,
+      "forum_id": 246,
+      "thread_prefixes": {
+        "watchface": 152,
+        "app": 153
+      }
+    }
+  }
+}

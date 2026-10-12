@@ -6,17 +6,27 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
 type GiteaClient struct {
 	BaseURL, Token string
 	HTTP           *http.Client
+	Logger         *slog.Logger
 }
 
 func (c GiteaClient) request(ctx context.Context, method, path string, payload any, out any) error {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -38,12 +48,16 @@ func (c GiteaClient) request(ctx context.Context, method, path string, payload a
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
+		logger.Warn("gitea request failed", "request_id", observability.RequestID(ctx), "method", method, "path", path, "duration_ms", time.Since(started).Milliseconds(), "error", observability.SafeError(e))
 		return e
 	}
 	defer resp.Body.Close()
+	attrs := []any{"request_id", observability.RequestID(ctx), "method", method, "path", path, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds()}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("gitea request returned error", attrs...)
 		return fmt.Errorf("gitea %s: %s", resp.Status, readBody(resp.Body))
 	}
+	logger.Debug("gitea request", attrs...)
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
@@ -92,7 +106,7 @@ func (c GiteaClient) ReadFile(ctx context.Context, owner, repo, file, ref string
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
-	if e := c.request(ctx, "GET", "repos/"+owner+"/"+repo+"/contents/"+strings.TrimLeft(file, "/")+"?ref="+ref, nil, &out); e != nil {
+	if e := c.request(ctx, "GET", "repos/"+owner+"/"+repo+"/contents/"+strings.TrimLeft(file, "/")+"?ref="+url.QueryEscape(ref), nil, &out); e != nil {
 		return nil, e
 	}
 	decoded, e := base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))

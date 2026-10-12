@@ -7,6 +7,11 @@ import (
 	"net/http"
 )
 
+// Body verification buffers the request because the signature covers the full
+// payload. Keep a bounded pool for uploads, while allowing ordinary bodyless
+// GET requests to proceed independently.
+var attestationBodySlots = make(chan struct{}, 8)
+
 // Middleware enforces client build attestation before the wrapped handler.
 type Middleware struct {
 	Options Options
@@ -23,9 +28,32 @@ func (m Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusUnauthorized, "client_attestation_missing", "missing client attestation headers")
 		return
 	}
-	body, e := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	if r.Body != nil && !(r.Method == http.MethodGet && r.ContentLength == 0) && !(r.Method == http.MethodHead && r.ContentLength == 0) {
+		select {
+		case attestationBodySlots <- struct{}{}:
+			defer func() { <-attestationBodySlots }()
+		default:
+			writeFailure(w, http.StatusTooManyRequests, "attestation_busy", "too many attested uploads")
+			return
+		}
+	}
+	// Keep the signed-body ceiling aligned with the blob upload ceiling.
+	const maxSignedBody = 100 << 20
+	if r.ContentLength > maxSignedBody {
+		writeFailure(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body too large")
+		return
+	}
+	reader := io.Reader(http.NoBody)
+	if r.Body != nil {
+		reader = r.Body
+	}
+	body, e := io.ReadAll(io.LimitReader(reader, maxSignedBody+1))
 	if e != nil {
 		writeFailure(w, http.StatusBadRequest, "invalid_body", "could not read request body")
+		return
+	}
+	if len(body) > maxSignedBody {
+		writeFailure(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body too large")
 		return
 	}
 	_ = r.Body.Close()

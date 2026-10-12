@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/auth"
 	"github.com/zxor-org/OronBox-Server/internal/config"
@@ -22,6 +23,8 @@ type Service struct {
 	States *sync.Map
 }
 
+var oauthHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
 func NewService(cfg config.Config, s *store.Store, c *auth.Cipher, states *sync.Map) *Service {
 	if states == nil {
 		states = &sync.Map{}
@@ -34,7 +37,7 @@ func NewService(cfg config.Config, s *store.Store, c *auth.Cipher, states *sync.
 	}
 }
 
-func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect string) (string, string, string, string, error) {
+func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect string) (string, string, string, string, string, int, error) {
 	data := url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {s.Cfg.BandBBS.ClientID},
@@ -44,36 +47,44 @@ func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect 
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", s.Cfg.BandBBS.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", "", "", "", "", 0, fmt.Errorf("token exchange failed: %s", resp.Status)
+	}
 
 	var tok struct {
-		AccessToken string `json:"access_token"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil || tok.AccessToken == "" {
-		return "", "", "", "", fmt.Errorf("token exchange failed")
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil || tok.AccessToken == "" || tok.RefreshToken == "" {
+		return "", "", "", "", "", 0, fmt.Errorf("token exchange failed")
 	}
 
 	meReq, err := http.NewRequestWithContext(ctx, "GET", s.Cfg.BandBBS.MeURL, nil)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", 0, err
 	}
 	meReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	meReq.Header.Set("Accept", "application/json")
 
-	meResp, err := http.DefaultClient.Do(meReq)
+	meResp, err := oauthHTTPClient.Do(meReq)
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", 0, err
 	}
 	defer meResp.Body.Close()
+	if meResp.StatusCode < http.StatusOK || meResp.StatusCode >= http.StatusMultipleChoices {
+		return "", "", "", "", "", 0, fmt.Errorf("fetch profile failed: %s", meResp.Status)
+	}
 
 	var me struct {
 		User struct {
@@ -84,10 +95,10 @@ func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect 
 		Status string `json:"status"`
 	}
 	if err := json.NewDecoder(meResp.Body).Decode(&me); err != nil || me.User.ID <= 0 {
-		return "", "", "", "", fmt.Errorf("fetch profile failed")
+		return "", "", "", "", "", 0, fmt.Errorf("fetch profile failed")
 	}
 
-	return strconv.FormatInt(me.User.ID, 10), me.User.Username, me.User.AvatarURL, tok.AccessToken, nil
+	return strconv.FormatInt(me.User.ID, 10), me.User.Username, me.User.AvatarURL, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn, nil
 }
 
 func (s *Service) RevokeBandBBSToken(ctx context.Context, token string) error {
@@ -105,7 +116,7 @@ func (s *Service) RevokeBandBBSToken(ctx context.Context, token string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -17,15 +18,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
 type Client struct {
 	APIURL string
 	HTTP   *http.Client
+	Logger *slog.Logger
 }
 
 func New(apiURL string) *Client {
-	return &Client{APIURL: strings.TrimRight(apiURL, "/"), HTTP: &http.Client{Timeout: 5 * time.Minute}}
+	return &Client{APIURL: strings.TrimRight(apiURL, "/"), HTTP: &http.Client{Timeout: 5 * time.Minute}, Logger: slog.Default()}
 }
 
 type statusError struct {
@@ -43,8 +47,14 @@ func MissingScope(err error) bool {
 }
 
 func (c Client) request(ctx context.Context, token, method, path string, body io.Reader, contentType string, out any) error {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
 	req, err := http.NewRequestWithContext(ctx, method, c.APIURL+"/"+strings.TrimLeft(path, "/"), body)
 	if err != nil {
+		logger.Error("bandbbs request build failed", "request_id", observability.RequestID(ctx), "method", method, "path", path, "error", observability.SafeError(err))
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -54,13 +64,17 @@ func (c Client) request(ctx context.Context, token, method, path string, body io
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		logger.Warn("bandbbs request failed", "request_id", observability.RequestID(ctx), "method", method, "path", path, "duration_ms", time.Since(started).Milliseconds(), "error", observability.SafeError(err))
 		return err
 	}
 	defer resp.Body.Close()
+	logAttrs := []any{"request_id", observability.RequestID(ctx), "method", method, "path", path, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds()}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		logger.Warn("bandbbs request returned error", logAttrs...)
 		return parseAPIError(method, path, resp.StatusCode, raw)
 	}
+	logger.Debug("bandbbs request", logAttrs...)
 	if out == nil {
 		return nil
 	}
@@ -286,6 +300,11 @@ var threadLinkRe = regexp.MustCompile(`/threads/(\d+)/`)
 // ResourcePageThreadID scrapes the public resource page for the discussion thread id
 // (the API does not return it).
 func (c Client) ResourcePageThreadID(ctx context.Context, token string, resourceID int) (int, error) {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.APIURL+"/resources/"+strconv.Itoa(resourceID)+"/", nil)
 	if err != nil {
 		return 0, err
@@ -295,9 +314,11 @@ func (c Client) ResourcePageThreadID(ctx context.Context, token string, resource
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
+		logger.Warn("bandbbs resource page request failed", "request_id", observability.RequestID(ctx), "resource_id", resourceID, "duration_ms", time.Since(started).Milliseconds(), "error", observability.SafeError(err))
 		return 0, err
 	}
 	defer resp.Body.Close()
+	logger.Debug("bandbbs resource page request", "request_id", observability.RequestID(ctx), "resource_id", resourceID, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return 0, &statusError{Status: resp.StatusCode, Message: fmt.Sprintf("BandBBS resource page HTTP %d", resp.StatusCode)}
 	}

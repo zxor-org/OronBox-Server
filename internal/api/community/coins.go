@@ -16,7 +16,7 @@ func calculateStreak(r *http.Request, s *store.Store, userUID int) (int, bool) {
 		FROM daily_coin_checkins
 		WHERE user_uid = $1
 		ORDER BY checkin_date DESC
-		LIMIT 100
+		LIMIT 400
 	`, userUID)
 	if err != nil {
 		return 0, false
@@ -34,8 +34,10 @@ func calculateStreak(r *http.Request, s *store.Store, userUID int) (int, bool) {
 		return 0, false
 	}
 
-	today := time.Now().Format("2006-01-02")
-	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	var today, yesterday string
+	if err := s.Pool.QueryRow(r.Context(), `SELECT CURRENT_DATE::text, (CURRENT_DATE - 1)::text`).Scan(&today, &yesterday); err != nil {
+		return 0, false
+	}
 
 	streak := 0
 	checkedToday := false
@@ -104,7 +106,11 @@ func HandlePostCheckin(s *store.Store) http.HandlerFunc {
 			return
 		}
 
-		today := time.Now().Format("2006-01-02")
+		var today string
+		if err := s.Pool.QueryRow(r.Context(), `SELECT CURRENT_DATE::text`).Scan(&today); err != nil {
+			httputil.Error(w, http.StatusInternalServerError, "db_error", "无法读取当前日期")
+			return
+		}
 		reward := 10 // 10 units = 1 coin
 		var newBal int
 
@@ -121,8 +127,8 @@ func HandlePostCheckin(s *store.Store) http.HandlerFunc {
 
 			// Record checkin
 			if _, err := tx.Exec(r.Context(), `
-				INSERT INTO daily_coin_checkins (user_uid, checkin_date, coins_awarded)
-				VALUES ($1, CURRENT_DATE, $2)
+				INSERT INTO daily_coin_checkins (user_uid, checkin_date, coins_awarded, streak_days)
+				VALUES ($1, CURRENT_DATE, $2, COALESCE((SELECT streak_days FROM daily_coin_checkins WHERE user_uid = $1 AND checkin_date = CURRENT_DATE - 1), 0) + 1)
 			`, userUID, reward); err != nil {
 				return err
 			}
@@ -181,6 +187,15 @@ func HandleGetCoinLedger(s *store.Store) http.HandlerFunc {
 
 		page := httputil.ParseInt(r.URL.Query().Get("page"), 1)
 		size := httputil.ParseInt(r.URL.Query().Get("size"), 30)
+		if page < 1 {
+			page = 1
+		}
+		if size < 1 {
+			size = 1
+		}
+		if size > 100 {
+			size = 100
+		}
 		offset := (page - 1) * size
 
 		rows, err := s.Pool.Query(r.Context(), `

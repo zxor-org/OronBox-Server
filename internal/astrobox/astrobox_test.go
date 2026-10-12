@@ -1,12 +1,28 @@
 package astrobox
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/zxor-org/OronBox-Server/internal/syndication"
 )
+
+func TestBuildResourceCSVQuotesFields(t *testing.T) {
+	raw := BuildResourceCSV(CatalogEntry{ID: "x", Name: "name,with\nnewline", Tags: "a;b"})
+	r := csv.NewReader(strings.NewReader(string(raw)))
+	if _, err := r.Read(); err != nil {
+		t.Fatal(err)
+	}
+	row, err := r.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row[1] != "name,with\nnewline" {
+		t.Fatalf("name was not preserved: %q", row[1])
+	}
+}
 
 func sampleManifest() syndication.Manifest {
 	var m syndication.Manifest

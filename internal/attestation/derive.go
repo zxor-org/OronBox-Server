@@ -100,6 +100,9 @@ func Verify(tag, commit, signature, timestamp, nonce, method, path string, body 
 	if tag == "" || commit == "" || signature == "" || timestamp == "" || nonce == "" {
 		return "", ErrMissingHeaders
 	}
+	if !validTag(tag) || !validCommit(commit) || !validNonce(nonce) {
+		return "", ErrInvalidSignature
+	}
 	if len(o.MasterKey) == 0 {
 		return "", ErrMissingHeaders
 	}
@@ -138,4 +141,49 @@ func Verify(tag, commit, signature, timestamp, nonce, method, path string, body 
 		return "", ErrNonceReplayed
 	}
 	return tag, nil
+}
+
+func validTag(tag string) bool {
+	v := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(tag), "v"))
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validCommit(commit string) bool {
+	v := strings.TrimSpace(commit)
+	if len(v) != 40 && len(v) != 64 {
+		return false
+	}
+	for _, c := range v {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func validNonce(nonce string) bool {
+	v := strings.TrimSpace(nonce)
+	if len(v) != 32 {
+		return false
+	}
+	for _, c := range v {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

@@ -68,14 +68,11 @@ func RetryDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	d := 30 * time.Second
-	for i := 1; i < attempt; i++ {
-		d *= 2
+	delays := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute}
+	if attempt > len(delays) {
+		attempt = len(delays)
 	}
-	if d > 10*time.Minute {
-		d = 10 * time.Minute
-	}
-	return d
+	return delays[attempt-1]
 }
 func CategoryIDs(downloads []struct{ CategoryID int }) []int {
 	set := map[int]struct{}{}

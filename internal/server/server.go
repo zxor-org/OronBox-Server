@@ -16,6 +16,7 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
 	"github.com/zxor-org/OronBox-Server/internal/store"
+	"github.com/zxor-org/OronBox-Server/internal/syndication"
 	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
@@ -31,8 +32,11 @@ type Dependencies struct {
 func New(d Dependencies) http.Handler {
 	app := newApplication(d)
 	app.refreshRevocation()
+	go app.cleanupOAuthStates(context.Background())
 	if d.StartWorkers && d.Store != nil {
 		go app.runCoordinator(context.Background())
+		go app.runPublications(context.Background())
+		go app.runReleaseSyncWorker(context.Background())
 	}
 
 	baseURL := d.Config.BaseURL
@@ -48,6 +52,16 @@ func New(d Dependencies) http.Handler {
 	}
 	r2PublicURL := d.Config.R2.PublicURL
 	r2Client := catalog.NewR2Client(d.Config.R2)
+	catalogOwner, catalogRepo, _ := syndication.SplitRepository(d.Config.Gitea.CatalogRepo)
+	publicationSource := syndication.PublicationConfigSource{
+		Client:   syndication.GiteaClient{BaseURL: d.Config.Gitea.APIURL, Token: d.Config.Gitea.ClientSecret},
+		Owner:    catalogOwner,
+		Repo:     catalogRepo,
+		Ref:      d.Config.GiteaCatalogRef,
+		LocalDir: d.Config.PublicationConfigDir,
+	}
+	communityGitea := syndication.GiteaClient{BaseURL: d.Config.Gitea.APIURL, Token: d.Config.Gitea.ClientSecret}
+	blogs := admin.NewBlogHandlers(d.Store, communityGitea, catalogOwner, catalogRepo, d.Config.GiteaCatalogRef)
 
 	authSvc := auth.NewService(d.Config, d.Store, app.cipher, &app.states)
 
@@ -70,14 +84,18 @@ func New(d Dependencies) http.Handler {
 
 	// Spec §2.1: GET /healthz 含 timestamp
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		database := "unavailable"
+		if d.Store != nil && d.Store.Pool != nil && d.Store.Pool.Ping(r.Context()) == nil {
+			database = "connected"
+		}
 		httputil.JSON(w, http.StatusOK, map[string]any{
 			"status":    "pass",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"database":  map[bool]string{true: "connected", false: "unavailable"}[d.Store != nil],
+			"database":  database,
 		})
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		if d.Store == nil || d.Store.Pool.Ping(r.Context()) != nil {
+		if d.Store == nil || d.Store.Pool == nil || d.Store.Pool.Ping(r.Context()) != nil {
 			httputil.Error(w, http.StatusServiceUnavailable, "not_ready", "服务未就绪")
 			return
 		}
@@ -97,9 +115,9 @@ func New(d Dependencies) http.Handler {
 
 	// 3. Client Public Catalog & Blobs API
 	// Spec §3.3: 公开分机型安装包直下 (免构建鉴权)
-	mux.HandleFunc("GET /api/v1/resources/{id}/download/{device}", catalog.HandleDownloadDeviceRedirect(d.Store, baseURL))
+	mux.Handle("GET /api/v1/resources/{id}/download/{device}", catalog.HandleDownloadDeviceRedirect(d.Store, baseURL))
 	mux.Handle("GET /api/v1/blobs/", catalog.HandleServeBlob(d.Store, blobDir, r2PublicURL))
-	mux.Handle("POST /api/v1/blobs", app.withAttestation(authRequired(app, catalog.HandleUploadBlob(d.Store, blobDir, r2Client))))
+	mux.Handle("POST /api/v1/blobs", authRequired(app, app.withAttestation(catalog.HandleUploadBlob(d.Store, blobDir, r2Client))))
 
 	// Spec §3.1 / §3.2 / §3.5 / §3.6: 资源探索与详情 (构建鉴权)
 	mux.Handle("GET /api/v1/resources", app.withAttestation(catalog.HandleGetResources(d.Store, baseURL)))
@@ -135,13 +153,17 @@ func New(d Dependencies) http.Handler {
 		}
 		httputil.Error(w, http.StatusNotFound, "not_found", "接口不存在")
 	})))
+	mux.Handle("DELETE /api/v1/comments/", app.withAttestation(authRequired(app, community.HandleDeleteComment(d.Store))))
 
 	mux.Handle("GET /api/v1/tags", app.withAttestation(catalog.HandleGetTags(d.Store)))
 	mux.Handle("GET /api/v1/collections/", app.withAttestation(catalog.HandleGetCollectionDetail(d.Store, baseURL)))
 
 	// 4. Client Plugins & Releases
 	mux.Handle("GET /api/v1/plugins", app.withAttestation(catalog.HandleGetPlugins(d.Store)))
-	mux.HandleFunc("GET /api/v1/plugins/{id}/package", catalog.HandleDownloadPluginPackage(d.Store, baseURL))
+	mux.Handle("GET /api/v1/plugins/{id}", app.withAttestation(catalog.HandleGetPluginDetail(d.Store)))
+	mux.Handle("POST /api/v1/plugins", app.withAttestation(authRequired(app, catalog.HandleUploadPlugin(d.Store, blobDir, r2Client))))
+	mux.Handle("DELETE /api/v1/plugins/{id}", app.withAttestation(authRequired(app, catalog.HandleDeletePlugin(d.Store))))
+	mux.Handle("GET /api/v1/plugins/{id}/package", app.withAttestation(catalog.HandleDownloadPluginPackage(d.Store, baseURL)))
 	mux.Handle("GET /api/v1/app/releases", app.withAttestation(catalog.HandleGetLatestRelease(d.Store)))
 	// Deprecated alias: preserved for backward compatibility
 	mux.Handle("GET /api/v1/releases/latest", app.withAttestation(catalog.HandleGetLatestRelease(d.Store)))
@@ -149,7 +171,10 @@ func New(d Dependencies) http.Handler {
 	// 5. User Profile & Messages & Coins (with Attestation)
 	mux.Handle("GET /api/v1/users/me", app.withAttestation(authRequired(app, community.HandleGetMe(d.Store))))
 	mux.Handle("GET /api/v1/messages", app.withAttestation(authRequired(app, community.HandleGetMessages(d.Store))))
+	mux.Handle("DELETE /api/v1/messages", app.withAttestation(authRequired(app, community.HandleClearMessages(d.Store))))
 	mux.Handle("PUT /api/v1/messages/", app.withAttestation(authRequired(app, community.HandleMarkMessageRead(d.Store))))
+	mux.Handle("GET /api/v1/announcements/unread", app.withAttestation(authRequired(app, community.HandleGetAnnouncements(d.Store))))
+	mux.Handle("POST /api/v1/announcements/read", app.withAttestation(authRequired(app, community.HandleReadAnnouncements(d.Store))))
 	mux.Handle("GET /api/v1/coins/account", app.withAttestation(authRequired(app, community.HandleGetCoinAccount(d.Store))))
 	mux.Handle("POST /api/v1/coins/checkin", app.withAttestation(authRequired(app, community.HandlePostCheckin(d.Store))))
 	mux.Handle("GET /api/v1/coins/ledger", app.withAttestation(authRequired(app, community.HandleGetCoinLedger(d.Store))))
@@ -169,11 +194,11 @@ func New(d Dependencies) http.Handler {
 	// 7. Creator Resources & Collections & Collaborators (with Attestation)
 	mux.Handle("GET /api/v1/creator/resources", app.withAttestation(authRequired(app, creator.HandleCreatorGetResources(d.Store))))
 	mux.Handle("POST /api/v1/creator/resources", app.withAttestation(authRequired(app, creator.HandleCreatorCreateResource(d.Store))))
-	mux.Handle("PUT /api/v1/creator/resources/", app.withAttestation(authRequired(app, creator.HandleCreatorSaveDraft(d.Store))))
+	mux.Handle("PUT /api/v1/creator/resources/", app.withAttestation(authRequired(app, creator.HandleCreatorSaveDraft(d.Store, blobDir, r2Client))))
 	mux.Handle("POST /api/v1/creator/resources/", app.withAttestation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if strings.HasSuffix(p, "/publish") {
-			authRequired(app, creator.HandleCreatorPublishResource(d.Store)).ServeHTTP(w, r)
+			authRequired(app, creator.HandleCreatorPublishResourceWithPublicationSource(d.Store, blobDir, publicationSource)).ServeHTTP(w, r)
 			return
 		}
 		if strings.HasSuffix(p, "/collaborators") {
@@ -183,14 +208,37 @@ func New(d Dependencies) http.Handler {
 		httputil.Error(w, http.StatusNotFound, "not_found", "接口不存在")
 	})))
 	mux.Handle("GET /api/v1/creator/resources/", app.withAttestation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/relationships") {
+			authRequired(app, creator.HandleCreatorGetRelationships(d.Store)).ServeHTTP(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/source") {
+			authRequired(app, creator.HandleCreatorGetRelationships(d.Store)).ServeHTTP(w, r)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			authRequired(app, creator.HandleCreatorDownloadBlob(d.Store, blobDir, r2PublicURL)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/collaborators") {
 			authRequired(app, creator.HandleCreatorGetCollaborators(d.Store)).ServeHTTP(w, r)
 			return
 		}
 		httputil.Error(w, http.StatusNotFound, "not_found", "接口不存在")
 	})))
+	mux.Handle("GET /api/v1/creator/resources/{id}", app.withAttestation(authRequired(app, creator.HandleCreatorGetResourceDetail(d.Store))))
+	mux.Handle("DELETE /api/v1/creator/resources/{id}/collaborators/{userId}", app.withAttestation(authRequired(app, creator.HandleCreatorRemoveCollaborator(d.Store))))
+	mux.Handle("GET /api/v1/collaborations", app.withAttestation(authRequired(app, creator.HandleGetCollaborationInvitations(d.Store))))
+	mux.Handle("POST /api/v1/resources/{id}/collaboration/accept", app.withAttestation(authRequired(app, creator.HandleAcceptCollaboration(d.Store))))
+	mux.Handle("DELETE /api/v1/resources/{id}/collaboration", app.withAttestation(authRequired(app, creator.HandleDeclineCollaboration(d.Store))))
+	mux.Handle("GET /api/v1/creator/coins/stats", app.withAttestation(authRequired(app, creator.HandleCreatorCoinStats(d.Store))))
+	mux.Handle("PUT /api/v1/creator/resources/{id}/source", app.withAttestation(authRequired(app, creator.HandleCreatorResourceSource(d.Store))))
+	mux.Handle("POST /api/v1/creator/resources/{id}/takedown", app.withAttestation(authRequired(app, creator.HandleCreatorResourceState(d.Store, false))))
+	mux.Handle("POST /api/v1/creator/resources/{id}/restore", app.withAttestation(authRequired(app, creator.HandleCreatorResourceState(d.Store, true))))
+	mux.Handle("DELETE /api/v1/creator/resources/{id}", app.withAttestation(authRequired(app, creator.HandleCreatorDeleteResource(d.Store))))
 
 	mux.Handle("GET /api/v1/creator/collections", app.withAttestation(authRequired(app, creator.HandleCreatorGetCollections(d.Store))))
+	mux.Handle("GET /api/v1/creator/collections/{id}", app.withAttestation(authRequired(app, creator.HandleCreatorGetCollectionDetail(d.Store))))
 	mux.Handle("POST /api/v1/creator/collections", app.withAttestation(authRequired(app, creator.HandleCreatorSaveCollection(d.Store))))
 	mux.Handle("POST /api/v1/creator/collections/", app.withAttestation(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/publish") {
@@ -199,23 +247,34 @@ func New(d Dependencies) http.Handler {
 		}
 		httputil.Error(w, http.StatusNotFound, "not_found", "接口不存在")
 	})))
+	mux.Handle("PUT /api/v1/creator/collections/", app.withAttestation(authRequired(app, creator.HandleCreatorUpdateCollectionResources(d.Store))))
+	mux.Handle("PATCH /api/v1/creator/collections/", app.withAttestation(authRequired(app, creator.HandleCreatorUpdateCollection(d.Store))))
+	mux.Handle("DELETE /api/v1/creator/collections/", app.withAttestation(authRequired(app, creator.HandleCreatorDeleteCollection(d.Store))))
 
 	// Deprecated aliases: preserved for backward compatibility
-	mux.Handle("POST /api/v1/creator/submissions", app.withAttestation(authRequired(app, creator.HandleCreatorSubmit(d.Store))))
+	mux.Handle("POST /api/v1/creator/submissions", app.withAttestation(authRequired(app, creator.HandleCreatorSubmit(d.Store, blobDir))))
 	mux.Handle("GET /api/v1/creator/submissions", app.withAttestation(authRequired(app, creator.HandleCreatorGetSubmissions(d.Store))))
+	mux.Handle("GET /api/v1/creator/submissions/", app.withAttestation(authRequired(app, creator.HandleCreatorGetSubmissionDetail(d.Store))))
+	mux.Handle("GET /api/v1/creator/submissions/{id}/astrobox", app.withAttestation(http.HandlerFunc(app.getAstroboxReview)))
+	mux.Handle("GET /api/v1/creator/submissions/{id}/astrobox/comments", app.withAttestation(http.HandlerFunc(app.getAstroboxComments)))
+	mux.Handle("POST /api/v1/creator/submissions/{id}/astrobox/comments", app.withAttestation(http.HandlerFunc(app.createAstroboxComment)))
+	mux.Handle("POST /api/v1/creator/submissions/{id}/astrobox/fix", app.withAttestation(http.HandlerFunc(app.appendAstroboxFix)))
+	mux.Handle("PATCH /api/v1/creator/submissions/{id}/astrobox/comments/{comment}", app.withAttestation(http.HandlerFunc(app.updateAstroboxComment)))
+	mux.Handle("DELETE /api/v1/creator/submissions/{id}/astrobox/comments/{comment}", app.withAttestation(http.HandlerFunc(app.deleteAstroboxComment)))
 
 	// 8. BandBBS & GitHub OAuth2
-	mux.HandleFunc("POST /api/v1/auth/bandbbs/start", authSvc.HandleAuthStart)
-	mux.HandleFunc("GET /api/v1/auth/bandbbs/start", authSvc.HandleAuthStart)
+	mux.Handle("POST /api/v1/auth/bandbbs/start", app.withAttestation(http.HandlerFunc(authSvc.HandleAuthStart)))
+	mux.Handle("GET /api/v1/auth/bandbbs/start", app.withAttestation(http.HandlerFunc(authSvc.HandleAuthStart)))
 	mux.HandleFunc("GET /oauth2/bandbbs/callback", authSvc.HandleAuthCallback(app.renderTransition, app.finishAdminLogin))
-	mux.HandleFunc("POST /api/v1/auth/ticket/exchange", authSvc.HandleTicketExchange)
-	mux.HandleFunc("POST /api/v1/auth/session/refresh", authSvc.HandleSessionRefresh)
-	mux.HandleFunc("POST /api/v1/auth/session/revoke", authSvc.HandleRevokeSession)
+	mux.Handle("POST /api/v1/auth/ticket/exchange", app.withAttestation(http.HandlerFunc(authSvc.HandleTicketExchange)))
+	mux.Handle("POST /api/v1/auth/session/refresh", app.withAttestation(http.HandlerFunc(authSvc.HandleSessionRefresh)))
+	mux.Handle("POST /api/v1/auth/bandbbs/token/refresh", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleBandBBSTokenRefresh))))
+	mux.Handle("POST /api/v1/auth/session/revoke", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleRevokeSession))))
 
-	mux.Handle("GET /api/v1/auth/github/web/start", authRequired(app, http.HandlerFunc(authSvc.HandleGithubWebStart)))
-	mux.Handle("GET /api/v1/auth/github/grant", authRequired(app, http.HandlerFunc(authSvc.HandleGithubWebStatus)))
+	mux.Handle("GET /api/v1/auth/github/web/start", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleGithubWebStart))))
+	mux.Handle("GET /api/v1/auth/github/grant", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleGithubWebStatus))))
 	mux.HandleFunc("GET /oauth2/github/callback", authSvc.HandleGithubWebCallback)
-	mux.Handle("DELETE /api/v1/auth/github/grant", authRequired(app, http.HandlerFunc(authSvc.HandleGithubRevoke)))
+	mux.Handle("DELETE /api/v1/auth/github/grant", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleGithubRevoke))))
 
 	// 9. Admin Console & Management APIs
 	mux.HandleFunc("GET /console", app.consoleRedirect)
@@ -230,16 +289,20 @@ func New(d Dependencies) http.Handler {
 		defer app.revMu.RUnlock()
 		return app.minimum
 	})))
-	mux.Handle("POST /admin/api/revocations", app.adminProtected(admin.HandleRevocationsPost(d.Store, app.refreshRevocation)))
+	mux.Handle("POST /admin/api/revocations", app.adminProtected(admin.HandleRevocationsPostWithMaster(d.Store, d.Config.AttestationMasterKey, app.refreshRevocation)))
 	mux.Handle("DELETE /admin/api/revocations/{fingerprint}", app.adminProtected(admin.HandleRevocationsDelete(d.Store, app.refreshRevocation)))
 	mux.Handle("POST /admin/api/console/sync", app.adminProtected(http.HandlerFunc(app.consoleSyncPost)))
 	mux.Handle("GET /admin/api/console/status", app.adminProtected(http.HandlerFunc(app.consoleStatusGet)))
 	mux.Handle("POST /admin/api/releases/sync", app.adminProtected(http.HandlerFunc(app.releaseSync)))
+	mux.Handle("POST /admin/api/publications/{id}/retry", app.adminProtected(http.HandlerFunc(app.retryPublication)))
+	mux.Handle("GET /admin/api/roles/members", app.adminProtected(admin.HandleGetRoleMembers(d.Store)))
+	mux.Handle("POST /admin/api/roles/admin", app.adminProtected(admin.HandleSetAdminRole(d.Store, d.Config.AdminBandBBSUIDs)))
+	mux.Handle("POST /admin/api/roles/reviewer", app.adminProtected(admin.HandleSetReviewerRole(d.Store, d.Config.AdminBandBBSUIDs)))
 
 	// Admin UGC Reviews & Management
 	mux.Handle("GET /admin/api/reviews", app.adminProtected(admin.HandleAdminGetReviews(d.Store)))
 	mux.Handle("GET /admin/api/reviews/revisions/", app.adminProtected(admin.HandleAdminGetReviewDetail(d.Store, baseURL)))
-	mux.Handle("POST /admin/api/reviews/revisions/", app.adminProtected(admin.HandleAdminDecideReview(d.Store)))
+	mux.Handle("POST /admin/api/reviews/revisions/", app.adminProtected(admin.HandleAdminDecideReviewWithPublicationSource(d.Store, blobDir, publicationSource)))
 	mux.Handle("POST /admin/api/reviews/collections/", app.adminProtected(admin.HandleAdminDecideCollectionReview(d.Store)))
 
 	// Admin Resources & Plugins
@@ -248,6 +311,7 @@ func New(d Dependencies) http.Handler {
 	mux.Handle("POST /admin/api/resources/", app.adminProtected(admin.HandleAdminUpdateResourceState(d.Store)))
 
 	mux.Handle("GET /admin/api/plugins", app.adminProtected(admin.HandleAdminGetPlugins(d.Store)))
+	mux.Handle("GET /admin/api/plugins/{id}/download", app.adminProtected(admin.HandleAdminDownloadPlugin(d.Store, blobDir, r2PublicURL)))
 	mux.Handle("POST /admin/api/plugins/", app.adminProtected(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/review") {
 			admin.HandleAdminReviewPlugin(d.Store)(w, r)
@@ -277,6 +341,7 @@ func New(d Dependencies) http.Handler {
 
 	// Admin Feedback & Comments
 	mux.Handle("GET /admin/api/tickets", app.adminProtected(admin.HandleAdminGetTickets(d.Store)))
+	mux.Handle("GET /admin/api/tickets/", app.adminProtected(admin.HandleAdminGetTicketDetail(d.Store)))
 	mux.Handle("POST /admin/api/tickets/", app.adminProtected(admin.HandleAdminReplyTicket(d.Store)))
 	mux.Handle("GET /admin/api/comments", app.adminProtected(admin.HandleAdminGetComments(d.Store)))
 	mux.Handle("POST /admin/api/comments/", app.adminProtected(admin.HandleAdminUpdateCommentState(d.Store)))
@@ -293,6 +358,22 @@ func New(d Dependencies) http.Handler {
 	mux.Handle("DELETE /admin/api/tags/", app.adminProtected(admin.HandleAdminDeleteTag(d.Store)))
 
 	mux.Handle("GET /admin/api/templates", app.adminProtected(admin.HandleAdminGetTemplates(d.Store)))
+	mux.Handle("POST /admin/api/templates", app.adminProtected(admin.HandleAdminSaveTemplate(d.Store)))
+	mux.Handle("PUT /admin/api/templates/", app.adminProtected(admin.HandleAdminSaveTemplate(d.Store)))
+	mux.Handle("DELETE /admin/api/templates/", app.adminProtected(admin.HandleAdminDeleteTemplate(d.Store)))
+	mux.Handle("GET /admin/api/audit", app.adminProtected(admin.HandleAdminGetAudit(d.Store)))
+	mux.Handle("GET /admin/api/blogs", app.adminProtected(http.HandlerFunc(blogs.Get)))
+	mux.Handle("POST /admin/api/blogs", app.adminProtected(http.HandlerFunc(blogs.Create)))
+	mux.Handle("PUT /admin/api/blogs/", app.adminProtected(http.HandlerFunc(blogs.Update)))
+	mux.Handle("DELETE /admin/api/blogs/", app.adminProtected(http.HandlerFunc(blogs.Delete)))
+	mux.Handle("GET /api/blog", http.HandlerFunc(blogs.PublicList))
+	mux.Handle("GET /api/blog/", http.HandlerFunc(blogs.PublicGet))
+	mux.HandleFunc("GET /api/home", func(w http.ResponseWriter, r *http.Request) {
+		// The canonical home feed lives in the community Gitea repository. This
+		// response keeps older clients functional when they fall back to Server;
+		// current clients read explore/manifest.json directly from Gitea first.
+		httputil.JSON(w, http.StatusOK, map[string]any{"banners": []any{}, "sections": []any{}, "resource_feed_available": false})
+	})
 
-	return recoverMiddleware(mux)
+	return requestLogger(recoverMiddleware(rateLimitMiddleware(app, mux)))
 }

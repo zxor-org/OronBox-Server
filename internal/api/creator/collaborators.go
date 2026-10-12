@@ -2,6 +2,7 @@ package creator
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -28,6 +29,19 @@ func HandleCreatorGetCollaborators(s *store.Store) http.HandlerFunc {
 					break
 				}
 			}
+		}
+
+		var isAuthorized bool
+		_ = s.Pool.QueryRow(r.Context(), `
+			SELECT true FROM resources r
+			WHERE r.resource_id = $1 AND (
+				r.owner_uid = $2
+				OR EXISTS (SELECT 1 FROM resource_collaborators rc WHERE rc.resource_id = $1 AND rc.user_uid = $2 AND rc.status = 'accepted')
+			)
+		`, resID, userUID).Scan(&isAuthorized)
+		if !isAuthorized {
+			httputil.Error(w, http.StatusForbidden, "forbidden", "无权查看该资源协作者列表")
+			return
 		}
 
 		rows, err := s.Pool.Query(r.Context(), `
@@ -110,19 +124,59 @@ func HandleCreatorInviteCollaborator(s *store.Store) http.HandlerFunc {
 			httputil.Error(w, http.StatusForbidden, "forbidden", "仅资源所有者可邀请协作者")
 			return
 		}
+		if req.BandBBSUID == userUID {
+			httputil.Error(w, http.StatusBadRequest, "invalid_collaborator", "资源所有者无需邀请自己")
+			return
+		}
+		var targetExists bool
+		if err := s.Pool.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM users WHERE bandbbs_uid=$1)`, req.BandBBSUID).Scan(&targetExists); err != nil || !targetExists {
+			httputil.Error(w, http.StatusNotFound, "user_not_found", "协作者用户不存在")
+			return
+		}
 
 		_, err = s.Pool.Exec(r.Context(), `
 			INSERT INTO resource_collaborators (resource_id, user_uid, role, status, updated_at)
-			VALUES ($1, $2, $3, 'accepted', now())
+			VALUES ($1, $2, $3, 'pending', now())
 			ON CONFLICT (resource_id, user_uid) DO UPDATE
-			SET role = EXCLUDED.role, status = 'accepted', updated_at = now()
-		`, resID, req.BandBBSUID, req.Role)
+			SET role = EXCLUDED.role, status = 'pending', invited_by_uid = $4, updated_at = now()
+		`, resID, req.BandBBSUID, req.Role, userUID)
 
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
+		payload, _ := json.Marshal(map[string]any{"resource_id": resID, "invited_by_uid": userUID, "role": req.Role})
+		_, _ = s.Pool.Exec(r.Context(), `INSERT INTO user_messages(user_uid,kind,event,data,title,body,ref) VALUES($1,'collaboration','collaboration.invited',$2,'新的协作邀请','你被邀请参与资源协作',$3)`, req.BandBBSUID, payload, resID)
 
 		httputil.JSON(w, http.StatusOK, map[string]string{"status": "invited"})
+	}
+}
+
+// HandleCreatorRemoveCollaborator removes a collaborator or pending invite.
+// Only the resource owner can revoke an association.
+func HandleCreatorRemoveCollaborator(s *store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid, err := httputil.AuthenticateUser(r.Context(), s, httputil.ExtractBearerToken(r))
+		if err != nil {
+			httputil.Error(w, 401, "unauthorized", "未登录或Token失效")
+			return
+		}
+		resourceID := r.PathValue("id")
+		userID := r.PathValue("userId")
+		var target int
+		if _, err := fmt.Sscanf(userID, "%d", &target); err != nil || target <= 0 {
+			httputil.Error(w, 400, "invalid_user", "协作者 ID 无效")
+			return
+		}
+		result, err := s.Pool.Exec(r.Context(), `DELETE FROM resource_collaborators rc USING resources r WHERE rc.resource_id=$1 AND rc.user_uid=$2 AND r.resource_id=rc.resource_id AND r.owner_uid=$3`, resourceID, target, uid)
+		if err != nil {
+			httputil.Error(w, 500, "db_error", "移除协作者失败")
+			return
+		}
+		if result.RowsAffected() == 0 {
+			httputil.Error(w, 404, "collaborator_not_found", "协作者不存在或无权操作")
+			return
+		}
+		httputil.JSON(w, 200, map[string]string{"status": "removed"})
 	}
 }

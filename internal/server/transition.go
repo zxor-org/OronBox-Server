@@ -36,7 +36,6 @@ func (a *application) handleHome(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
-
 func authErrorMessage(code string) string {
 	switch strings.TrimSpace(code) {
 	case "invalid_callback":

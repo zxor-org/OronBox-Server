@@ -113,14 +113,22 @@ func HandleAdminUpdateResourceState(s *store.Store) http.HandlerFunc {
 			httputil.Error(w, http.StatusBadRequest, "invalid_body", "参数错误")
 			return
 		}
+		if req.State != "visible" && req.State != "suspended" && req.State != "deleted" {
+			httputil.Error(w, http.StatusBadRequest, "invalid_state", "资源状态无效")
+			return
+		}
 
-		_, err = s.Pool.Exec(r.Context(), `
+		result, err := s.Pool.Exec(r.Context(), `
 			UPDATE resources 
 			SET moderation_state = $1, moderation_reason = $2, moderation_by = 'admin', updated_at = now()
-			WHERE resource_id = $3
+			WHERE resource_id = $3 AND ($1 <> 'visible' OR current_revision_id IS NOT NULL)
 		`, req.State, req.Reason, id)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
+			return
+		}
+		if result.RowsAffected() == 0 {
+			httputil.Error(w, http.StatusNotFound, "resource_not_found", "资源不存在")
 			return
 		}
 

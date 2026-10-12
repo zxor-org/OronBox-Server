@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
 // GitHubClient talks to the GitHub REST API. It implements the same Git-data
@@ -18,6 +21,17 @@ import (
 type GitHubClient struct {
 	BaseURL, Token string
 	HTTP           *http.Client
+	Logger         *slog.Logger
+}
+
+// GitHubRelease is the subset of a GitHub Release used by the client update
+// feed. Drafts and prereleases are filtered by the caller.
+type GitHubRelease struct {
+	TagName     string `json:"tag_name"`
+	Body        string `json:"body"`
+	PublishedAt string `json:"published_at"`
+	Draft       bool   `json:"draft"`
+	Prerelease  bool   `json:"prerelease"`
 }
 
 type githubError struct {
@@ -43,6 +57,11 @@ func (c GitHubClient) base() string {
 }
 
 func (c GitHubClient) request(ctx context.Context, method, path string, payload any, out any) error {
+	logger := c.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 30 * time.Second}
 	}
@@ -60,17 +79,23 @@ func (c GitHubClient) request(ctx context.Context, method, path string, payload 
 	if e != nil {
 		return e
 	}
-	req.Header.Set("Authorization", "Bearer "+c.Token)
+	if strings.TrimSpace(c.Token) != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
+		logger.Warn("github request failed", "request_id", observability.RequestID(ctx), "method", method, "path", path, "duration_ms", time.Since(started).Milliseconds(), "error", observability.SafeError(e))
 		return e
 	}
 	defer resp.Body.Close()
+	attrs := []any{"request_id", observability.RequestID(ctx), "method", method, "path", path, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds()}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("github request returned error", attrs...)
 		return &githubError{Status: resp.StatusCode, Message: fmt.Sprintf("github %s %s: %s", method, path, resp.Status)}
 	}
+	logger.Debug("github request", attrs...)
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
@@ -261,6 +286,23 @@ func (c GitHubClient) ReadFile(ctx context.Context, owner, repo, file, ref strin
 	return base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
 }
 
+// ListReleases returns the public release history for a repository.
+func (c GitHubClient) ListReleases(ctx context.Context, owner, repo string) ([]GitHubRelease, error) {
+	all := make([]GitHubRelease, 0, 100)
+	for page := 1; page <= 20; page++ {
+		var out []GitHubRelease
+		path := fmt.Sprintf("repos/%s/%s/releases?per_page=100&page=%d", owner, repo, page)
+		if err := c.request(ctx, "GET", path, nil, &out); err != nil {
+			return nil, err
+		}
+		all = append(all, out...)
+		if len(out) < 100 {
+			break
+		}
+	}
+	return all, nil
+}
+
 func (c GitHubClient) CreatePullRequest(ctx context.Context, baseOwner, baseRepo, title, headOwner, headBranch, baseBranch, body string) (int, string, error) {
 	var out struct {
 		Number  int    `json:"number"`
@@ -278,11 +320,32 @@ func (c GitHubClient) MergePullRequest(ctx context.Context, owner, repo string, 
 
 // GitHubIssueComment carries the fields needed to derive review status.
 type GitHubIssueComment struct {
+	ID        int64  `json:"id"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
 	User      struct {
 		Login string `json:"login"`
 	} `json:"user"`
+}
+
+func (c GitHubClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (GitHubIssueComment, error) {
+	var out GitHubIssueComment
+	err := c.request(ctx, "POST", fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, number), map[string]any{"body": body}, &out)
+	return out, err
+}
+
+func (c GitHubClient) GetIssueComment(ctx context.Context, owner, repo string, id int64) (GitHubIssueComment, error) {
+	var out GitHubIssueComment
+	err := c.request(ctx, "GET", fmt.Sprintf("repos/%s/%s/issues/comments/%d", owner, repo, id), nil, &out)
+	return out, err
+}
+
+func (c GitHubClient) UpdateIssueComment(ctx context.Context, owner, repo string, id int64, body string) error {
+	return c.request(ctx, "PATCH", fmt.Sprintf("repos/%s/%s/issues/comments/%d", owner, repo, id), map[string]any{"body": body}, nil)
+}
+
+func (c GitHubClient) DeleteIssueComment(ctx context.Context, owner, repo string, id int64) error {
+	return c.request(ctx, "DELETE", fmt.Sprintf("repos/%s/%s/issues/comments/%d", owner, repo, id), nil, nil)
 }
 
 func (c GitHubClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]GitHubIssueComment, error) {
@@ -298,6 +361,13 @@ type GitHubPullRequest struct {
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
 	HTMLURL string `json:"html_url"`
+	Head    struct {
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
 }
 
 func (c GitHubClient) GetPullRequest(ctx context.Context, owner, repo string, number int) (GitHubPullRequest, error) {

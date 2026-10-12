@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +16,13 @@ import (
 
 func signedHeaders(t *testing.T, master []byte, tag, commit, method, path string, ts time.Time, nonce string, body []byte) map[string]string {
 	t.Helper()
+	if commit == "abc" {
+		commit = "d7a5b3f0e1c2a9b8c7d6e5f4a3b2c1d0e9f8a7b6"
+	}
+	if len(nonce) < 32 {
+		digest := sha256.Sum256([]byte(nonce))
+		nonce = hex.EncodeToString(digest[:16])
+	}
 	key := DeriveReleaseKey(master, tag, commit)
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(CanonicalString(method, path, ts.Unix(), nonce, body)))
@@ -64,7 +72,8 @@ func TestMiddlewareAllowsValidAndRejectsBadRequests(t *testing.T) {
 		t.Fatalf("bad signature: %d %s", w.Code, w.Body.String())
 	}
 
-	rev := Middleware{Options: Options{MasterKey: master, NonceStore: NewNonceStore(time.Minute), Clock: func() time.Time { return now }, Revocation: NewRevocation([]string{Fingerprint(DeriveReleaseKey(master, "v1.1.4", "abc"))})}, Next: next}
+	commit := "d7a5b3f0e1c2a9b8c7d6e5f4a3b2c1d0e9f8a7b6"
+	rev := Middleware{Options: Options{MasterKey: master, NonceStore: NewNonceStore(time.Minute), Clock: func() time.Time { return now }, Revocation: NewRevocation([]string{Fingerprint(DeriveReleaseKey(master, "v1.1.4", commit))})}, Next: next}
 	if w := serve(rev, signedHeaders(t, master, "v1.1.4", "abc", "GET", "/api/v1/x", now, "n-rev", body)); w.Code != 403 || !strings.Contains(w.Body.String(), "client_version_deprecated") {
 		t.Fatalf("revoked: %d %s", w.Code, w.Body.String())
 	}

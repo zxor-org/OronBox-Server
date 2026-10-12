@@ -31,7 +31,8 @@ func TestDeriveAndRequestVerification(t *testing.T) {
 		t.Fatalf("replay error=%v", err)
 	}
 	opts.Revocation = NewRevocation([]string{Fingerprint(key)})
-	if _, err := Verify(tag, commit, sign("other-nonce"), "1760000000", "other-nonce", "POST", "/api/v1/coins", body, opts); err != ErrRevoked {
+	otherNonce := "b1b2c3d4e5f60718293a4b5c6d7e8f90"
+	if _, err := Verify(tag, commit, sign(otherNonce), "1760000000", otherNonce, "POST", "/api/v1/coins", body, opts); err != ErrRevoked {
 		t.Fatalf("revoked error=%v", err)
 	}
 }
@@ -43,10 +44,11 @@ func TestVerifyRejectsWrongKeyAndExpired(t *testing.T) {
 	now := time.Unix(1760000000, 0)
 	bad := base64.RawURLEncoding.EncodeToString([]byte("not-a-mac"))
 	opts := Options{MasterKey: master, Clock: func() time.Time { return now }, NonceStore: NewNonceStore(time.Minute)}
-	if _, err := Verify("v1", "abc", bad, "1760000000", "n1", "GET", "/x", body, opts); err != ErrInvalidSignature {
+	commit := "d7a5b3f0e1c2a9b8c7d6e5f4a3b2c1d0e9f8a7b6"
+	if _, err := Verify("v1.0.0", commit, bad, "1760000000", "a1b2c3d4e5f60718293a4b5c6d7e8f90", "GET", "/x", body, opts); err != ErrInvalidSignature {
 		t.Fatalf("want signature_mismatch, got %v", err)
 	}
-	if _, err := Verify("v1", "abc", bad, "1", "n1", "GET", "/x", body, opts); err != ErrExpired {
+	if _, err := Verify("v1.0.0", commit, bad, "1", "b1b2c3d4e5f60718293a4b5c6d7e8f90", "GET", "/x", body, opts); err != ErrExpired {
 		t.Fatalf("want expired, got %v", err)
 	}
 	if _, err := Verify("", "abc", bad, "1760000000", "n1", "GET", "/x", body, opts); err != ErrMissingHeaders {

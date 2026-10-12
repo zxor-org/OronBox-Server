@@ -7,24 +7,28 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
+	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
 // R2Client handles S3-compatible uploads to Cloudflare R2 using AWS SigV4
 type R2Client struct {
 	cfg        config.R2Config
 	httpClient *http.Client
+	logger     *slog.Logger
 }
 
 func NewR2Client(cfg config.R2Config) *R2Client {
 	return &R2Client{
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: 300 * time.Second},
+		logger:     slog.Default(),
 	}
 }
 
@@ -53,21 +57,27 @@ func (c *R2Client) PutObject(ctx context.Context, objectKey string, mediaType st
 		mediaType = "application/octet-stream"
 	}
 	req.Header.Set("Content-Type", mediaType)
+	if c.logger == nil {
+		c.logger = slog.Default()
+	}
 
 	now := time.Now().UTC()
 	c.signSigV4(req, host, canonicalURI, http.MethodPut, sha256Hex, now)
 
+	started := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Warn("r2 put failed", "request_id", observability.RequestID(ctx), "object_key", objectKey, "duration_ms", time.Since(started).Milliseconds(), "error", observability.SafeError(err))
 		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		c.logger.Debug("r2 put", "request_id", observability.RequestID(ctx), "object_key", objectKey, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 		return nil
 	}
 
 	respBody, _ := io.ReadAll(resp.Body)
+	c.logger.Warn("r2 put returned error", "request_id", observability.RequestID(ctx), "object_key", objectKey, "status", resp.StatusCode, "duration_ms", time.Since(started).Milliseconds())
 	return fmt.Errorf("r2 put failed: status %d body %s", resp.StatusCode, string(respBody))
 }
 

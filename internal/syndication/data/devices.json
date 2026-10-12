@@ -1,0 +1,189 @@
+{
+  "n67": {
+    "id": "xmb9p",
+    "name": "Xiaomi Smart Band 9 Pro",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2401B1",
+      "M2402B1"
+    ]
+  },
+  "m67": {
+    "id": "xmb8p",
+    "name": "Xiaomi Smart Band 8 Pro",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2303B1",
+      "M2333B1"
+    ]
+  },
+  "n66": {
+    "id": "xmb9",
+    "name": "Xiaomi Smart Band 9",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2345B1",
+      "M2346B1"
+    ]
+  },
+  "o66": {
+    "id": "xmb10",
+    "name": "Xiaomi Smart Band 10",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2457B1"
+    ]
+  },
+  "o66nfc": {
+    "id": "xmb10nfc",
+    "name": "Xiaomi Smart Band 10 NFC",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2456B1"
+    ]
+  },
+  "p67": {
+    "id": "xmb10p",
+    "name": "Xiaomi Smart Band 10 Pro",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2551B1",
+      "M2553B1"
+    ]
+  },
+  "l61": {
+    "id": "xmws1p",
+    "name": "Xiaomi Watch S1 Pro",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2134W1",
+      "M2135W1"
+    ]
+  },
+  "n62": {
+    "id": "xmws3",
+    "name": "Xiaomi Watch S3",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2313W1",
+      "M2311W1",
+      "M2323W1"
+    ]
+  },
+  "o62": {
+    "id": "xmws4",
+    "name": "Xiaomi Watch S4",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2425W1",
+      "M2424W1",
+      "M2312W1"
+    ]
+  },
+  "o62m": {
+    "id": "xmws4xring",
+    "name": "Xiaomi Watch S4 15th Anniversary",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "xring",
+    "fetch": true,
+    "models": [
+      "M2426W1"
+    ]
+  },
+  "o63": {
+    "id": "xmws441",
+    "name": "Xiaomi Watch S4 41mm",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2502W1"
+    ]
+  },
+  "p62": {
+    "id": "xmws5",
+    "name": "Xiaomi Watch S5",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2530W1",
+      "M2517W1"
+    ]
+  },
+  "n65": {
+    "id": "xmrw4",
+    "name": "REDMI Watch 4",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": false,
+    "models": [
+      "M2314W1",
+      "M2315W1"
+    ]
+  },
+  "o65": {
+    "id": "xmrw5",
+    "name": "REDMI Watch 5",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2427W1"
+    ]
+  },
+  "o65m": {
+    "id": "xmrw5xring",
+    "name": "REDMI Watch 5 eSIM",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "xring",
+    "fetch": true,
+    "models": [
+      "M2428W1"
+    ]
+  },
+  "p65": {
+    "id": "xmrw6",
+    "name": "REDMI Watch 6",
+    "vendor": "xiaomi",
+    "desc": "",
+    "chip": "bes",
+    "fetch": true,
+    "models": [
+      "M2523W1"
+    ]
+  }
+}
