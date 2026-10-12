@@ -378,21 +378,20 @@ func HandleCreatorGetResources(s *store.Store) http.HandlerFunc {
 		}
 
 		rows, err := s.Pool.Query(r.Context(), `
-			SELECT r.resource_id, r.title, r.summary, r.restype, r.moderation_state,
-			       COALESCE(cur_rev.version, ''),
-			       COALESCE(pend_rev.version, ''),
-			       r.download_count, r.coin_count, r.rating,
-			       to_char(r.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ'),
-			       to_char(r.updated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')
+			SELECT jsonb_build_object(
+				'id', r.resource_id,
+				'resource_id', r.resource_id,
+				'resource', to_jsonb(r) || jsonb_build_object('id', r.resource_id, 'slug', r.resource_id, 'kind', r.restype),
+				'current_revision', (SELECT to_jsonb(v) || jsonb_build_object('number', v.revision_no) FROM resource_revisions v WHERE v.id = r.current_revision_id),
+				'pending_revision', (SELECT to_jsonb(v) || jsonb_build_object('number', v.revision_no) FROM resource_revisions v WHERE v.resource_id = r.resource_id AND v.state IN ('draft', 'waiting_review', 'changes_requested') ORDER BY v.revision_no DESC, v.id DESC LIMIT 1),
+				'revisions', COALESCE((SELECT jsonb_agg(to_jsonb(v) || jsonb_build_object('number', v.revision_no) ORDER BY v.revision_no DESC, v.id DESC) FROM resource_revisions v WHERE v.resource_id = r.resource_id), '[]'::jsonb),
+				'publications', COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.created_at DESC) FROM publications p JOIN resource_revisions v ON v.id = p.revision_id WHERE v.resource_id = r.resource_id), '[]'::jsonb),
+				'review', (SELECT to_jsonb(rc) FROM review_cases rc JOIN resource_revisions v ON v.id = rc.revision_id WHERE v.resource_id = r.resource_id ORDER BY rc.updated_at DESC LIMIT 1),
+				'bindings', COALESCE((SELECT jsonb_agg(to_jsonb(b) || jsonb_build_object('metadata', b.meta) ORDER BY b.created_at DESC) FROM external_bindings b WHERE b.resource_id = r.resource_id), '[]'::jsonb)
+			)
 			FROM resources r
-			LEFT JOIN resource_revisions cur_rev ON r.current_revision_id = cur_rev.id
-			LEFT JOIN LATERAL (
-				SELECT version FROM resource_revisions 
-				WHERE resource_id = r.resource_id AND state IN ('waiting_review', 'draft', 'changes_requested')
-				ORDER BY id DESC LIMIT 1
-			) pend_rev ON true
 			WHERE r.owner_uid = $1
-			   OR EXISTS (SELECT 1 FROM resource_collaborators rc WHERE rc.resource_id = r.resource_id AND rc.user_uid = $1 AND rc.status = 'accepted')
+			   OR EXISTS (SELECT 1 FROM resource_collaborators c WHERE c.resource_id = r.resource_id AND c.user_uid = $1 AND c.status = 'accepted')
 			ORDER BY r.updated_at DESC
 		`, userUID)
 		if err != nil {
@@ -401,17 +400,15 @@ func HandleCreatorGetResources(s *store.Store) http.HandlerFunc {
 		}
 		defer rows.Close()
 
-		var items []CreatorResourceItem
+		var items []json.RawMessage
 		for rows.Next() {
-			var it CreatorResourceItem
-			if err := rows.Scan(&it.ResourceID, &it.Title, &it.Summary, &it.Restype, &it.ModerationState,
-				&it.CurrentVersion, &it.PendingVersion, &it.DownloadCount, &it.CoinCount, &it.Rating,
-				&it.CreatedAt, &it.UpdatedAt); err == nil {
+			var it json.RawMessage
+			if err := rows.Scan(&it); err == nil {
 				items = append(items, it)
 			}
 		}
 		if items == nil {
-			items = []CreatorResourceItem{}
+			items = []json.RawMessage{}
 		}
 
 		httputil.JSON(w, http.StatusOK, map[string]any{"items": items})

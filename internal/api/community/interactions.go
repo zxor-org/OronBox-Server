@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zxor-org/OronBox-Server/internal/httputil"
@@ -143,16 +144,23 @@ func HandlePostComment(s *store.Store) http.HandlerFunc {
 			state = "flagged"
 		}
 
-		var commentID int64
+		var (
+			commentID int64
+			createdAt time.Time
+			username  string
+			avatarURL string
+		)
 		err = s.Pool.QueryRow(r.Context(), `
 			INSERT INTO resource_comments (resource_id, user_uid, content, parent_id, state, is_deleted, ai_action, ai_reason, ai_model)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			RETURNING id
-		`, resID, userUID, content, req.ParentID, state, isDeleted, action, reason, model).Scan(&commentID)
+			RETURNING id, created_at
+		`, resID, userUID, content, req.ParentID, state, isDeleted, action, reason, model).Scan(&commentID, &createdAt)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
+		_ = s.Pool.QueryRow(r.Context(), `SELECT COALESCE(username, ''), COALESCE(avatar_url, '') FROM users WHERE bandbbs_uid = $1`, userUID).Scan(&username, &avatarURL)
+
 		if state == "visible" && req.ParentID != nil {
 			var parentUID int
 			if s.Pool.QueryRow(r.Context(), `SELECT user_uid FROM resource_comments WHERE id = $1`, *req.ParentID).Scan(&parentUID) == nil && parentUID != userUID {
@@ -173,8 +181,22 @@ func HandlePostComment(s *store.Store) http.HandlerFunc {
 		}
 
 		httputil.JSON(w, http.StatusOK, map[string]any{
-			"comment_id": commentID,
-			"status":     state,
+			"id":                fmt.Sprintf("%d", commentID),
+			"comment_id":        commentID,
+			"resource_id":       resID,
+			"user_uid":          userUID,
+			"bandbbs_uid":       userUID,
+			"username":          username,
+			"avatar_url":        avatarURL,
+			"content":           content,
+			"parent_id":         req.ParentID,
+			"state":             state,
+			"status":            state,
+			"moderation_state":  state,
+			"ai_action":         action,
+			"moderation_action": action,
+			"ai_reason":         reason,
+			"created_at":        createdAt.UTC().Format(time.RFC3339),
 		})
 	}
 }

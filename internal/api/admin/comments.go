@@ -17,6 +17,9 @@ type AdminCommentItem struct {
 	Content    string `json:"content"`
 	State      string `json:"state"`
 	IsDeleted  bool   `json:"is_deleted"`
+	AIAction   string `json:"ai_action"`
+	AIReason   string `json:"ai_reason"`
+	AIModel    string `json:"ai_model"`
 	CreatedAt  string `json:"created_at"`
 }
 
@@ -31,6 +34,7 @@ func HandleAdminGetComments(s *store.Store) http.HandlerFunc {
 
 		rows, err := s.Pool.Query(r.Context(), `
 			SELECT c.id, c.resource_id, c.user_uid, COALESCE(u.username, ''), c.content, c.state, c.is_deleted,
+			       COALESCE(c.ai_action, ''), COALESCE(c.ai_reason, ''), COALESCE(c.ai_model, ''),
 			       to_char(c.created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ')
 			FROM resource_comments c
 			JOIN users u ON c.user_uid = u.bandbbs_uid
@@ -46,7 +50,8 @@ func HandleAdminGetComments(s *store.Store) http.HandlerFunc {
 		var items []AdminCommentItem
 		for rows.Next() {
 			var it AdminCommentItem
-			if err := rows.Scan(&it.ID, &it.ResourceID, &it.UserUID, &it.Username, &it.Content, &it.State, &it.IsDeleted, &it.CreatedAt); err == nil {
+			if err := rows.Scan(&it.ID, &it.ResourceID, &it.UserUID, &it.Username, &it.Content, &it.State, &it.IsDeleted,
+				&it.AIAction, &it.AIReason, &it.AIModel, &it.CreatedAt); err == nil {
 				items = append(items, it)
 			}
 		}

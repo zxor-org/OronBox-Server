@@ -128,6 +128,10 @@ func (h *BlogHandlers) readManifest(ctx context.Context) (map[string]any, []map[
 	}
 	f, raw, err := h.readFile(ctx, articleManifestPath, branch.Commit.ID)
 	if err != nil {
+		var upstream articleAPIError
+		if errors.As(err, &upstream) && upstream.Status == 404 {
+			return map[string]any{"articles": []any{}}, []map[string]any{}, articleFile{}, branch.Commit.ID, nil
+		}
 		return nil, nil, f, "", err
 	}
 	var root map[string]any
@@ -392,7 +396,11 @@ func (h *BlogHandlers) mutate(w http.ResponseWriter, r *http.Request, operation 
 		h.fail(w, err)
 		return
 	}
-	changes = append(changes, articleChange{Operation: "update", Path: articleManifestPath, SHA: manifest.SHA, Content: base64.StdEncoding.EncodeToString(append(raw, '\n'))})
+	manifestOp := "update"
+	if manifest.SHA == "" {
+		manifestOp = "create"
+	}
+	changes = append(changes, articleChange{Operation: manifestOp, Path: articleManifestPath, SHA: manifest.SHA, Content: base64.StdEncoding.EncodeToString(append(raw, '\n'))})
 	// Existing blob SHA preconditions and non-forced push reject stale writes;
 	// all files are committed together and unrelated repository files survive.
 	err = h.request(r.Context(), http.MethodPost, "contents", map[string]any{"branch": h.Ref, "message": "admin: " + operation + " article " + id, "files": changes, "force_push": false}, nil)
