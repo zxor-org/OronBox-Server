@@ -61,13 +61,14 @@ func clientIP(r *http.Request) string {
 // intentionally an early inexpensive protection against request floods.
 func rateLimitMiddleware(app *application, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authRoute := strings.HasPrefix(r.URL.Path, "/api/v1/auth/")
 		if app == nil || app.limits == nil || !strings.HasPrefix(r.URL.Path, "/api/v1/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 		limit, window := 300, time.Minute
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/auth/"):
+		case authRoute:
 			limit = 30
 		case r.URL.Path == "/api/v1/blobs" || strings.HasPrefix(r.URL.Path, "/api/v1/creator/"):
 			limit = 60
@@ -78,7 +79,7 @@ func rateLimitMiddleware(app *application, next http.Handler) http.Handler {
 		// path; varying resource IDs must not create fresh buckets indefinitely.
 		family := "catalog"
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/api/v1/auth/"):
+		case authRoute:
 			family = "auth"
 		case strings.HasPrefix(r.URL.Path, "/api/v1/creator/"):
 			family = "creator"

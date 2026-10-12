@@ -268,6 +268,22 @@ func New(d Dependencies) http.Handler {
 	mux.HandleFunc("GET /oauth2/bandbbs/callback", authSvc.HandleAuthCallback(app.renderTransition, app.finishAdminLogin))
 	mux.Handle("POST /api/v1/auth/ticket/exchange", app.withAttestation(http.HandlerFunc(authSvc.HandleTicketExchange)))
 	mux.Handle("POST /api/v1/auth/session/refresh", app.withAttestation(http.HandlerFunc(authSvc.HandleSessionRefresh)))
+
+	// Legacy client maintenance fallback
+	mux.HandleFunc("GET /api/announcements/unread", func(w http.ResponseWriter, r *http.Request) {
+		httputil.JSON(w, http.StatusOK, map[string]any{
+			"announcements": []map[string]any{
+				{
+					"id":    "legacy_maintenance_notice",
+					"title": "服务器维护迁移公告 / Maintenance Notice",
+					"body":  "服务器正在更新迁移，米坛登录和 OronBox 资源及创作者相关功能暂不可用，请耐心等待迁移完成\n\nThe server is undergoing migration and maintenance. BandBBS login, resources, and creator features are temporarily unavailable. Please be patient.",
+				},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/announcements/read", func(w http.ResponseWriter, r *http.Request) {
+		httputil.JSON(w, http.StatusOK, map[string]any{"status": "read"})
+	})
 	mux.Handle("POST /api/v1/auth/bandbbs/token/refresh", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleBandBBSTokenRefresh))))
 	mux.Handle("POST /api/v1/auth/session/revoke", app.withAttestation(authRequired(app, http.HandlerFunc(authSvc.HandleRevokeSession))))
 

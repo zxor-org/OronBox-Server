@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -58,7 +59,7 @@ func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", "", "", "", "", 0, fmt.Errorf("token exchange failed: %s", resp.Status)
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS token exchange: HTTP %d", resp.StatusCode)
 	}
 
 	var tok struct {
@@ -66,8 +67,11 @@ func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect 
 		RefreshToken string `json:"refresh_token"`
 		ExpiresIn    int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil || tok.AccessToken == "" || tok.RefreshToken == "" {
-		return "", "", "", "", "", 0, fmt.Errorf("token exchange failed")
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tok); err != nil {
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS token exchange: invalid JSON response")
+	}
+	if tok.AccessToken == "" || tok.RefreshToken == "" {
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS token exchange: missing access or refresh credential")
 	}
 
 	meReq, err := http.NewRequestWithContext(ctx, "GET", s.Cfg.BandBBS.MeURL, nil)
@@ -83,22 +87,50 @@ func (s *Service) FetchBandBBSUserWithToken(ctx context.Context, code, redirect 
 	}
 	defer meResp.Body.Close()
 	if meResp.StatusCode < http.StatusOK || meResp.StatusCode >= http.StatusMultipleChoices {
-		return "", "", "", "", "", 0, fmt.Errorf("fetch profile failed: %s", meResp.Status)
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS profile: HTTP %d", meResp.StatusCode)
 	}
 
+	// XenForo profile payload compatibility
 	var me struct {
-		User struct {
-			ID        int64  `json:"user_id"`
-			Username  string `json:"username"`
-			AvatarURL string `json:"avatar_url"`
-		} `json:"user"`
-		Status string `json:"status"`
+		Me   *bandBBSProfile `json:"me"`
+		User *bandBBSProfile `json:"user"`
+		bandBBSProfile
 	}
-	if err := json.NewDecoder(meResp.Body).Decode(&me); err != nil || me.User.ID <= 0 {
-		return "", "", "", "", "", 0, fmt.Errorf("fetch profile failed")
+	if err := json.NewDecoder(io.LimitReader(meResp.Body, 1<<20)).Decode(&me); err != nil {
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS profile: invalid JSON response (HTTP %d)", meResp.StatusCode)
+	}
+	profile := me.Me
+	if profile == nil {
+		profile = me.User
+	}
+	if profile == nil && (me.bandBBSProfile.ID > 0 || me.bandBBSProfile.AltID > 0) {
+		profile = &me.bandBBSProfile
+	}
+	if profile != nil && profile.ID <= 0 && profile.AltID > 0 {
+		profile.ID = profile.AltID
+	}
+	if profile == nil || profile.ID <= 0 || strings.TrimSpace(profile.Username) == "" {
+		return "", "", "", "", "", 0, fmt.Errorf("BandBBS profile: missing identity in me/user envelope (HTTP %d)", meResp.StatusCode)
+	}
+	avatar := profile.AvatarURL
+	if avatar == "" {
+		for _, size := range []string{"l", "m", "h", "o", "s"} {
+			if candidate := profile.AvatarURLs[size]; candidate != "" {
+				avatar = candidate
+				break
+			}
+		}
 	}
 
-	return strconv.FormatInt(me.User.ID, 10), me.User.Username, me.User.AvatarURL, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn, nil
+	return strconv.FormatInt(profile.ID, 10), profile.Username, avatar, tok.AccessToken, tok.RefreshToken, tok.ExpiresIn, nil
+}
+
+type bandBBSProfile struct {
+	ID         int64             `json:"user_id"`
+	AltID      int64             `json:"id"`
+	Username   string            `json:"username"`
+	AvatarURL  string            `json:"avatar_url"`
+	AvatarURLs map[string]string `json:"avatar_urls"`
 }
 
 func (s *Service) RevokeBandBBSToken(ctx context.Context, token string) error {

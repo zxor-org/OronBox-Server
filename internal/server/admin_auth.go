@@ -22,7 +22,7 @@ func (a *application) finishAdminLogin(w http.ResponseWriter, r *http.Request, c
 	authSvc := apiAuth.NewService(a.cfg, a.db, a.cipher, &a.states)
 	uid, username, avatar, accessToken, _, _, err := authSvc.FetchBandBBSUserWithToken(r.Context(), code, a.cfg.BandBBS.RedirectURI)
 	if err != nil {
-		a.logger.Error("admin bandbbs oauth callback failed", "error", observability.SafeError(err))
+		a.logger.Error("admin bandbbs oauth callback failed", "request_id", observability.RequestID(r.Context()), "error", observability.SafeError(err))
 		a.renderConsoleError(w, r, "第三方授权服务暂时不可用", "返回登录", "/console")
 		return
 	}
