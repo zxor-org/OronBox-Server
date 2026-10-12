@@ -129,29 +129,30 @@ func HandlePostComment(s *store.Store) http.HandlerFunc {
 				return
 			}
 		}
-		allow, action, reason, model, reviewErr := moderation.Review(r.Context(), s, content)
+		action, reason, model, reviewErr := moderation.Review(r.Context(), s, content)
 		if reviewErr != nil {
 			httputil.Error(w, http.StatusServiceUnavailable, "moderation_unavailable", "内容审核服务暂时不可用")
 			return
 		}
 		state := "visible"
-		status := "published"
-		if !allow {
+		isDeleted := false
+		if action == "block" {
 			state = "hidden"
-			status = "rejected"
+			isDeleted = true
+		} else if action == "flag" {
+			state = "flagged"
 		}
 
 		var commentID int64
 		err = s.Pool.QueryRow(r.Context(), `
-			INSERT INTO resource_comments (resource_id, user_uid, content, parent_id, state)
-			VALUES ($1, $2, $3, $4, $5)
+			INSERT INTO resource_comments (resource_id, user_uid, content, parent_id, state, is_deleted, ai_action, ai_reason, ai_model)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			RETURNING id
-		`, resID, userUID, content, req.ParentID, state).Scan(&commentID)
+		`, resID, userUID, content, req.ParentID, state, isDeleted, action, reason, model).Scan(&commentID)
 		if err != nil {
 			httputil.Error(w, http.StatusInternalServerError, "db_error", err.Error())
 			return
 		}
-		_, _ = s.Pool.Exec(r.Context(), `UPDATE resource_comments SET ai_action = $2, ai_reason = $3, ai_model = $4 WHERE id = $1`, commentID, action, reason, model)
 		if state == "visible" && req.ParentID != nil {
 			var parentUID int
 			if s.Pool.QueryRow(r.Context(), `SELECT user_uid FROM resource_comments WHERE id = $1`, *req.ParentID).Scan(&parentUID) == nil && parentUID != userUID {
@@ -173,7 +174,7 @@ func HandlePostComment(s *store.Store) http.HandlerFunc {
 
 		httputil.JSON(w, http.StatusOK, map[string]any{
 			"comment_id": commentID,
-			"status":     status,
+			"status":     state,
 		})
 	}
 }

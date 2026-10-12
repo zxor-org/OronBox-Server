@@ -7,3 +7,7 @@ services:
     network_mode: host
     env_file: [.env]
     restart: unless-stopped
+    volumes:
+      - /opt/oronbox-server/data/blobs:/var/lib/oronbox/blobs
+      - /opt/oronbox-server/console:/var/lib/oronbox/console
+

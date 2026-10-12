@@ -769,10 +769,10 @@ func handleCreatorPublishResource(s *store.Store, storageDir string, source synd
 			}
 			seenTargets[target] = true
 		}
-		if allow, action, reason, _, reviewErr := moderation.Review(r.Context(), s, strings.TrimSpace(req.Summary+"\n"+req.Description)); reviewErr != nil {
+		if action, reason, _, reviewErr := moderation.Review(r.Context(), s, strings.TrimSpace(req.Summary+"\n"+req.Description)); reviewErr != nil {
 			httputil.Error(w, http.StatusServiceUnavailable, "moderation_unavailable", "内容审核服务暂时不可用")
 			return
-		} else if !allow && action == "reject" {
+		} else if action == "block" {
 			httputil.Error(w, http.StatusBadRequest, "content_rejected", reason)
 			return
 		}

@@ -154,12 +154,15 @@ func (a *application) adminSession(w http.ResponseWriter, r *http.Request) {
 		httputil.Error(w, http.StatusUnauthorized, "unauthorized", "未登录")
 		return
 	}
+	var avatarURL string
+	_ = a.db.Pool.QueryRow(r.Context(), `SELECT COALESCE(avatar_url, '') FROM users WHERE bandbbs_uid = $1`, uid).Scan(&avatarURL)
 	httputil.JSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
 		"uid":           uid,
 		"bandbbs_uid":   uid,
 		"username":      username,
 		"role":          role,
+		"avatar_url":    avatarURL,
 	})
 }
 
