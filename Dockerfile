@@ -8,7 +8,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/oronbox-server ./c
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && addgroup -S oronbox && adduser -S -G oronbox oronbox
 COPY --from=builder /out/oronbox-server /usr/local/bin/oronbox-server
-RUN mkdir -p /var/lib/oronbox/blobs && chown -R oronbox:oronbox /var/lib/oronbox
+RUN mkdir -p /var/lib/oronbox/blobs /var/lib/oronbox/console && chown -R oronbox:oronbox /var/lib/oronbox
 USER oronbox
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/oronbox-server"]

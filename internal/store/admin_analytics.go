@@ -138,3 +138,28 @@ func collectAnalyticsSeries(rows *sql.Rows, start time.Time, bucket string, now 
 	}
 	return points, nil
 }
+
+// Counts are computed across the full tables in one statement, not from a
+// paginated moderation queue. Failure is distinct from an empty queue.
+type AdminOverview struct {
+	PendingReviews     int64 `json:"pending_reviews"`
+	OverdueReviews     int64 `json:"overdue_reviews"`
+	PendingComments    int64 `json:"pending_comments"`
+	OpenReports        int64 `json:"open_reports"`
+	OpenTickets        int64 `json:"open_tickets"`
+	FailedPublications int64 `json:"failed_publications"`
+	PendingPlugins     int64 `json:"pending_plugins"`
+}
+
+func (s *Store) AdminOverview(ctx context.Context) (AdminOverview, error) {
+	var out AdminOverview
+	err := s.db.QueryRowContext(ctx, `SELECT
+ (SELECT count(*) FROM review_cases WHERE state='pending'),
+ (SELECT count(*) FROM review_cases WHERE state='pending' AND due_at<now()),
+ (SELECT count(*) FROM resource_comments c JOIN comment_moderation m ON m.comment_id=c.id WHERE m.action='review' AND m.human_reviewed_at IS NULL AND c.deleted_at IS NULL),
+ (SELECT count(*) FROM feedback_tickets WHERE kind IN('resource_report','comment_report') AND status IN('open','investigating')),
+ (SELECT count(*) FROM feedback_tickets WHERE status IN('open','investigating')),
+ (SELECT count(*) FROM publications WHERE state='failed'),
+ (SELECT count(*) FROM plugins WHERE state='pending')`).Scan(&out.PendingReviews, &out.OverdueReviews, &out.PendingComments, &out.OpenReports, &out.OpenTickets, &out.FailedPublications, &out.PendingPlugins)
+	return out, err
+}

@@ -18,6 +18,7 @@ OronBox Server is the production resource service behind OronBox. It provides th
 
 - [配置示例 / Configuration](.env.example)
 - [后台运维手册 / Operations guide](docs/admin.md)
+- [代码结构与模块职责 / Architecture](docs/architecture.md)
 - [问题反馈 / Issues](https://github.com/zxor-org/OronBox-Server/issues)
 - [客户端 / OronBox](https://github.com/zxor-org/OronBox)
 

@@ -23,6 +23,9 @@ type Comment struct {
 	ResourceID       string     `json:"resource_id"`
 	UserID           string     `json:"user_id"`
 	ParentID         string     `json:"parent_id,omitempty"`
+	ReplyToID        string     `json:"reply_to_id,omitempty"`
+	ReplyToUsername  string     `json:"reply_to_username,omitempty"`
+	ReplyCount       int        `json:"reply_count"`
 	Body             string     `json:"body"`
 	Deleted          bool       `json:"deleted"`
 	Username         string     `json:"username"`
@@ -139,25 +142,34 @@ func (s *Store) CreateModeratedComment(ctx context.Context, resourceID, userID, 
 	if !resourceVisible {
 		return Comment{}, ErrCommentNotFound
 	}
+	replyToID := parentID
 	if parentID != "" {
-		var parentOK bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM resource_comments WHERE id=$1 AND resource_id=$2 AND parent_id IS NULL AND moderation_state='visible' AND deleted_at IS NULL)`, parentID, resourceID).Scan(&parentOK); err != nil {
-			return Comment{}, err
-		}
-		if !parentOK {
+		var rootID string
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(c.parent_id,c.id)::text FROM resource_comments c LEFT JOIN resource_comments root ON root.id=c.parent_id WHERE c.id=$1 AND c.resource_id=$2 AND c.moderation_state='visible' AND c.deleted_at IS NULL AND (c.parent_id IS NULL OR (root.moderation_state='visible' AND root.deleted_at IS NULL)) FOR SHARE OF c`, parentID, resourceID).Scan(&rootID)
+		if errors.Is(err, sql.ErrNoRows) {
 			return Comment{}, ErrCommentNotFound
 		}
+		if err != nil {
+			return Comment{}, err
+		}
+		parentID = rootID
 	}
 	var comment Comment
 	id := uuid.NewString()
 	row := tx.QueryRowContext(ctx, `
-INSERT INTO resource_comments(id,resource_id,user_id,parent_id,body,moderation_state)
-VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,$6)
+INSERT INTO resource_comments(id,resource_id,user_id,parent_id,body,moderation_state,reply_to_id)
+VALUES($1,$2,$3,NULLIF($4,'')::uuid,$5,$6,NULLIF($7,'')::uuid)
 RETURNING id::text,resource_id::text,user_id::text,COALESCE(parent_id::text,''),body,moderation_state,false,
  (SELECT username FROM users WHERE id=$3),(SELECT avatar_url FROM users WHERE id=$3),(SELECT bandbbs_user_id FROM users WHERE id=$3),now(),NULL::timestamptz`,
-		id, resourceID, userID, parentID, body, moderationState)
+		id, resourceID, userID, parentID, body, moderationState, replyToID)
 	if err := scanComment(row, &comment); err != nil {
 		return Comment{}, err
+	}
+	comment.ReplyToID = replyToID
+	if replyToID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT u.username FROM users u JOIN resource_comments c ON c.user_id=u.id WHERE c.id=$1`, replyToID).Scan(&comment.ReplyToUsername); err != nil {
+			return Comment{}, err
+		}
 	}
 	if moderation != nil {
 		if moderation.Categories == nil {
@@ -232,7 +244,7 @@ type AdminCommentPage struct {
 func (q AdminCommentQuery) normalized() AdminCommentQuery {
 	q.Search, q.State = strings.TrimSpace(q.Search), strings.ToLower(strings.TrimSpace(q.State))
 	q.Resource, q.User = strings.TrimSpace(q.Resource), strings.TrimSpace(q.User)
-	if q.State != "visible" && q.State != "hidden" && q.State != "deleted" && q.State != "review" {
+	if q.State != "visible" && q.State != "hidden" && q.State != "deleted" && q.State != "review" && q.State != "block" {
 		q.State = ""
 	}
 	if q.Page < 1 {
@@ -270,7 +282,7 @@ func adminCommentOrder(sort string) string {
 func (s *Store) AdminComments(ctx context.Context, raw AdminCommentQuery) (AdminCommentPage, error) {
 	q := raw.normalized()
 	const filter = `($1='' OR concat_ws(' ',comment.body,author.username,comment.id::text,comment.resource_id::text,comment.user_id::text) ILIKE '%'||$1||'%')
-AND ($2='' OR ($2='deleted' AND comment.deleted_at IS NOT NULL) OR ($2 IN ('visible','hidden') AND comment.deleted_at IS NULL AND comment.moderation_state=$2) OR ($2='review' AND moderation.action='review' AND moderation.human_reviewed_at IS NULL))
+AND ($2='' OR ($2='deleted' AND comment.deleted_at IS NOT NULL) OR ($2 IN ('visible','hidden') AND comment.deleted_at IS NULL AND comment.moderation_state=$2) OR ($2='review' AND comment.deleted_at IS NULL AND moderation.action='review' AND moderation.human_reviewed_at IS NULL) OR ($2='block' AND moderation.action='block'))
 AND ($3='' OR comment.resource_id::text=$3) AND ($4='' OR comment.user_id::text=$4 OR author.username ILIKE '%'||$4||'%')`
 	page := AdminCommentPage{Items: []AdminCommentItem{}, Page: q.Page, PerPage: q.PerPage, Query: q}
 	base := ` FROM resource_comments comment JOIN users author ON author.id=comment.user_id LEFT JOIN comment_moderation moderation ON moderation.comment_id=comment.id WHERE ` + filter

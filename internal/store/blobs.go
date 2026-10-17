@@ -1,6 +1,8 @@
 package store
 
-import "context"
+import (
+	"context"
+)
 
 type BlobRecord struct {
 	SHA256    string
@@ -61,10 +63,11 @@ WHERE blob.sha256=$1
           )
         )
     )
+    OR EXISTS(SELECT 1 FROM resource_collections c JOIN resource_collection_revisions rr ON rr.id=c.current_revision_id WHERE c.enabled AND EXISTS(SELECT 1 FROM resources member WHERE member.collection_id=c.id AND member.moderation_state='visible' AND member.current_revision_id IS NOT NULL) AND (rr.icon_sha256=blob.sha256 OR rr.cover_sha256=blob.sha256))
     OR EXISTS (
       SELECT 1
       FROM blog_posts post
-      WHERE post.published
+      WHERE post.published AND post.source_sha=''
         AND (post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%')
     )
     OR EXISTS (
@@ -85,5 +88,16 @@ func (s *Store) EnsureBlob(ctx context.Context, sha256 string, size int64, media
 
 func (s *Store) SetBlobR2State(ctx context.Context, sha256, state, key string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO blob_replicas(blob_sha256,backend,state,object_key,updated_at) VALUES($1,'r2',$2,$3,now()) ON CONFLICT(blob_sha256,backend) DO UPDATE SET state=excluded.state,object_key=excluded.object_key,updated_at=now()`, sha256, state, key)
+	return err
+}
+
+func (s *Store) CreatorOwnsImage(ctx context.Context, owner, sha string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM creator_media_uploads WHERE owner_id=$1 AND blob_sha256=$2 UNION ALL SELECT 1 FROM resource_collection_revisions rr JOIN resource_collections c ON c.id=rr.collection_id WHERE c.owner_id=$1 AND (rr.icon_sha256=$2 OR rr.cover_sha256=$2))`, owner, sha).Scan(&ok)
+	return ok, err
+}
+
+func (s *Store) RegisterCreatorImage(ctx context.Context, owner, sha string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO creator_media_uploads(owner_id,blob_sha256)VALUES($1,$2) ON CONFLICT(owner_id,blob_sha256)DO UPDATE SET created_at=now()`, owner, sha)
 	return err
 }

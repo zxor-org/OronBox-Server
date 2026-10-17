@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/creator"
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
 type blogCard struct {
+	CoverURL    string     `json:"cover_url,omitempty"`
 	Slug        string     `json:"slug"`
 	Type        string     `json:"type"`
 	Title       string     `json:"title"`
@@ -49,7 +51,7 @@ type homeSectionJSON struct {
 func publicBlogCard(post store.BlogPost) blogCard {
 	return blogCard{
 		Slug: post.Slug, Type: post.Type, Title: post.Title, Subtitle: post.Subtitle,
-		Author: post.Author, CoverSHA256: post.CoverSHA256, PublishedAt: post.PublishedAt,
+		CoverURL: post.CoverURL, Author: post.Author, CoverSHA256: post.CoverSHA256, PublishedAt: post.PublishedAt,
 	}
 }
 
@@ -60,12 +62,12 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	banners, err := a.store.ListHomeBanners(r.Context(), true)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("home_failed", err.Error()))
 		return
 	}
 	sections, err := a.store.ListHomeSections(r.Context(), true)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("home_failed", err.Error()))
 		return
 	}
 	cardsBySection := make(map[string][]store.HomeSectionCard, len(sections))
@@ -82,7 +84,7 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 	for _, section := range sections {
 		cards, err := a.store.ListHomeSectionCards(r.Context(), section.ID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
+			httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("home_failed", err.Error()))
 			return
 		}
 		cardsBySection[section.ID] = cards
@@ -122,7 +124,7 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	resources, err := a.creator.HomeResources(r.Context(), resourceIDs)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("home_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("home_failed", err.Error()))
 		return
 	}
 	resourceByID := make(map[string]creator.HomeResourceCard, len(resources))
@@ -161,7 +163,7 @@ func (a *App) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 		sectionJSON = append(sectionJSON, out)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"banners":                 bannerJSON,
 		"sections":                sectionJSON,
 		"resource_feed":           resourceFeed,
@@ -180,28 +182,28 @@ func (a *App) handleBlogList(w http.ResponseWriter, r *http.Request) {
 	}
 	posts, err := a.store.ListPublishedBlogPostsLimit(r.Context(), limit)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("blog_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blog_failed", err.Error()))
 		return
 	}
 	items := make([]blogCard, 0, len(posts))
 	for _, post := range posts {
 		items = append(items, publicBlogCard(post))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"posts": items})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"posts": items})
 }
 
 func (a *App) handleBlogPost(w http.ResponseWriter, r *http.Request) {
 	post, err := a.store.BlogPost(r.Context(), r.PathValue("slug"))
 	if errors.Is(err, store.ErrBlogPostNotFound) || (err == nil && !post.Published) {
-		writeJSON(w, http.StatusNotFound, errorBody("post_not_found", "blog post was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("post_not_found", "blog post was not found"))
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("blog_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blog_failed", err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"slug": post.Slug, "type": post.Type, "title": post.Title, "subtitle": post.Subtitle,
-		"author": post.Author, "cover_sha256": post.CoverSHA256, "body": post.Body, "published_at": post.PublishedAt,
+		"cover_url": post.CoverURL, "author": post.Author, "cover_sha256": post.CoverSHA256, "body": post.Body, "published_at": post.PublishedAt,
 	})
 }

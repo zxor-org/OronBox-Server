@@ -7,7 +7,6 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -16,7 +15,9 @@ import (
 	"time"
 
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
+	adminhttp "github.com/zxor-org/OronBox-Server/internal/server/admin"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 	"github.com/zxor-org/OronBox-Server/internal/web"
 )
@@ -24,12 +25,13 @@ import (
 const adminCookieName = "oronbox_admin"
 
 type adminContextKey struct{}
+
 type adminRoleContextKey struct{}
 
 func (a *App) handleAdminLoginPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "admin_login", map[string]any{
 		"Title":        "管理后台",
-		"AuthorizeURL": fmt.Sprintf("/oauth2/bandbbs/start?app_id=oronbox-admin&platform=web&return_uri=%s/admin", a.cfg.PublicURL),
+		"AuthorizeURL": "/admin/api/auth/bandbbs/authorize",
 		"Error":        adminLoginErrorMessage(r.URL.Query().Get("error")),
 	})
 }
@@ -51,7 +53,7 @@ func adminLoginErrorMessage(code string) string {
 }
 
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, fmt.Sprintf("/oauth2/bandbbs/start?app_id=oronbox-admin&platform=web&return_uri=%s/admin", a.cfg.PublicURL), http.StatusFound)
+	http.Redirect(w, r, "/admin/api/auth/bandbbs/authorize", http.StatusFound)
 }
 
 // requireAdminRole wraps requireAdmin and additionally demands a users.role
@@ -86,17 +88,18 @@ func (a *App) renderForbidden(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
-	_ = a.store.RecordAudit(r.Context(), actor, "admin_logout", "success", a.clientIP(r), r.UserAgent(), "")
-	if cookie, err := r.Cookie(adminCookieName); err == nil {
-		_ = a.store.DeleteAdminSession(r.Context(), cookie.Value)
+	if err := a.store.DeleteAdminSession(r.Context(), actor.ID); err != nil {
+		http.Error(w, "logout temporarily unavailable", 503)
+		return
 	}
+	_ = a.store.RecordAudit(r.Context(), actor, "admin_logout", "success", a.clientIP(r), r.UserAgent(), "")
 	http.SetCookie(w, a.adminSessionCookie(r, "", time.Time{}, -1))
 	http.Redirect(w, r, "/admin", http.StatusFound)
 }
 
 func (a *App) rejectAdminAuth(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
-		writeJSON(w, http.StatusUnauthorized, errorBody("unauthenticated", "admin session required"))
+		httpx.WriteJSON(w, http.StatusUnauthorized, httpx.ErrorBody("unauthenticated", "admin session required"))
 		return
 	}
 	http.Redirect(w, r, "/admin/login", http.StatusFound)
@@ -121,6 +124,10 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		session, err := a.store.AdminSession(r.Context(), cookie.Value)
 		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "session lookup temporarily unavailable", 503)
+				return
+			}
 			reason := "session_lookup_failed"
 			if errors.Is(err, sql.ErrNoRows) {
 				reason = "session_not_found"
@@ -134,7 +141,11 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		user, err := a.store.UserByID(r.Context(), session.UserID)
-		if err != nil || (user.Role != "admin" && user.Role != "reviewer" && !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID)) {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "account lookup temporarily unavailable", 503)
+			return
+		}
+		if err != nil || user.BannedAt != nil || (user.Role != "admin" && user.Role != "reviewer" && !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID)) {
 			observability.From(r.Context()).With("component", "admin").Warn(
 				"admin authorization rejected",
 				"reason", "role_revoked",
@@ -243,7 +254,7 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/login?error=invalid_ticket", http.StatusFound)
 			return
 		}
-		if !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) && user.Role != "admin" && user.Role != "reviewer" {
+		if user.BannedAt != nil || !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) && user.Role != "admin" && user.Role != "reviewer" {
 			actor := store.AdminSession{UserID: user.ID, Username: user.Username}
 			_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "failure", a.clientIP(r), r.UserAgent(), "not authorized")
 			http.Redirect(w, r, "/admin/login?error=not_authorized", http.StatusFound)
@@ -262,15 +273,14 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, a.adminSessionCookie(r, sessionID, expiresAt, 0))
 		actor := store.AdminSession{ID: sessionID, UserID: user.ID, Username: user.Username, ExpiresAt: expiresAt}
 		_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "success", a.clientIP(r), r.UserAgent(), "")
+		target := template.URL(web.HomePathFor(user.Role))
 		a.renderTransition(w, r, web.TransitionPageData{
 			Title:       "授权完成",
 			Heading:     "授权完成",
 			Description: "可以返回 OronBox 继续使用",
-			// A reviewer's work starts at the queue; sending them to a platform
-			// dashboard they cannot act on just costs them a click.
-			Target: template.URL(web.HomePathFor(user.Role)),
-			Auto:   true,
-			Tone:   "success",
+			Target:      target,
+			Auto:        true,
+			Tone:        "success",
 		})
 		return
 	}
@@ -279,16 +289,17 @@ func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, web.HomePathFor(role), http.StatusFound)
 		return
 	}
-	a.serveAdminSPA(w, r)
+	a.serveConsole(w, r)
 }
 
 func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
-	from, to := adminTimeRange(r.URL.Query())
+	from, to := adminhttp.TimeRange(r.URL.Query())
 	return store.AdminAuditLogQuery{
 		Search: r.URL.Query().Get("q"), Result: r.URL.Query().Get("result"), TargetType: r.URL.Query().Get("target_type"), TargetID: r.URL.Query().Get("target_id"), ActorUserID: r.URL.Query().Get("actor_user_id"), From: from, To: to,
-		Page: positiveInt(r.URL.Query().Get("page"), 1), PerPage: positiveInt(r.URL.Query().Get("per_page"), 25),
+		Page: httpx.PositiveInt(r.URL.Query().Get("page"), 1), PerPage: httpx.PositiveInt(r.URL.Query().Get("per_page"), 25),
 	}
 }
+
 func (a *App) handleAdminAuditCSV(w http.ResponseWriter, r *http.Request) {
 	items, err := a.store.AdminAuditLogsForExport(r.Context(), adminAuditQuery(r))
 	if err != nil {
@@ -325,8 +336,6 @@ func auditCSVJSON(value any) string {
 	return string(raw)
 }
 
-// ---- review tab ----
-
 type adminReviewItem struct {
 	ResourceID  string
 	RevisionID  string
@@ -342,14 +351,20 @@ type adminReviewItem struct {
 	Attributes  []string
 }
 
-func positiveInt(raw string, fallback int) int {
-	value, err := strconv.Atoi(raw)
-	if err != nil || value < 1 {
-		return fallback
-	}
-	return value
-}
-
 func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (a *App) handleAdminAuthorize(w http.ResponseWriter, r *http.Request) {
+	target := strings.TrimRight(a.cfg.PublicURL, "/") + "/admin"
+	u, err := a.startBandBBSAuthorization(r, "login", "", target)
+	if err != nil {
+		http.Error(w, "could not start authorization", http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(w, r, u, http.StatusFound)
+}
+
+func (a *App) audit(r *http.Request, action, result, detail string) {
+	_ = a.store.RecordAudit(r.Context(), currentAdmin(r), action, result, a.clientIP(r), r.UserAgent(), detail)
 }

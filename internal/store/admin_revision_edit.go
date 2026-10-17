@@ -8,19 +8,23 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
 
 type AdminRevisionDraftInput struct {
-	DraftRevisionID string
-	BaseRevisionID  string
-	Name            string
-	Summary         string
-	PaidType        string
-	Attributes      []string
-	Links           []AdminLink
-	PublicationPlan json.RawMessage
+	ExpectedEditVersion *int64
+	Description         string
+	DescriptionFormat   string
+	DraftRevisionID     string
+	BaseRevisionID      string
+	Name                string
+	Summary             string
+	PaidType            string
+	Attributes          []string
+	Links               []AdminLink
+	PublicationPlan     json.RawMessage
 }
 
 func (input AdminRevisionDraftInput) normalized() (AdminRevisionDraftInput, error) {
@@ -29,10 +33,19 @@ func (input AdminRevisionDraftInput) normalized() (AdminRevisionDraftInput, erro
 	input.Name = strings.TrimSpace(input.Name)
 	input.Summary = strings.TrimSpace(input.Summary)
 	input.PaidType = strings.TrimSpace(input.PaidType)
+	if input.DescriptionFormat == "" {
+		input.DescriptionFormat = "markdown"
+	}
+	if utf8.RuneCountInString(input.Description) > 100000 {
+		return input, fmt.Errorf("%w: description too long", ErrAdminResourceConflict)
+	}
+	if input.DescriptionFormat != "plain" && input.DescriptionFormat != "markdown" {
+		return input, fmt.Errorf("%w: description format", ErrAdminResourceConflict)
+	}
 	if input.PaidType == "" {
 		input.PaidType = "free"
 	}
-	if input.Name == "" || len(input.Name) > 120 || input.Summary == "" || len(input.Summary) > 4000 {
+	if input.Name == "" || len(input.Name) > 120 || len(input.Summary) > 4000 {
 		return input, fmt.Errorf("%w: revision metadata", ErrAdminResourceConflict)
 	}
 	if input.PaidType != "free" && input.PaidType != "paid" && input.PaidType != "force_paid" {
@@ -100,11 +113,14 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 		return "", err
 	}
 	defer tx.Rollback()
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT true FROM resources WHERE id=$1 FOR UPDATE`, resourceID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var editVersion int64
+	if err := tx.QueryRowContext(ctx, `SELECT edit_version FROM resources WHERE id=$1 FOR UPDATE`, resourceID).Scan(&editVersion); errors.Is(err, sql.ErrNoRows) {
 		return "", ErrAdminResourceNotFound
 	} else if err != nil {
 		return "", err
+	}
+	if input.ExpectedEditVersion != nil && editVersion != *input.ExpectedEditVersion {
+		return "", ErrAdminResourceConflict
 	}
 	if len(input.Attributes) > 0 {
 		var count int
@@ -121,7 +137,7 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 		if _, err := uuid.Parse(revisionID); err != nil {
 			return "", ErrAdminResourceNotFound
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions revision SET name=$3,summary=$4,paid_type=$5,publication_plan=$6,created_by=$7,purchase_link=CASE WHEN $5='free' THEN '' ELSE purchase_link END,purchase_price=CASE WHEN $5='free' THEN NULL ELSE purchase_price END,purchase_currency=CASE WHEN $5='free' THEN '' ELSE purchase_currency END WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending')))`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID)
+		result, err := tx.ExecContext(ctx, `UPDATE resource_revisions revision SET name=$3,summary=$4,description=$8,description_format=$9,paid_type=$5,publication_plan=$6,created_by=$7,purchase_link=CASE WHEN $5='free' THEN '' ELSE purchase_link END,purchase_price=CASE WHEN $5='free' THEN NULL ELSE purchase_price END,purchase_currency=CASE WHEN $5='free' THEN '' ELSE purchase_currency END WHERE revision.id=$1 AND revision.resource_id=$2 AND ((revision.state='draft' AND revision.created_via='admin') OR (revision.state='submitted' AND EXISTS(SELECT 1 FROM review_cases review WHERE review.revision_id=revision.id AND review.state='pending')))`, revisionID, resourceID, input.Name, input.Summary, input.PaidType, input.PublicationPlan, actor.UserID, input.Description, input.DescriptionFormat)
 		if err != nil {
 			return "", err
 		}
@@ -161,7 +177,7 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 			return "", err
 		}
 		revisionID = uuid.NewString()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,purchase_link,purchase_price,purchase_currency,state,publication_plan,created_by,created_via,base_revision_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10,$11,'admin',$12)`, revisionID, resourceID, revisionNo, input.Name, input.Summary, input.PaidType, basePurchaseLink, basePurchasePrice, basePurchaseCurrency, input.PublicationPlan, actor.UserID, input.BaseRevisionID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,paid_type,purchase_link,purchase_price,purchase_currency,state,publication_plan,created_by,created_via,base_revision_id,description,description_format) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10,$11,'admin',$12,$13,$14)`, revisionID, resourceID, revisionNo, input.Name, input.Summary, input.PaidType, basePurchaseLink, basePurchasePrice, basePurchaseCurrency, input.PublicationPlan, actor.UserID, input.BaseRevisionID, input.Description, input.DescriptionFormat); err != nil {
 			return "", err
 		}
 		if err := cloneAdminRevisionAssets(ctx, tx, input.BaseRevisionID, revisionID); err != nil {
@@ -187,7 +203,7 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 			return "", err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE resources SET draft_name=$2,updated_at=now() WHERE id=$1`, resourceID, input.Name); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE resources SET edit_version=edit_version+1,draft_name=$2,updated_at=now() WHERE id=$1`, resourceID, input.Name); err != nil {
 		return "", err
 	}
 	payload, _ := json.Marshal(map[string]any{"revision_id": revisionID, "base_revision_id": input.BaseRevisionID, "via": "admin"})
@@ -206,11 +222,11 @@ func (s *Store) AdminSaveRevisionDraft(ctx context.Context, resourceID string, r
 func (s *Store) AdminCreateRollbackRevision(ctx context.Context, resourceID, baseRevisionID string, actor AdminSession) (string, error) {
 	var input AdminRevisionDraftInput
 	var attributesRaw, linksRaw []byte
-	err := s.db.QueryRowContext(ctx, `SELECT revision.name,revision.summary,revision.paid_type,revision.publication_plan,
+	err := s.db.QueryRowContext(ctx, `SELECT revision.name,revision.summary,revision.description,revision.description_format,revision.paid_type,revision.publication_plan,
 		COALESCE((SELECT jsonb_agg(attribute ORDER BY attribute) FROM resource_revision_attributes WHERE revision_id=revision.id),'[]'::jsonb),
 		COALESCE((SELECT jsonb_agg(jsonb_build_object('position',position,'title',title,'url',url) ORDER BY position) FROM revision_links WHERE revision_id=revision.id),'[]'::jsonb)
 		FROM resource_revisions revision WHERE revision.id=$1 AND revision.resource_id=$2`, baseRevisionID, resourceID).
-		Scan(&input.Name, &input.Summary, &input.PaidType, &input.PublicationPlan, &attributesRaw, &linksRaw)
+		Scan(&input.Name, &input.Summary, &input.Description, &input.DescriptionFormat, &input.PaidType, &input.PublicationPlan, &attributesRaw, &linksRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrAdminResourceNotFound
 	}
@@ -311,6 +327,12 @@ func cloneAdminRevisionAssets(ctx context.Context, tx *sql.Tx, baseRevisionID, r
 // AdminSubmitRevisionDraft freezes an admin-authored draft as a submitted
 // revision and creates the same review/publication work items as creator submit.
 func (s *Store) AdminSubmitRevisionDraft(ctx context.Context, resourceID, revisionID string, actor AdminSession) error {
+	return s.submitAdminDraft(ctx, resourceID, revisionID, actor, nil)
+}
+func (s *Store) AdminSubmitRevisionDraftAt(ctx context.Context, resourceID, revisionID string, actor AdminSession, expected int64) error {
+	return s.submitAdminDraft(ctx, resourceID, revisionID, actor, &expected)
+}
+func (s *Store) submitAdminDraft(ctx context.Context, resourceID, revisionID string, actor AdminSession, expected *int64) error {
 	if _, err := uuid.Parse(resourceID); err != nil {
 		return ErrAdminResourceNotFound
 	}
@@ -322,15 +344,19 @@ func (s *Store) AdminSubmitRevisionDraft(ctx context.Context, resourceID, revisi
 		return err
 	}
 	defer tx.Rollback()
-	var name string
+	var name, summary string
+	var version int64
 	var planRaw []byte
-	if err := tx.QueryRowContext(ctx, `SELECT revision.name,revision.publication_plan FROM resource_revisions revision JOIN resources resource ON resource.id=revision.resource_id WHERE revision.id=$1 AND revision.resource_id=$2 AND revision.state='draft' AND revision.created_via='admin' FOR UPDATE OF revision,resource`, revisionID, resourceID).Scan(&name, &planRaw); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT revision.name,revision.summary,revision.publication_plan,resource.edit_version FROM resource_revisions revision JOIN resources resource ON resource.id=revision.resource_id WHERE revision.id=$1 AND revision.resource_id=$2 AND revision.state='draft' AND revision.created_via='admin' FOR UPDATE OF revision,resource`, revisionID, resourceID).Scan(&name, &summary, &planRaw, &version); errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: admin draft was not found", ErrAdminResourceConflict)
 	} else if err != nil {
 		return err
 	}
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("%w: resource name is required", ErrAdminResourceConflict)
+	if expected != nil && version != *expected {
+		return ErrAdminResourceConflict
+	}
+	if strings.TrimSpace(name) == "" || strings.TrimSpace(summary) == "" {
+		return fmt.Errorf("%w: resource name and summary are required", ErrAdminResourceConflict)
 	}
 	var previewCount, artifactCount, boundArtifactCount int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM revision_media WHERE revision_id=$1 AND role='preview'`, revisionID).Scan(&previewCount); err != nil {
@@ -388,6 +414,9 @@ func (s *Store) AdminSubmitRevisionDraft(ctx context.Context, resourceID, revisi
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE resource_revisions SET state='submitted' WHERE id=$1`, revisionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resources SET edit_version=edit_version+1 WHERE id=$1`, resourceID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO review_cases(id,revision_id,first_submitted_at)

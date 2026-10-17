@@ -45,7 +45,7 @@ func New(primary, fallback Endpoint, timeout time.Duration) *Service {
 	if timeout <= 0 {
 		timeout = 4 * time.Second
 	}
-	return &Service{primary: primary, fallback: fallback, timeout: timeout, client: &http.Client{Timeout: timeout + time.Second}}
+	return &Service{primary: primary, fallback: fallback, timeout: timeout, client: &http.Client{Timeout: timeout + time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 // Enabled reports whether AI moderation is configured at all. Without an API

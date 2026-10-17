@@ -19,3 +19,7 @@ Material Symbols（Outlined，weight 400）的 SVG 雪碧图，只包含后台�
 
 新增图标时，把名字加进模板，再从同一个 npm 包取出对应 `<symbol>` 补进 `icons.svg`，
 `TestEveryReferencedIconExistsInTheSprite` 会守住两者不同步的情况。
+
+## app.css
+
+登录和 OAuth 过渡页使用的自托管样式，由 `web/css.go` 通过 `go:embed` 内嵌，仍从 `/assets/app.css` 提供。修改样式后正常重新编译 Go 服务端即可。

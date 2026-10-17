@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -115,6 +116,15 @@ func (s *Store) Plugin(ctx context.Context, id string) (PluginRecord, error) {
 // SetPluginState moves a plugin through the moderation states and returns the
 // updated record.
 func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (PluginRecord, error) {
+	return s.setPluginState(ctx, id, state, reason, "")
+}
+func (s *Store) ReviewPluginVersion(ctx context.Context, id, state, reason, expected string) (PluginRecord, error) {
+	if expected == "" {
+		return PluginRecord{}, fmt.Errorf("pending version is required")
+	}
+	return s.setPluginState(ctx, id, state, reason, expected)
+}
+func (s *Store) setPluginState(ctx context.Context, id, state, reason, expected string) (PluginRecord, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return PluginRecord{}, err
@@ -127,6 +137,9 @@ func (s *Store) SetPluginState(ctx context.Context, id, state, reason string) (P
 	}
 	if err != nil {
 		return PluginRecord{}, err
+	}
+	if expected != "" && pendingID != expected {
+		return PluginRecord{}, fmt.Errorf("plugin pending version changed; reload before reviewing")
 	}
 	if pendingID != "" && (state == "listed" || state == "rejected") {
 		versionState := state

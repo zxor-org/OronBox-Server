@@ -28,6 +28,8 @@ type AdminUserItem struct {
 }
 
 type AdminUserQuery struct {
+	Role    string
+	Status  string
 	Search  string
 	Page    int
 	PerPage int
@@ -35,6 +37,12 @@ type AdminUserQuery struct {
 
 func (query AdminUserQuery) normalized() AdminUserQuery {
 	query.Search = strings.TrimSpace(query.Search)
+	if query.Role == "all" {
+		query.Role = ""
+	}
+	if query.Status == "all" {
+		query.Status = ""
+	}
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -88,13 +96,13 @@ func scanAdminUser(scanner interface{ Scan(...any) error }) (AdminUserItem, erro
 
 func (s *Store) AdminUsers(ctx context.Context, raw AdminUserQuery) (AdminUserPage, error) {
 	query := raw.normalized()
-	filter := `($1='' OR u.username ILIKE '%'||$1||'%' OR CAST(u.id AS text)=$1 OR CAST(u.bandbbs_user_id AS text)=$1)`
+	filter := `($1='' OR u.username ILIKE '%'||$1||'%' OR CAST(u.id AS text)=$1 OR CAST(u.bandbbs_user_id AS text)=$1) AND ($2='' OR u.role=$2) AND ($3='' OR ($3='normal' AND u.banned_at IS NULL) OR ($3='banned' AND u.banned_at IS NOT NULL))`
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users u WHERE `+filter, query.Search).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users u WHERE `+filter, query.Search, query.Role, query.Status).Scan(&total); err != nil {
 		return AdminUserPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+adminUserSelect+` FROM users u WHERE `+filter+` ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`,
-		query.Search, query.PerPage, (query.Page-1)*query.PerPage)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+adminUserSelect+` FROM users u WHERE `+filter+` ORDER BY u.created_at DESC LIMIT $4 OFFSET $5`,
+		query.Search, query.Role, query.Status, query.PerPage, (query.Page-1)*query.PerPage)
 	if err != nil {
 		return AdminUserPage{}, err
 	}

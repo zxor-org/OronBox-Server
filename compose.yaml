@@ -7,8 +7,11 @@ services:
       - .env
     environment:
       STORAGE_LOCAL_ROOT: /var/lib/oronbox/blobs
+      CONSOLE_DIR: /var/lib/oronbox/console
     volumes:
       - blob-data:/var/lib/oronbox/blobs
+      - console-data:/var/lib/oronbox/console
 
 volumes:
   blob-data:
+  console-data:

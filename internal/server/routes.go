@@ -1,0 +1,130 @@
+package server
+
+import (
+	"net/http"
+
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
+)
+
+func (a *App) Routes() http.Handler {
+	mux := http.NewServeMux()
+	a.registerPublicRoutes(mux)
+	a.registerOauthRoutes(mux)
+	a.registerClientRoutes(mux)
+	a.registerCreatorRoutes(mux)
+	a.registerAdminRoutes(mux)
+	a.registerConsoleRoutes(mux)
+	return a.protectClientAPI(mux)
+}
+
+func (a *App) registerPublicRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /{$}", a.handleRoot)
+	mux.HandleFunc("GET /healthz", a.handleHealthz)
+	mux.HandleFunc("GET /open", a.handleOpen)
+}
+
+func (a *App) registerOauthRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/oauth/bandbbs/start", a.protectClientRoute(http.HandlerFunc(a.throttleCredentials(a.handleBandBBSStart))))
+	mux.Handle("POST /api/v1/oauth/bandbbs/publish/start", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleBandBBSPublishStart))))
+	mux.HandleFunc("GET /oauth2/bandbbs/callback", a.handleBandBBSCallback)
+	mux.HandleFunc("GET /oauth2/github/callback", a.handleGitHubWebCallback)
+	mux.HandleFunc("GET /auth/success", a.handleAuthSuccess)
+	mux.HandleFunc("GET /auth/failed", a.handleAuthFailed)
+	mux.Handle("POST /api/v1/oauth/bandbbs/exchange", a.protectClientRoute(http.HandlerFunc(a.throttleCredentials(a.handleTicketExchange))))
+	mux.Handle("POST /api/v1/oauth/bandbbs/refresh", a.protectClientRoute(http.HandlerFunc(a.throttleCredentials(a.handleRefresh))))
+	mux.Handle("POST /api/v1/oauth/bandbbs/token/refresh", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleBandBBSTokenRefresh))))
+	mux.Handle("POST /api/v1/oauth/github/device/start", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubDeviceStart))))
+	mux.Handle("POST /api/v1/oauth/github/device/poll", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubDevicePoll))))
+	mux.Handle("POST /api/v1/oauth/github/web/start", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubWebStart))))
+	mux.Handle("POST /api/v1/oauth/github/web/status", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubWebStatus))))
+	mux.Handle("DELETE /api/v1/oauth/github/grant", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubGrantDelete))))
+	mux.HandleFunc("GET /admin/api/auth/bandbbs/authorize", a.throttleCredentials(a.handleAdminAuthorize))
+	mux.HandleFunc("PUT /admin/api/auth/minimum-version", a.requireAdminRole("admin", a.handleBuildPolicy))
+}
+
+func (a *App) registerClientRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /api/v1/me", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleMe))))
+	mux.Handle("GET /api/v1/me/grants", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGrants))))
+	mux.Handle("GET /api/v1/coins", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCoinAccount))))
+	mux.Handle("POST /api/v1/coins/checkin", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCoinCheckin))))
+	mux.Handle("POST /api/v1/session/revoke", a.protectClientRoute(http.HandlerFunc(a.handleSessionRevoke)))
+	mux.Handle("GET /api/v1/resources", a.protectClientRoute(http.HandlerFunc(a.handleListResources)))
+	mux.Handle("GET /api/v1/home", a.protectClientRoute(http.HandlerFunc(a.handleHome)))
+	mux.Handle("GET /api/v1/blog", a.protectClientRoute(http.HandlerFunc(a.handleBlogList)))
+	mux.Handle("GET /api/v1/blog/{slug}", a.protectClientRoute(http.HandlerFunc(a.handleBlogPost)))
+	mux.Handle("GET /api/v1/plugins", a.protectClientRoute(http.HandlerFunc(a.handleListPlugins)))
+	mux.Handle("POST /api/v1/plugins", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleUploadPlugin))))
+	mux.Handle("GET /api/v1/plugins/{id}/package", a.protectClientRoute(http.HandlerFunc(a.handlePluginPackage)))
+	mux.Handle("GET /api/v1/plugins/{id}/icon", a.protectClientRoute(http.HandlerFunc(a.handlePluginIcon)))
+	mux.Handle("DELETE /api/v1/plugins/{id}", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleDeletePlugin))))
+	mux.Handle("GET /api/v1/tags", a.protectClientRoute(http.HandlerFunc(a.handleResourceAttributes)))
+	mux.Handle("GET /api/v1/resources/{id}", a.protectClientRoute(http.HandlerFunc(a.handleResource)))
+	mux.Handle("GET /api/v1/collections", a.protectClientRoute(http.HandlerFunc(a.handleCollections)))
+	mux.Handle("GET /api/v1/collections/{id}", a.protectClientRoute(http.HandlerFunc(a.handleCollection)))
+	mux.Handle("POST /api/v1/resources/{id}/coins", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleResourceCoin))))
+	mux.Handle("GET /api/v1/resources/{id}/coins", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleResourceCoinStatus))))
+	mux.Handle("GET /api/v1/comments/{id}", a.protectClientRoute(http.HandlerFunc(a.handleCommentThread)))
+	mux.Handle("GET /api/v1/resources/{id}/comments", a.protectClientRoute(http.HandlerFunc(a.handleListComments)))
+	mux.Handle("POST /api/v1/resources/{id}/comments", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCreateComment))))
+	mux.Handle("DELETE /api/v1/comments/{id}", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleDeleteComment))))
+	mux.Handle("GET /api/v1/messages", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleMessages))))
+	mux.Handle("DELETE /api/v1/messages", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleClearMessages))))
+	mux.Handle("POST /api/v1/messages/{id}/read", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleReadMessage))))
+	mux.Handle("GET /api/v1/announcements/unread", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleAnnouncements))))
+	mux.Handle("POST /api/v1/announcements/read", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleReadAnnouncements))))
+	mux.Handle("GET /api/v1/devices", a.protectClientRoute(http.HandlerFunc(a.handleDevices)))
+	mux.Handle("GET /api/v1/meta/legal", a.protectClientRoute(http.HandlerFunc(a.handleLegalManifest)))
+	mux.Handle("GET /api/v1/meta/legal/{document}", a.protectClientRoute(http.HandlerFunc(a.handleLegalDocument)))
+	mux.Handle("GET /api/v1/app/releases", a.protectClientRoute(http.HandlerFunc(a.handleAppRelease)))
+	mux.Handle("GET /api/v1/blobs/{sha256}", a.protectClientRoute(http.HandlerFunc(a.handleBlob)))
+	mux.Handle("POST /api/v1/feedback", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCreateFeedback))))
+	mux.Handle("GET /api/v1/feedback", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleFeedbackList))))
+	mux.Handle("GET /api/v1/feedback/{ticket}", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleFeedback))))
+	mux.Handle("POST /api/v1/feedback/{ticket}/replies", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleFeedbackReply))))
+	mux.Handle("POST /api/v1/resources/{resource}/collaboration/accept", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCollaboratorAccept))))
+	mux.Handle("DELETE /api/v1/resources/{resource}/collaboration", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCollaboratorDecline))))
+	mux.Handle("GET /api/v1/collaborations", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCollaborationInvitations))))
+}
+
+func (a *App) registerCreatorRoutes(mux *http.ServeMux) {
+	mux.Handle("GET /api/v1/creator/publication-options", a.protectClientRoute(a.requireCreator(func(w http.ResponseWriter, r *http.Request) {
+		cfg := a.creator.PublicationOptions()
+		if cfg == nil {
+			httpx.WriteJSON(w, 503, httpx.ErrorBody("publication_config_unavailable", "publication configuration is unavailable"))
+			return
+		}
+		httpx.WriteJSON(w, 200, cfg)
+	})))
+	mux.Handle("GET /api/v1/creator/deletion-operations", a.protectClientRoute(a.requireCreator(a.handleCreatorDeletionList)))
+	mux.Handle("GET /api/v1/creator/deletion-operations/{operation}", a.protectClientRoute(a.requireCreator(a.handleCreatorDeletionOperation)))
+	mux.Handle("POST /api/v1/creator/deletion-operations/{operation}/retry", a.protectClientRoute(a.requireCreator(a.handleCreatorDeletionOperation)))
+	mux.Handle("POST /api/v1/creator/publications/{publication}/retry", a.protectClientRoute(a.requireCreator(a.handleCreatorPublicationRetry)))
+	mux.Handle("GET /api/v1/creator/resources", a.protectClientRoute(a.requireCreator(a.handleCreatorList)))
+	mux.Handle("GET /api/v1/creator/reviews", a.protectClientRoute(a.requireCreator(a.handleCreatorReviewList)))
+	mux.Handle("GET /api/v1/creator/reviews/{review}", a.protectClientRoute(a.requireCreator(a.handleCreatorReview)))
+	mux.Handle("GET /api/v1/creator/reviews/{review}/astrobox", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBox)))
+	mux.Handle("GET /api/v1/creator/reviews/{review}/astrobox/comments", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComments)))
+	mux.Handle("POST /api/v1/creator/reviews/{review}/astrobox/comments", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComments)))
+	mux.Handle("PATCH /api/v1/creator/reviews/{review}/astrobox/comments/{comment}", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComment)))
+	mux.Handle("DELETE /api/v1/creator/reviews/{review}/astrobox/comments/{comment}", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComment)))
+	mux.Handle("GET /api/v1/creator/coins/stats", a.protectClientRoute(a.requireCreator(a.handleCreatorCoinStats)))
+	mux.Handle("POST /api/v1/creator/resources", a.protectClientRoute(a.requireCreator(a.handleCreatorCreate)))
+	mux.Handle("GET /api/v1/creator/resources/{resource}", a.protectClientRoute(a.requireCreator(a.handleCreatorWorkspace)))
+	mux.Handle("POST /api/v1/creator/resources/{resource}/publish", a.protectClientRoute(a.requireCreator(a.handleCreatorPublish)))
+	mux.Handle("PUT /api/v1/creator/resources/{resource}/draft", a.protectClientRoute(a.requireCreator(a.handleCreatorDraft)))
+	mux.Handle("GET /api/v1/creator/resources/{resource}/blobs/{sha256}", a.protectClientRoute(a.requireCreator(a.handleCreatorBlob)))
+	mux.Handle("POST /api/v1/creator/resources/{resource}/takedown", a.protectClientRoute(a.requireCreator(a.handleCreatorTakedown)))
+	mux.Handle("POST /api/v1/creator/resources/{resource}/restore", a.protectClientRoute(a.requireCreator(a.handleCreatorRestore)))
+	mux.Handle("DELETE /api/v1/creator/resources/{resource}", a.protectClientRoute(a.requireCreator(a.handleCreatorDelete)))
+	mux.Handle("GET /api/v1/creator/collections", a.protectClientRoute(a.requireCreator(a.handleCreatorCollectionList)))
+	mux.Handle("POST /api/v1/creator/collections", a.protectClientRoute(a.requireCreator(a.handleCollectionSubmit)))
+	mux.Handle("GET /api/v1/creator/collections/{collection}", a.protectClientRoute(a.requireCreator(a.handleCreatorCollection)))
+	mux.Handle("POST /api/v1/creator/collections/{collection}/submit", a.protectClientRoute(a.requireCreator(a.handleCollectionSubmit)))
+	mux.Handle("POST /api/v1/creator/media", a.protectClientRoute(a.requireCreator(a.handleCreatorMedia)))
+	mux.Handle("GET /api/v1/creator/media/{sha}", a.protectClientRoute(a.requireCreator(a.handleCreatorMedia)))
+	mux.Handle("DELETE /api/v1/creator/collections/{collection}", a.protectClientRoute(a.requireCreator(a.handleCreatorCollectionDelete)))
+	mux.Handle("GET /api/v1/creator/resources/{resource}/relationships", a.protectClientRoute(a.requireCreator(a.handleCreatorRelationships)))
+	mux.Handle("POST /api/v1/creator/resources/{resource}/collaborators", a.protectClientRoute(a.requireCreator(a.handleCreatorCollaboratorInvite)))
+	mux.Handle("DELETE /api/v1/creator/resources/{resource}/collaborators/{user}", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCollaboratorRemove))))
+	mux.Handle("PUT /api/v1/creator/resources/{resource}/source", a.protectClientRoute(a.requireCreator(a.handleCreatorSource)))
+}

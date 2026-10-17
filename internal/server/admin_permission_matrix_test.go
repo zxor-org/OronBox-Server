@@ -11,10 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/creator"
 	"github.com/zxor-org/OronBox-Server/internal/store"
@@ -85,8 +88,27 @@ func adminPermissionTestApp(t *testing.T, role string) *App {
 	t.Helper()
 	db := sql.OpenDB(adminAuthConnector{role: role})
 	t.Cleanup(func() { _ = db.Close() })
+	root := t.TempDir()
+	directory := uuid.NewString()
+	target := filepath.Join(root, "versions", directory)
+	if err := os.MkdirAll(filepath.Join(target, "assets"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "index.html"), []byte(`<html><head><meta name="csp-nonce" content="__CSP_NONCE__"></head><body><div id="root"></div><script src="/admin/assets/test.js"></script></body></html>`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.Repeat("a", 40)
+	if err := os.WriteFile(filepath.Join(target, "console.json"), []byte(`{"admin_api_contract":"oronbox-legacy-v1","commit":"`+commit+`"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "assets", "test.js"), []byte("void 0"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "current.json"), []byte(`{"directory":"`+directory+`","metadata":{"commit":"`+commit+`"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return &App{
-		cfg:       config.Config{PublicURL: "https://admin.example", SessionSecret: "test-session-secret"},
+		cfg:       config.Config{ConsoleDirectory: root, PublicURL: "https://admin.example", SessionSecret: "test-session-secret"},
 		store:     store.New(db),
 		creator:   creator.New(db, nil, creator.Limits{}),
 		templates: web.NewTemplates(),
@@ -102,6 +124,9 @@ func performAdminRequestWithToken(t *testing.T, app *App, method, target, body, 
 	t.Helper()
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: "test-session"})
+	if strings.Contains(target, "/resources/") && strings.Contains(target, "/draft") {
+		request.Header.Set("If-Match", "0")
+	}
 	if body != "" {
 		if strings.HasPrefix(target, "/admin/api/") {
 			request.Header.Set("Content-Type", "application/json")
@@ -185,12 +210,9 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 	}
 }
 
-// The console is one SPA shell, so every page URL serves the same HTML and
-// the client routes reviewers away from admin-only pages. The write API
-// remains the enforcement point, so a reviewer's blocked mutation is a plain
-// 403 rather than a document that could be mistaken for a page.
+// Reviewers can load their review page; admin-only writes remain JSON 403s.
 func TestReviewerPageLoadsTheConsoleAndMutationsStayBlocked(t *testing.T) {
-	page := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodGet, "/admin/users", "", "")
+	page := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodGet, "/admin/review", "", "")
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", page.Code)
 	}

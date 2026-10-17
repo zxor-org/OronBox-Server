@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 )
 
@@ -118,7 +119,7 @@ func (a *App) throttleCredentials(next http.HandlerFunc) http.HandlerFunc {
 				retryAfter = time.Minute
 			}
 			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
-			writeJSON(w, http.StatusTooManyRequests, errorBody("rate_limited", "too many attempts, please retry later"))
+			httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorBody("rate_limited", "too many attempts, please retry later"))
 			return
 		}
 		recorder := &statusRecorder{ResponseWriter: w}

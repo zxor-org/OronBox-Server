@@ -1,0 +1,1 @@
+ALTER TABLE resource_revisions ADD COLUMN binding_claims jsonb NOT NULL DEFAULT '[]' CHECK(jsonb_typeof(binding_claims)='array');

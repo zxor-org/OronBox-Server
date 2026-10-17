@@ -1,0 +1,82 @@
+package attestation
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"testing"
+	"time"
+)
+
+func TestDeriveAndRequestVerification(t *testing.T) {
+	master := make([]byte, 32)
+	_, _ = rand.Read(master)
+	tag, commit := "v1.1.4", "d7a5b3f0e1c2a9b8c7d6e5f4a3b2c1d0e9f8a7b6"
+	key := DeriveReleaseKey(master, tag, commit)
+	now := time.Unix(1760000000, 0)
+	body := []byte(`{"ok":true}`)
+	nonce := "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	sign := func(n string) string {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(CanonicalString("POST", "/api/v1/coins", now.Unix(), n, body)))
+		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	}
+	sig := sign(nonce)
+	opts := Options{MasterKey: master, Clock: func() time.Time { return now }, NonceStore: NewNonceStore(time.Minute)}
+	if _, err := Verify(tag, commit, sig, "1760000000", nonce, "POST", "/api/v1/coins", body, opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(tag, commit, sig, "1760000000", nonce, "POST", "/api/v1/coins", body, opts); err != ErrNonceReplayed {
+		t.Fatalf("replay error=%v", err)
+	}
+	opts.Revocation = NewRevocation([]string{Fingerprint(key)})
+	otherNonce := "b1b2c3d4e5f60718293a4b5c6d7e8f90"
+	if _, err := Verify(tag, commit, sign(otherNonce), "1760000000", otherNonce, "POST", "/api/v1/coins", body, opts); err != ErrRevoked {
+		t.Fatalf("revoked error=%v", err)
+	}
+
+	// Test dev and prerelease build tag support
+	devTag, devCommit := "v1.1.3-dev.6a27aa7.dirty", "6a27aa7a733ec36a3f6572cf1058722a484e2f0f"
+	devKey := DeriveReleaseKey(master, devTag, devCommit)
+	devSign := func(n string) string {
+		mac := hmac.New(sha256.New, devKey)
+		mac.Write([]byte(CanonicalString("GET", "/api/v1/resources", now.Unix(), n, nil)))
+		return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	}
+	devNonce := "c1b2c3d4e5f60718293a4b5c6d7e8f90"
+	devOpts := Options{MasterKey: master, Clock: func() time.Time { return now }, NonceStore: NewNonceStore(time.Minute)}
+	if _, err := Verify(devTag, devCommit, devSign(devNonce), "1760000000", devNonce, "GET", "/api/v1/resources", nil, devOpts); err != nil {
+		t.Fatalf("prerelease tag verify failed: %v", err)
+	}
+}
+
+func TestVerifyRejectsWrongKeyAndExpired(t *testing.T) {
+	master := make([]byte, 32)
+	_, _ = rand.Read(master)
+	body := []byte("")
+	now := time.Unix(1760000000, 0)
+	bad := base64.RawURLEncoding.EncodeToString([]byte("not-a-mac"))
+	opts := Options{MasterKey: master, Clock: func() time.Time { return now }, NonceStore: NewNonceStore(time.Minute)}
+	commit := "d7a5b3f0e1c2a9b8c7d6e5f4a3b2c1d0e9f8a7b6"
+	if _, err := Verify("v1.0.0", commit, bad, "1760000000", "a1b2c3d4e5f60718293a4b5c6d7e8f90", "GET", "/x", body, opts); err != ErrInvalidSignature {
+		t.Fatalf("want signature_mismatch, got %v", err)
+	}
+	if _, err := Verify("v1.0.0", commit, bad, "1", "b1b2c3d4e5f60718293a4b5c6d7e8f90", "GET", "/x", body, opts); err != ErrExpired {
+		t.Fatalf("want expired, got %v", err)
+	}
+	if _, err := Verify("", "abc", bad, "1760000000", "n1", "GET", "/x", body, opts); err != ErrMissingHeaders {
+		t.Fatalf("want missing headers, got %v", err)
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	for _, tt := range []struct {
+		a, b string
+		want int
+	}{{"1.2.0", "1.10.0", -1}, {"v2.0.0", "2.0", 0}, {"3.0.0-beta", "2.9.9", 1}, {"1.10.0", "1.9.0", 1}, {"2.0.0+build5", "2.0.0", 0}} {
+		if got := CompareVersions(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s/%s=%d", tt.a, tt.b, got)
+		}
+	}
+}

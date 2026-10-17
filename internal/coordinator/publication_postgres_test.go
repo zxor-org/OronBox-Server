@@ -26,12 +26,16 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adminDB.Close()
+	t.Cleanup(func() { adminDB.Close() })
 	databaseName := "testdb_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	if _, err := adminDB.ExecContext(ctx, `CREATE DATABASE `+databaseName); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = adminDB.ExecContext(context.Background(), `DROP DATABASE `+databaseName) })
+	t.Cleanup(func() {
+		if _, err := adminDB.ExecContext(context.Background(), `DROP DATABASE `+databaseName); err != nil {
+			t.Errorf("cleanup test database: %v", err)
+		}
+	})
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +61,9 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO publications(id,revision_id,target,config) VALUES($1,$2,'astrobox','{}')`, publicationID, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE resources SET current_revision_id=$1 WHERE id=$2`, revisionID, resourceID); err != nil {
 		t.Fatal(err)
 	}
 	c := &Coordinator{db: db, store: store.New(db), log: slog.New(slog.NewTextHandler(io.Discard, nil))}

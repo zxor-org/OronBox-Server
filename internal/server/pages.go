@@ -5,7 +5,9 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
@@ -66,4 +68,47 @@ func authErrorMessage(code string) string {
 	default:
 		return "未能完成授权，请返回 OronBox 后重试"
 	}
+}
+
+// render writes a page. The request is required because every rendered POST
+// form carries a session-bound CSRF token, which can only be derived from the
+// admin session attached to the request context.
+func (a *App) render(w http.ResponseWriter, r *http.Request, name string, data any) {
+	if values, ok := data.(map[string]any); ok {
+		if _, exists := values["PageSizes"]; !exists {
+			values["PageSizes"] = []int{25, 50, 100}
+		}
+		if _, exists := values["CSRFToken"]; !exists {
+			values["CSRFToken"] = a.adminCSRFTokenFor(r)
+		}
+		// The drawer is derived from the session rather than passed in by each
+		// handler, so no page can accidentally offer a reviewer a link that
+		// only answers with a 403.
+		role, _ := r.Context().Value(adminRoleContextKey{}).(string)
+		values["Role"] = role
+		values["Nav"] = web.NavigationFor(role)
+		values["HomePath"] = web.HomePathFor(role)
+	}
+	if err := a.templates.Render(w, name, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
+	a.render(w, r, "server_home", map[string]any{"Title": "Server"})
+}
+
+func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
+	statusCode := http.StatusOK
+	if err := a.store.Ping(r.Context()); err != nil {
+		status = "database_error"
+		statusCode = http.StatusServiceUnavailable
+	}
+	httpx.WriteJSON(w, statusCode, map[string]any{
+		"status":     status,
+		"version":    a.cfg.Version,
+		"commit":     a.cfg.Commit,
+		"started_at": a.startedAt.Format(time.RFC3339),
+	})
 }

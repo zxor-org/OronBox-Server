@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
@@ -76,20 +77,49 @@ func cleanupConfirmation(preview store.AdminCleanupPreview) string {
 func cleanupSummary(stats store.CleanupStats) string {
 	return fmt.Sprintf("states=%d tickets=%d admin_sessions=%d messages=%d", stats.OAuthStates, stats.LoginTickets, stats.AdminSessions, stats.UserMessages)
 }
+
 func (a *App) handleAdminCleanupPreview(w http.ResponseWriter, r *http.Request) {
 	actor := currentAdmin(r)
 	preview, err := a.store.PreviewExpiredCleanup(r.Context(), time.Now().UTC())
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_preview_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("cleanup_preview_failed", err.Error()))
 		return
 	}
 	token, err := a.signCleanupPreview(cleanupPreviewToken{Preview: preview, ActorID: actor.UserID, ExpiresAt: time.Now().UTC().Add(cleanupPreviewTTL)})
 	if err != nil {
 		_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "failure", a.clientIP(r), r.UserAgent(), err.Error())
-		writeJSON(w, http.StatusInternalServerError, errorBody("cleanup_preview_failed", "无法生成清理预览"))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("cleanup_preview_failed", "无法生成清理预览"))
 		return
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "cleanup.preview", "success", a.clientIP(r), r.UserAgent(), fmt.Sprintf("cutoff=%s total=%d %s", preview.Cutoff.Format(time.RFC3339Nano), preview.Total(), cleanupSummary(store.CleanupStats{OAuthStates: preview.OAuthStates, LoginTickets: preview.LoginTickets, AdminSessions: preview.AdminSessions, UserMessages: preview.UserMessages})))
-	writeJSON(w, http.StatusOK, map[string]any{"preview": preview, "token": token, "confirmation": cleanupConfirmation(preview)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"preview": preview, "token": token, "confirmation": cleanupConfirmation(preview)})
+}
+
+func (a *App) handleAdminAPICleanupJSON(w http.ResponseWriter, r *http.Request) {
+	actor := currentAdmin(r)
+	var body struct {
+		Token        string `json:"token"`
+		Confirmation string `json:"confirmation"`
+	}
+	if err := httpx.ReadJSON(r, &body); err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorBody("invalid_request", "invalid json"))
+		return
+	}
+	preview, err := a.verifyCleanupPreview(strings.TrimSpace(body.Token), actor.UserID, time.Now().UTC())
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorBody("cleanup_failed", err.Error()))
+		return
+	}
+	if body.Confirmation != cleanupConfirmation(preview) {
+		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorBody("cleanup_confirmation_mismatch", "确认短语不匹配"))
+		return
+	}
+	stats, err := a.store.ExecuteExpiredCleanup(r.Context(), preview)
+	if err != nil {
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("cleanup_failed", err.Error()))
+		return
+	}
+	a.audit(r, "cleanup.execute", "success", cleanupSummary(stats))
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": stats})
 }

@@ -30,28 +30,11 @@ type Announcement struct {
 	PublishedAt time.Time `json:"published_at"`
 }
 
+// UserMessages is the first-page convenience method for internal callers.
+// Public clients use UserMessagePage and follow its opaque cursor.
 func (s *Store) UserMessages(ctx context.Context, userID string) ([]UserMessage, int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT message.id::text,message.kind,message.event,message.data,message.read_at,message.created_at
-FROM user_messages message WHERE message.user_id=$1 AND message.expires_at>now() ORDER BY message.created_at DESC LIMIT 100`, userID)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	items := []UserMessage{}
-	for rows.Next() {
-		var item UserMessage
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Event, &item.Data, &item.ReadAt, &item.CreatedAt); err != nil {
-			return nil, 0, err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	var unread int
-	err = s.db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE user_id=$1 AND read_at IS NULL AND expires_at>now()`, userID).Scan(&unread)
-	return items, unread, err
+	page, err := s.UserMessagePage(ctx, userID, CommunityCursor{}, 20, false)
+	return page.Items, page.Unread, err
 }
 
 func (s *Store) ClearUserMessages(ctx context.Context, userID string) error {

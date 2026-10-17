@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 )
 
 func TestAdminOAuthReturnIsLimitedToDashboardGET(t *testing.T) {
@@ -132,10 +133,10 @@ func TestInternalErrorsDoNotLeakHandlerDetails(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
 	recorder.Header().Set("X-Request-ID", "test-request")
-	writeJSON(
+	httpx.WriteJSON(
 		recorder,
 		http.StatusInternalServerError,
-		errorBody("database_failed", `password="secret" host=private.example`),
+		httpx.ErrorBody("database_failed", `password="secret" host=private.example`),
 	)
 
 	var body map[string]string
@@ -159,7 +160,7 @@ func TestAdminSettingsJSONDoesNotLeakOAuthSecrets(t *testing.T) {
 		},
 	}
 	recorder := httptest.NewRecorder()
-	app.handleAdminAPISettings(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
+	app.adminHandlers().HandleAdminAPISettings(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
 	}

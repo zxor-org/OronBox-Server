@@ -274,6 +274,12 @@ func scanAdminPublication(scanner adminPublicationScanner) (AdminPublicationItem
 }
 
 func (s *Store) AdminManagePublication(ctx context.Context, id, action string) (AdminPublicationItem, error) {
+	return s.managePublication(ctx, id, action, "")
+}
+func (s *Store) RetryOwnedPublication(ctx context.Context, ownerID, id string) (AdminPublicationItem, error) {
+	return s.managePublication(ctx, id, "retry", ownerID)
+}
+func (s *Store) managePublication(ctx context.Context, id, action, ownerID string) (AdminPublicationItem, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return AdminPublicationItem{}, ErrAdminPublicationNotFound
 	}
@@ -284,7 +290,7 @@ func (s *Store) AdminManagePublication(ctx context.Context, id, action string) (
 	defer tx.Rollback()
 	var state string
 	var attempts int
-	if err := tx.QueryRowContext(ctx, `SELECT state,attempts FROM publications WHERE id=$1 FOR UPDATE`, id).Scan(&state, &attempts); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT p.state,p.attempts FROM publications p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources r ON r.id=rr.resource_id WHERE p.id=$1 AND ($2='' OR r.owner_id::text=$2) FOR UPDATE OF p,r`, id, ownerID).Scan(&state, &attempts); errors.Is(err, sql.ErrNoRows) {
 		return AdminPublicationItem{}, ErrAdminPublicationNotFound
 	} else if err != nil {
 		return AdminPublicationItem{}, err
@@ -294,7 +300,7 @@ func (s *Store) AdminManagePublication(ctx context.Context, id, action string) (
 	switch strings.TrimSpace(action) {
 	case "retry", "requeue":
 		nextState, event = "pending", "requeued"
-		result, err = tx.ExecContext(ctx, `UPDATE publications publication SET state='pending',error_message='',next_attempt_at=now(),updated_at=now() FROM resource_revisions revision WHERE publication.id=$1 AND revision.id=publication.revision_id AND revision.state='approved' AND publication.state IN ('failed','cancelled')`, id)
+		result, err = tx.ExecContext(ctx, `UPDATE publications publication SET state='pending',error_message='',next_attempt_at=now(),updated_at=now() FROM resource_revisions revision WHERE publication.id=$1 AND revision.id=publication.revision_id AND revision.state='approved' AND publication.state IN ('failed','cancelled') AND (publication.lease_token IS NULL OR publication.lease_expires_at<=now()) AND EXISTS(SELECT 1 FROM resources r WHERE r.id=revision.resource_id AND r.moderation_state='visible' AND r.current_revision_id=revision.id)`, id)
 	case "cancel":
 		nextState, event, historyError = "cancelled", "cancelled", "cancelled by administrator"
 		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='cancelled',error_message='cancelled by administrator',lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state IN ('pending','failed','reviewing') AND (lease_token IS NULL OR lease_expires_at<=now())`, id)
@@ -352,7 +358,7 @@ FROM publications p
 JOIN resource_revisions rr ON rr.id=p.revision_id
 JOIN resources r ON r.id=rr.resource_id
 JOIN users u ON u.id=r.owner_id
-WHERE `+strings.Join(where, " AND ")+`
+WHERE r.moderation_state='visible' AND r.current_revision_id=rr.id AND (p.lease_token IS NULL OR p.lease_expires_at<=now()) AND `+strings.Join(where, " AND ")+`
 ORDER BY p.id
 FOR UPDATE OF p`, args...)
 	if err != nil {

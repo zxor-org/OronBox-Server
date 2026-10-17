@@ -8,9 +8,15 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-type Store struct {
-	db *sql.DB
+type storeDB interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	PingContext(context.Context) error
 }
+
+type Store struct{ db storeDB }
 
 func Open(databaseURL string) (*sql.DB, error) {
 	if databaseURL == "" {

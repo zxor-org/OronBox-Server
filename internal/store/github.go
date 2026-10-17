@@ -40,6 +40,7 @@ type GitHubDeviceFlow struct {
 	DeviceCodeCipher []byte
 	Interval         int
 	ExpiresAt        time.Time
+	NextPollAt       time.Time
 }
 
 func (s *Store) CreateGitHubDeviceFlow(ctx context.Context, userID string, cipher []byte, userCode, verificationURI string, interval int, expiresAt time.Time) (string, error) {
@@ -49,7 +50,7 @@ func (s *Store) CreateGitHubDeviceFlow(ctx context.Context, userID string, ciphe
 }
 func (s *Store) GitHubDeviceFlow(ctx context.Context, id, userID string) (GitHubDeviceFlow, error) {
 	var flow GitHubDeviceFlow
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,device_code_cipher,interval_seconds,expires_at FROM github_device_flows WHERE id=$1 AND user_id=$2 AND completed_at IS NULL AND expires_at>now()`, id, userID).Scan(&flow.ID, &flow.DeviceCodeCipher, &flow.Interval, &flow.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,device_code_cipher,interval_seconds,expires_at,next_poll_at FROM github_device_flows WHERE id=$1 AND user_id=$2 AND completed_at IS NULL AND expires_at>now()`, id, userID).Scan(&flow.ID, &flow.DeviceCodeCipher, &flow.Interval, &flow.ExpiresAt, &flow.NextPollAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return flow, ErrInvalidCredential
 	}
@@ -61,7 +62,7 @@ func (s *Store) CompleteGitHubDeviceFlow(ctx context.Context, flowID, userID str
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE github_device_flows SET completed_at=now() WHERE id=$1 AND user_id=$2 AND completed_at IS NULL`, flowID, userID)
+	result, err := tx.ExecContext(ctx, `UPDATE github_device_flows SET completed_at=now() WHERE id=$1 AND user_id=$2 AND completed_at IS NULL AND expires_at>now() AND EXISTS(SELECT 1 FROM users WHERE id=$2 AND banned_at IS NULL)`, flowID, userID)
 	if err != nil {
 		return err
 	}
@@ -84,7 +85,7 @@ func (s *Store) CompleteGitHubWebFlow(ctx context.Context, flowID, userID string
 	if _, err := tx.ExecContext(ctx, `INSERT INTO github_grants(user_id,github_user_id,login,access_token_cipher,scopes) VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO UPDATE SET github_user_id=excluded.github_user_id,login=excluded.login,access_token_cipher=excluded.access_token_cipher,scopes=excluded.scopes,updated_at=now()`, userID, githubID, login, tokenCipher, scopes); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE oauth_states SET completed_at=now() WHERE id=$1 AND provider='github' AND user_id=$2 AND used_at IS NOT NULL AND completed_at IS NULL`, flowID, userID)
+	result, err := tx.ExecContext(ctx, `UPDATE oauth_states SET completed_at=now() WHERE id=$1 AND provider='github' AND user_id=$2 AND used_at IS NOT NULL AND completed_at IS NULL AND expires_at>now() AND EXISTS(SELECT 1 FROM users WHERE id=$2 AND banned_at IS NULL)`, flowID, userID)
 	if err != nil {
 		return err
 	}
@@ -104,6 +105,34 @@ func (s *Store) GitHubWebFlowStatus(ctx context.Context, flowID, userID string) 
 }
 
 func (s *Store) DeleteGitHubGrant(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM github_grants WHERE user_id=$1`, userID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM github_grants WHERE user_id=$1`, `DELETE FROM oauth_states WHERE user_id=$1 AND provider='github'`, `DELETE FROM github_device_flows WHERE user_id=$1`} {
+		if _, err = tx.ExecContext(ctx, q, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RejectGitHubToken(ctx context.Context, userID string, cipher []byte) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM github_grants WHERE user_id=$1 AND access_token_cipher=$2`, userID, cipher)
 	return err
+}
+func (s *Store) DelayGitHubDevicePoll(ctx context.Context, id string, slow bool) (int, error) {
+	var interval int
+	err := s.db.QueryRowContext(ctx, `UPDATE github_device_flows SET interval_seconds=GREATEST(interval_seconds,5)+CASE WHEN $2 THEN 5 ELSE 0 END,next_poll_at=now()+make_interval(secs=>GREATEST(interval_seconds,5)+CASE WHEN $2 THEN 5 ELSE 0 END) WHERE id=$1 RETURNING interval_seconds`, id, slow).Scan(&interval)
+	return interval, err
+}
+
+func (s *Store) ClaimGitHubDevicePoll(ctx context.Context, id, userID string) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE github_device_flows SET next_poll_at=now()+make_interval(secs=>GREATEST(interval_seconds,5)) WHERE id=$1 AND user_id=$2 AND next_poll_at<=now() AND completed_at IS NULL AND expires_at>now()`, id, userID)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	return rows == 1, err
 }

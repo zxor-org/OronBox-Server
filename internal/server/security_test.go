@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/web"
 )
 
@@ -115,7 +116,7 @@ func credentialThrottleApp(failureBurst int) *App {
 
 func postCredentials(t *testing.T, handler http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, "/api/oauth/bandbbs/refresh", strings.NewReader(`{}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/oauth/bandbbs/refresh", strings.NewReader(`{}`))
 	request.RemoteAddr = "203.0.113.7:41234"
 	recorder := httptest.NewRecorder()
 	handler(recorder, request)
@@ -146,7 +147,7 @@ func TestCredentialAttemptCeilingStopsFlooding(t *testing.T) {
 	t.Parallel()
 	app := credentialThrottleApp(100)
 	handler := app.throttleCredentials(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
 	for attempt := 1; attempt <= 3; attempt++ {
 		if recorder := postCredentials(t, handler); recorder.Code != http.StatusOK {
@@ -168,7 +169,7 @@ func TestCredentialFailureBudgetIgnoresSuccessfulRequests(t *testing.T) {
 	t.Parallel()
 	app := credentialThrottleApp(2)
 	rejecting := app.throttleCredentials(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusUnauthorized, errorBody("invalid_refresh_token", "nope"))
+		httpx.WriteJSON(w, http.StatusUnauthorized, httpx.ErrorBody("invalid_refresh_token", "nope"))
 	})
 	for attempt := 1; attempt <= 2; attempt++ {
 		if recorder := postCredentials(t, rejecting); recorder.Code != http.StatusUnauthorized {
@@ -178,7 +179,7 @@ func TestCredentialFailureBudgetIgnoresSuccessfulRequests(t *testing.T) {
 	// The budget is spent, so even a request that would have succeeded is
 	// turned away.
 	accepting := app.throttleCredentials(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
 	if recorder := postCredentials(t, accepting); recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", recorder.Code)
@@ -186,7 +187,7 @@ func TestCredentialFailureBudgetIgnoresSuccessfulRequests(t *testing.T) {
 
 	fresh := credentialThrottleApp(2)
 	succeeding := fresh.throttleCredentials(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
 	})
 	for attempt := 1; attempt <= 3; attempt++ {
 		if recorder := postCredentials(t, succeeding); recorder.Code != http.StatusOK {

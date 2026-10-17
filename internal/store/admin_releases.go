@@ -122,7 +122,7 @@ func adminReleaseOrder(sort string) string {
 
 func (s *Store) AdminReleases(ctx context.Context, raw AdminReleaseQuery) (AdminReleasePage, error) {
 	query := raw.normalized()
-	const filter = `($1='' OR concat_ws(' ',release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.download_url,creator.username) ILIKE '%'||$1||'%')
+	const filter = `($1='' OR concat_ws(' ',release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.tag,creator.username) ILIKE '%'||$1||'%')
  AND ($2='' OR release.platform=$2) AND ($3='' OR release.arch=$3) AND ($4='' OR release.channel=$4)
  AND ($5='' OR ($5='enabled' AND release.enabled AND release.revoked_at IS NULL) OR ($5='disabled' AND NOT release.enabled AND release.revoked_at IS NULL) OR ($5='revoked' AND release.revoked_at IS NOT NULL))`
 	args := []any{query.Search, query.Platform, query.Arch, query.Channel, query.Enabled}
@@ -130,7 +130,7 @@ func (s *Store) AdminReleases(ctx context.Context, raw AdminReleaseQuery) (Admin
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM app_releases release LEFT JOIN users creator ON creator.id=release.created_by WHERE `+filter, args...).Scan(&page.Total); err != nil {
 		return AdminReleasePage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.download_url,release.published_at,release.enabled,release.revoked_at,release.updated_at,COALESCE(release.created_by::text,''),COALESCE(creator.username,'') FROM app_releases release LEFT JOIN users creator ON creator.id=release.created_by WHERE %s ORDER BY %s LIMIT $6 OFFSET $7`, filter, adminReleaseOrder(query.Sort)), append(args, query.PerPage, (query.Page-1)*query.PerPage)...)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.tag,release.published_at,release.enabled,release.revoked_at,release.updated_at,COALESCE(release.created_by::text,''),COALESCE(creator.username,'') FROM app_releases release LEFT JOIN users creator ON creator.id=release.created_by WHERE %s ORDER BY %s LIMIT $6 OFFSET $7`, filter, adminReleaseOrder(query.Sort)), append(args, query.PerPage, (query.Page-1)*query.PerPage)...)
 	if err != nil {
 		return AdminReleasePage{}, err
 	}
@@ -155,7 +155,7 @@ func (s *Store) AdminRelease(ctx context.Context, id string) (AdminReleaseItem, 
 	if _, err := uuid.Parse(id); err != nil {
 		return AdminReleaseItem{}, ErrAdminReleaseNotFound
 	}
-	item, err := scanAdminRelease(s.db.QueryRowContext(ctx, `SELECT release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.download_url,release.published_at,release.enabled,release.revoked_at,release.updated_at,COALESCE(release.created_by::text,''),COALESCE(creator.username,'') FROM app_releases release LEFT JOIN users creator ON creator.id=release.created_by WHERE release.id=$1`, id))
+	item, err := scanAdminRelease(s.db.QueryRowContext(ctx, `SELECT release.id::text,release.version,release.channel,release.platform,release.arch,release.minimum_version,release.notes_zh,release.notes_en,release.tag,release.published_at,release.enabled,release.revoked_at,release.updated_at,COALESCE(release.created_by::text,''),COALESCE(creator.username,'') FROM app_releases release LEFT JOIN users creator ON creator.id=release.created_by WHERE release.id=$1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminReleaseItem{}, ErrAdminReleaseNotFound
 	}
@@ -166,7 +166,7 @@ type adminReleaseScanner interface{ Scan(...any) error }
 
 func scanAdminRelease(scanner adminReleaseScanner) (AdminReleaseItem, error) {
 	var item AdminReleaseItem
-	err := scanner.Scan(&item.ID, &item.Version, &item.Channel, &item.Platform, &item.Arch, &item.MinimumVersion, &item.NotesZH, &item.NotesEN, &item.DownloadURL, &item.PublishedAt, &item.Enabled, &item.RevokedAt, &item.UpdatedAt, &item.CreatedBy, &item.Creator)
+	err := scanner.Scan(&item.ID, &item.Version, &item.Channel, &item.Platform, &item.Arch, &item.MinimumVersion, &item.NotesZH, &item.NotesEN, &item.Tag, &item.PublishedAt, &item.Enabled, &item.RevokedAt, &item.UpdatedAt, &item.CreatedBy, &item.Creator)
 	return item, err
 }
 

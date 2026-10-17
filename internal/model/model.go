@@ -16,6 +16,8 @@ type User struct {
 }
 
 type SessionTokens struct {
+	AccessExpiresAt  time.Time     `json:"expires_at"`
+	RefreshExpiresAt time.Time     `json:"refresh_expires_at"`
 	AccessToken      string        `json:"access_token"`
 	RefreshToken     string        `json:"refresh_token"`
 	TokenType        string        `json:"token_type"`

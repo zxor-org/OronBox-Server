@@ -9,6 +9,7 @@ import (
 
 func productionConfig() Config {
 	return Config{
+		ClientAttestationEnabled: true, AttestationMasterKey: make([]byte, 32), DeviceCatalog: DeviceCatalogConfig{BaseURL: "https://git.example", Repository: "owner/catalog"},
 		Version:          "1.0.0",
 		Addr:             ":8080",
 		PublicURL:        "https://oronbox.example",

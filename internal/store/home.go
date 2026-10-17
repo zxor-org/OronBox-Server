@@ -9,17 +9,21 @@ import (
 )
 
 type BlogPost struct {
-	Slug        string     `json:"slug"`
-	Type        string     `json:"type"`
-	Title       string     `json:"title"`
-	Subtitle    string     `json:"subtitle"`
-	Author      string     `json:"author"`
-	CoverSHA256 string     `json:"cover_sha256,omitempty"`
-	Body        string     `json:"body"`
-	Published   bool       `json:"published"`
-	PublishedAt *time.Time `json:"published_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	SourceSHA     string     `json:"source_sha"`
+	SourceBodySHA string     `json:"source_body_sha"`
+	SourceCommit  string     `json:"source_commit"`
+	CoverURL      string     `json:"cover_url"`
+	Slug          string     `json:"slug"`
+	Type          string     `json:"type"`
+	Title         string     `json:"title"`
+	Subtitle      string     `json:"subtitle"`
+	Author        string     `json:"author"`
+	CoverSHA256   string     `json:"cover_sha256,omitempty"`
+	Body          string     `json:"body"`
+	Published     bool       `json:"published"`
+	PublishedAt   *time.Time `json:"published_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type HomeBanner struct {
@@ -57,14 +61,14 @@ var (
 	ErrBlogPostConflict = errors.New("blog post was changed or deleted")
 )
 
-const blogColumns = `slug,type,title,subtitle,author,COALESCE(cover_sha256,''),body,published,published_at,created_at,updated_at`
+const blogColumns = `slug,type,title,subtitle,author,COALESCE(cover_sha256,''),body,published,published_at,created_at,updated_at,source_sha,source_body_sha,source_commit,cover_url`
 
 func scanBlogPost(row interface{ Scan(...any) error }) (BlogPost, error) {
 	var post BlogPost
 	err := row.Scan(
 		&post.Slug, &post.Type, &post.Title, &post.Subtitle, &post.Author,
 		&post.CoverSHA256, &post.Body, &post.Published, &post.PublishedAt,
-		&post.CreatedAt, &post.UpdatedAt,
+		&post.CreatedAt, &post.UpdatedAt, &post.SourceSHA, &post.SourceBodySHA, &post.SourceCommit, &post.CoverURL,
 	)
 	return post, err
 }

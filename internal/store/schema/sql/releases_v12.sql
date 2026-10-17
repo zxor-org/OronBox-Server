@@ -1,0 +1,1 @@
+ALTER TABLE app_releases ADD COLUMN tag text NOT NULL DEFAULT '',ADD COLUMN source_id bigint UNIQUE,ADD COLUMN source_available boolean NOT NULL DEFAULT true;UPDATE app_releases SET tag=version;ALTER TABLE app_releases DROP COLUMN download_url;

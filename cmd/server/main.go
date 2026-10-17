@@ -34,9 +34,6 @@ func main() {
 		log.Error("configuration validation failed", "error", err)
 		os.Exit(1)
 	}
-	// The bootstrap admin list bypasses the users.role check, so which BandBBS
-	// accounts it covers has to be visible in the startup record rather than
-	// only in whoever's shell set the variable.
 	log.Info("admin access configured",
 		"bootstrap_bandbbs_user_ids", cfg.Admin.BandBBSUserIDs,
 		"public_url", cfg.PublicURL,
@@ -66,6 +63,46 @@ func main() {
 	log.Info("local blob storage ready", "root", cfg.Storage.LocalRoot, "upload_limit_bytes", cfg.Limits.UploadMaxBytes, "media_limit_bytes", cfg.Limits.PreviewMaxBytes)
 	bandBBSOAuth := bandbbs.NewClient(cfg.BandBBS, 15*time.Second)
 	creatorService := creator.New(db, blobs, creator.Limits{UploadMaxBytes: cfg.Limits.UploadMaxBytes, PreviewMaxBytes: cfg.Limits.PreviewMaxBytes, PreviewMaxCount: cfg.Limits.PreviewMaxCount})
+
+	if cfg.DeviceCatalog.BaseURL != "" {
+		if err := creatorService.SyncDeviceCatalog(ctx, cfg.DeviceCatalog); err != nil {
+			log.Error("Gitea device catalog sync failed", "error", err)
+			os.Exit(1)
+		}
+		log.Info("Gitea device catalog synced")
+		go func() {
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := creatorService.SyncDeviceCatalog(ctx, cfg.DeviceCatalog); err != nil {
+						log.Error("Gitea device catalog refresh failed", "error", err)
+					}
+				}
+			}
+		}()
+	}
+	creatorService.RequirePublicationCatalog = true
+	if err := creatorService.SyncPublicationCatalog(ctx, cfg.DeviceCatalog); err != nil {
+		log.Error("publication config unavailable; external submissions disabled until refresh", "error", err)
+	}
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := creatorService.SyncPublicationCatalog(ctx, cfg.DeviceCatalog); err != nil {
+					log.Error("publication config refresh failed", "error", err)
+				}
+			}
+		}
+	}()
 	creatorService.Ranking = creator.Ranking{
 		CoinExtraWeight:    cfg.Ranking.CoinExtraWeight,
 		DownloadWeight:     cfg.Ranking.DownloadWeight,
@@ -100,6 +137,8 @@ func main() {
 	coord := coordinator.New(db, s, blobs, r2, secrets, cfg, bandBBSOAuth)
 	creatorService.BandBBSDelete = coord.DeleteBandBBSResources
 	creatorService.AstroBoxRemove = coord.RemoveAstroBoxItem
+	creatorService.AstroBoxRemovalStatus = coord.AstroBoxRemovalStatus
+	go creatorService.RunDeletionWorker(ctx)
 	go coord.Run(ctx)
 
 	app := server.New(server.Dependencies{
@@ -114,6 +153,11 @@ func main() {
 		Moderation: moderationService,
 	})
 
+	app.RefreshPolicies(ctx)
+	go app.RunReleaseSync(ctx)
+	go app.RunConsoleSync(ctx)
+	go app.RunContentSync(ctx)
+	go app.RunPolicyRefresh(ctx)
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           observability.HTTP(server.CORS(cfg.WebClientOrigins, server.SecurityHeaders(cfg, app.Routes()))),

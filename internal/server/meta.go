@@ -2,10 +2,13 @@ package server
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/legal"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
@@ -15,15 +18,42 @@ var legalDocuments = map[string]string{
 }
 
 func (a *App) handleLegalDocument(w http.ResponseWriter, r *http.Request) {
-	name, ok := legalDocuments[r.PathValue("document")]
+	name, ok := legalDocuments[canonicalLegalID(r.PathValue("document"))]
 	if !ok {
-		writeJSON(w, http.StatusNotFound, errorBody("document_not_found", "legal document was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("document_not_found", "legal document was not found"))
 		return
 	}
+	a.content.mu.RLock()
+	online := a.content.legal
+	a.content.mu.RUnlock()
+	for _, doc := range online.Documents {
+		if doc.ID == name {
+			if requested := r.URL.Query().Get("revision"); requested != "" && requested != strconv.Itoa(doc.Revision) {
+				httpx.WriteJSON(w, 409, httpx.ErrorBody("legal_revision_changed", "reload legal manifest"))
+				return
+			}
+			lang := preferredLanguage(r)
+			body := doc.Bodies[lang]
+			if body == "" {
+				httpx.WriteJSON(w, 503, httpx.ErrorBody("legal_language_unavailable", "document translation unavailable"))
+				return
+			}
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("X-Legal-Revision", strconv.Itoa(doc.Revision))
+			w.Header().Set("ETag", fmt.Sprintf("\"%s-%d-%s\"", doc.ID, doc.Revision, lang))
+			io.WriteString(w, body)
+			return
+		}
+	}
+	if r.URL.Query().Get("revision") != "" && r.URL.Query().Get("revision") != "1" {
+		httpx.WriteJSON(w, 503, httpx.ErrorBody("legal_unavailable", "requested legal revision unavailable"))
+		return
+	}
+	w.Header().Set("X-Legal-Revision", "1")
 	language := preferredLanguage(r)
 	data, err := legal.Documents.ReadFile("docs/" + name + "." + language + ".md")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("document_read_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("document_read_failed", err.Error()))
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -50,23 +80,22 @@ func (a *App) handleAppRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	release, err := a.store.LatestAppRelease(r.Context(), channel, platform, arch)
 	if errors.Is(err, store.ErrReleaseNotFound) {
-		writeJSON(w, http.StatusNotFound, errorBody("release_not_found", "no release is published for this channel"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("release_not_found", "no release is published for this channel"))
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("release_read_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("release_read_failed", err.Error()))
 		return
-	}
-	asset := release.DownloadURL
-	if asset != "" {
-		asset = strings.NewReplacer("{platform}", platform, "{arch}", arch, "{channel}", channel, "{version}", release.Version).Replace(asset)
 	}
 	notes := release.NotesZH
 	if preferredLanguage(r) == "en" {
 		notes = release.NotesEN
 	}
+	if notes == "" {
+		notes = release.NotesEN
+	}
 	currentVersion := strings.TrimSpace(r.URL.Query().Get("version"))
-	writeJSON(w, http.StatusOK, map[string]any{"latest_version": release.Version, "minimum_version": release.MinimumVersion, "mandatory": currentVersion != "" && release.MinimumVersion != "" && versionLess(currentVersion, release.MinimumVersion), "release_notes": notes, "published_at": release.PublishedAt, "download_url": asset, "source_url": "https://github.com/zxor-org/OronBox/releases/tag/" + release.Version, "channel": channel, "platform": platform, "arch": arch})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"latest_version": release.Version, "minimum_version": release.MinimumVersion, "mandatory": currentVersion != "" && release.MinimumVersion != "" && versionLess(currentVersion, release.MinimumVersion), "release_notes": notes, "published_at": release.PublishedAt, "tag": release.Tag, "channel": channel, "platform": platform, "arch": arch})
 }
 
 func versionLess(left, right string) bool {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -19,31 +20,45 @@ const DefaultScopes = "user:read resource_check:read resource:read resource_cate
 const DefaultPublishScopes = "attachment:write resource:write"
 
 type Config struct {
-	Addr              string
-	PublicURL         string
-	DatabaseURL       string
-	SessionSecret     string
-	EncryptionKey     string
-	BandBBS           BandBBSConfig
-	GitHub            GitHubConfig
-	AstroBox          AstroBoxConfig
-	Storage           StorageConfig
-	Limits            LimitsConfig
-	ClientRedirectURI string
-	WebClientOrigins  []string
-	TrustedProxyCIDRs []string
-	StateTTL          time.Duration
-	LoginTicketTTL    time.Duration
-	AccessTokenTTL    time.Duration
-	RefreshTokenTTL   time.Duration
-	Admin             AdminConfig
-	Moderation        ModerationConfig
-	Ranking           RankingConfig
-	Retention         RetentionConfig
-	Version           string
-	Commit            string
-	LogLevel          string
-	LogFormat         string
+	ConsoleRepository        string
+	ConsoleDirectory         string
+	ClientAttestationEnabled bool
+	AttestationMasterKey     []byte
+	MinimumClientVersion     string
+	RevokedClientKeys        []string
+	DeviceCatalog            DeviceCatalogConfig
+	Addr                     string
+	PublicURL                string
+	DatabaseURL              string
+	SessionSecret            string
+	EncryptionKey            string
+	BandBBS                  BandBBSConfig
+	GitHub                   GitHubConfig
+	AstroBox                 AstroBoxConfig
+	Storage                  StorageConfig
+	Limits                   LimitsConfig
+	ClientRedirectURI        string
+	WebClientOrigins         []string
+	TrustedProxyCIDRs        []string
+	StateTTL                 time.Duration
+	LoginTicketTTL           time.Duration
+	AccessTokenTTL           time.Duration
+	RefreshTokenTTL          time.Duration
+	Admin                    AdminConfig
+	Moderation               ModerationConfig
+	Ranking                  RankingConfig
+	Retention                RetentionConfig
+	Version                  string
+	Commit                   string
+	LogLevel                 string
+	LogFormat                string
+}
+
+type DeviceCatalogConfig struct {
+	BaseURL    string
+	Repository string
+	Ref        string
+	Token      string
 }
 
 type BandBBSConfig struct {
@@ -149,12 +164,20 @@ type ModerationConfig struct {
 type RetentionConfig struct{ Unpublished, Audit, Feedback, OrphanBlobs, Interval time.Duration }
 
 func Load() Config {
+	master, _ := hex.DecodeString(env("ORONBOX_AUTH_MASTER", ""))
 	return Config{
-		Addr:          env("ADDR", ":8080"),
-		PublicURL:     strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
-		DatabaseURL:   env("DATABASE_URL", "postgres://oronbox:oronbox@127.0.0.1:5432/oronbox?sslmode=disable"),
-		SessionSecret: env("SESSION_SECRET", ""),
-		EncryptionKey: env("TOKEN_ENCRYPTION_KEY", ""),
+		ConsoleRepository:        env("GITEA_CONSOLE_REPO", "OronBoxCommunity/OronBox-Server-Console"),
+		ConsoleDirectory:         env("CONSOLE_DIR", ""),
+		ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true),
+		AttestationMasterKey:     master,
+		MinimumClientVersion:     env("CLIENT_MINIMUM_VERSION", ""),
+		RevokedClientKeys:        strings.Fields(strings.ReplaceAll(env("CLIENT_REVOKED_KEYS", ""), ",", " ")),
+		DeviceCatalog:            DeviceCatalogConfig{BaseURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"), Repository: env("GITEA_CATALOG_REPO", "OronBoxCommunity/OronBox-Repo"), Ref: env("GITEA_CATALOG_REF", "main"), Token: env("GITEA_BOT_TOKEN", "")},
+		Addr:                     env("ADDR", ":8080"),
+		PublicURL:                strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
+		DatabaseURL:              env("DATABASE_URL", "postgres://oronbox:oronbox@127.0.0.1:5432/oronbox?sslmode=disable"),
+		SessionSecret:            env("SESSION_SECRET", ""),
+		EncryptionKey:            env("TOKEN_ENCRYPTION_KEY", ""),
 		BandBBS: BandBBSConfig{
 			ClientID:      env("BANDBBS_CLIENT_ID", ""),
 			ClientSecret:  env("BANDBBS_CLIENT_SECRET", ""),
@@ -258,6 +281,16 @@ func stringListEnv(key string) []string {
 
 func (c Config) Validate() error {
 	var errs []error
+	if c.ClientAttestationEnabled && len(c.AttestationMasterKey) != 32 {
+		errs = append(errs, errors.New("ORONBOX_AUTH_MASTER must be a 32-byte hex key when attestation is enabled"))
+	}
+	if c.RunningProduction() && !c.ClientAttestationEnabled {
+		errs = append(errs, errors.New("CLIENT_ATTESTATION_ENABLED must be true in production"))
+	}
+	if c.RunningProduction() && (c.DeviceCatalog.BaseURL == "" || c.DeviceCatalog.Repository == "") {
+		errs = append(errs, errors.New("Gitea device catalog is required in production"))
+	}
+
 	if c.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
 	}

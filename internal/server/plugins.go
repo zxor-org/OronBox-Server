@@ -13,6 +13,7 @@ import (
 	"time"
 
 	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
+	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/store"
 )
 
@@ -50,7 +51,7 @@ func pluginJSON(plugin store.PluginRecord, viewerID string) map[string]any {
 		"permissions": plugin.Permissions,
 		"size":        plugin.PackageSize,
 		"sha256":      plugin.PackageSHA256,
-		"packageUrl":  "/api/plugins/" + plugin.ID + "/package",
+		"packageUrl":  "/api/v1/plugins/" + plugin.ID + "/package",
 		"uploader":    map[string]string{"id": plugin.UploaderID, "username": plugin.UploaderName},
 		"updatedAt":   plugin.UpdatedAt.Format(time.RFC3339),
 	}
@@ -58,7 +59,7 @@ func pluginJSON(plugin store.PluginRecord, viewerID string) map[string]any {
 		value["permissions"] = []string{}
 	}
 	if plugin.IconSHA256 != "" {
-		value["iconUrl"] = "/api/plugins/" + plugin.ID + "/icon"
+		value["iconUrl"] = "/api/v1/plugins/" + plugin.ID + "/icon"
 	}
 	if viewerID != "" && plugin.UploaderID == viewerID {
 		value["owned"] = true
@@ -95,14 +96,14 @@ func (a *App) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 	viewerID := a.optionalUserID(r)
 	plugins, err := a.store.ListPlugins(r.Context(), viewerID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("plugins_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("plugins_failed", err.Error()))
 		return
 	}
 	items := make([]any, 0, len(plugins))
 	for _, plugin := range plugins {
 		items = append(items, pluginJSON(plugin, viewerID))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plugins": items})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"plugins": items})
 }
 
 // handleUploadPlugin accepts a raw .obp body, validates the embedded manifest
@@ -112,35 +113,35 @@ func (a *App) handleUploadPlugin(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPluginPackageBytes+1))
 	if err != nil || len(raw) == 0 || len(raw) > maxPluginPackageBytes {
-		writeJSON(w, http.StatusBadRequest, errorBody("plugin_invalid", "invalid plugin package size"))
+		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorBody("plugin_invalid", "invalid plugin package size"))
 		return
 	}
 	manifest, icon, err := parsePluginPackage(raw)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody("plugin_invalid", err.Error()))
+		httpx.WriteJSON(w, http.StatusBadRequest, httpx.ErrorBody("plugin_invalid", err.Error()))
 		return
 	}
 	ctx := r.Context()
 	packageObject, err := a.blobs.Put(ctx, bytes.NewReader(raw))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("blob_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blob_failed", err.Error()))
 		return
 	}
 	iconSHA := ""
 	if len(icon) > 0 {
 		iconObject, err := a.blobs.Put(ctx, bytes.NewReader(icon))
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody("blob_failed", err.Error()))
+			httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blob_failed", err.Error()))
 			return
 		}
 		iconSHA = iconObject.SHA256
 		if err := a.store.EnsureBlob(ctx, iconSHA, iconObject.Size, http.DetectContentType(icon), iconObject.Key); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorBody("blob_failed", err.Error()))
+			httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blob_failed", err.Error()))
 			return
 		}
 	}
 	if err := a.store.EnsureBlob(ctx, packageObject.SHA256, packageObject.Size, "application/zip", packageObject.Key); err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("blob_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("blob_failed", err.Error()))
 		return
 	}
 	record := store.PluginRecord{
@@ -157,42 +158,42 @@ func (a *App) handleUploadPlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	owned, err := a.store.UpsertPlugin(ctx, record)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("plugin_save_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("plugin_save_failed", err.Error()))
 		return
 	}
 	if !owned {
-		writeJSON(w, http.StatusForbidden, errorBody("plugin_not_owned", "plugin id is published by another user"))
+		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorBody("plugin_not_owned", "plugin id is published by another user"))
 		return
 	}
 	plugin, err := a.store.Plugin(ctx, manifest.ID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("plugin_save_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("plugin_save_failed", err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, pluginJSON(plugin, user.ID))
+	httpx.WriteJSON(w, http.StatusOK, pluginJSON(plugin, user.ID))
 }
 
 func (a *App) handleDeletePlugin(w http.ResponseWriter, r *http.Request) {
 	removed, err := a.store.DeletePlugin(r.Context(), r.PathValue("id"), currentUser(r).ID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("plugin_delete_failed", err.Error()))
+		httpx.WriteJSON(w, http.StatusInternalServerError, httpx.ErrorBody("plugin_delete_failed", err.Error()))
 		return
 	}
 	if !removed {
-		writeJSON(w, http.StatusNotFound, errorBody("plugin_not_found", "plugin was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("plugin_not_found", "plugin was not found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"removed": true})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"removed": true})
 }
 
 func (a *App) handlePluginPackage(w http.ResponseWriter, r *http.Request) {
 	if !a.downloadLimiter.allow(a.clientIP(r)) {
-		writeJSON(w, http.StatusTooManyRequests, errorBody("rate_limited", "too many downloads, slow down"))
+		httpx.WriteJSON(w, http.StatusTooManyRequests, httpx.ErrorBody("rate_limited", "too many downloads, slow down"))
 		return
 	}
 	plugin, err := a.store.Plugin(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrPluginNotFound) || plugin.State != "listed" {
-		writeJSON(w, http.StatusNotFound, errorBody("plugin_not_found", "plugin was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("plugin_not_found", "plugin was not found"))
 		return
 	}
 	name := fmt.Sprintf("%s-%s.obp", plugin.ID, plugin.Version)
@@ -202,12 +203,12 @@ func (a *App) handlePluginPackage(w http.ResponseWriter, r *http.Request) {
 func (a *App) handlePluginIcon(w http.ResponseWriter, r *http.Request) {
 	plugin, err := a.store.Plugin(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrPluginNotFound) || plugin.IconSHA256 == "" || plugin.State != "listed" {
-		writeJSON(w, http.StatusNotFound, errorBody("plugin_not_found", "plugin icon was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("plugin_not_found", "plugin icon was not found"))
 		return
 	}
 	blob, err := a.store.Blob(r.Context(), plugin.IconSHA256)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("plugin_not_found", "plugin icon was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("plugin_not_found", "plugin icon was not found"))
 		return
 	}
 	a.servePluginBlob(w, r, plugin.IconSHA256, blob.MediaType, "")
@@ -216,12 +217,12 @@ func (a *App) handlePluginIcon(w http.ResponseWriter, r *http.Request) {
 func (a *App) servePluginBlob(w http.ResponseWriter, r *http.Request, sha256, mediaType, downloadName string) {
 	record, err := a.store.Blob(r.Context(), sha256)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("blob_not_found", "blob was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("blob_not_found", "blob was not found"))
 		return
 	}
 	reader, err := a.blobs.Open(r.Context(), record.LocalKey)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorBody("blob_not_found", "local blob was not found"))
+		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("blob_not_found", "local blob was not found"))
 		return
 	}
 	defer reader.Close()

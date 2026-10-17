@@ -88,7 +88,7 @@ func (s *Service) UpdateCollectionMetadata(ctx context.Context, ownerID, collect
 func scanCollection(scanner interface{ Scan(...any) error }) (Collection, error) {
 	var item Collection
 	var currentID, representativeID sql.NullString
-	err := scanner.Scan(&item.ID, &item.OwnerID, &item.Slug, &item.Platform, &item.Kind, &currentID, &representativeID, &item.Enabled, &item.ResourceCount, &item.TotalCoins, &item.CreatedAt, &item.UpdatedAt)
+	err := scanner.Scan(&item.ID, &item.OwnerID, &item.Slug, &item.Platform, &item.Kind, &currentID, &representativeID, &item.Enabled, &item.ResourceCount, &item.TotalCoins, &item.CreatedAt, &item.UpdatedAt, &item.EditVersion)
 	if currentID.Valid {
 		item.CurrentRevisionID = currentID.String
 	}
@@ -100,7 +100,7 @@ func scanCollection(scanner interface{ Scan(...any) error }) (Collection, error)
 
 const collectionSelect = `SELECT c.id::text,c.owner_id::text,c.slug,c.platform,c.kind,c.current_revision_id::text,c.representative_resource_id::text,c.enabled,
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id),
-COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.created_at,c.updated_at`
+COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.created_at,c.updated_at,c.edit_version`
 
 func (s *Service) Collection(ctx context.Context, ownerID, collectionID string) (Collection, error) {
 	item, err := scanCollection(s.db.QueryRowContext(ctx, collectionSelect+` FROM resource_collections c WHERE c.id=$1 AND c.owner_id=$2`, collectionID, ownerID))
@@ -128,13 +128,38 @@ func (s *Service) Collection(ctx context.Context, ownerID, collectionID string) 
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Collection{}, err
 	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id::text FROM resource_collection_revisions WHERE collection_id=$1 ORDER BY revision_no DESC LIMIT 100`, collectionID)
+	if err != nil {
+		return Collection{}, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return Collection{}, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return Collection{}, err
+	}
+	for _, id := range ids {
+		v, err := s.collectionRevision(ctx, id)
+		if err != nil {
+			return Collection{}, err
+		}
+		item.Revisions = append(item.Revisions, v)
+	}
 	return item, nil
 }
 
 func (s *Service) collectionRevision(ctx context.Context, revisionID string) (CollectionRevision, error) {
 	var item CollectionRevision
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,collection_id::text,revision_no,name,summary,state,review_note,enabled,COALESCE(representative_resource_id::text,''),created_via,COALESCE(base_revision_id::text,''),created_at,updated_at FROM resource_collection_revisions WHERE id=$1`, revisionID).
-		Scan(&item.ID, &item.CollectionID, &item.Number, &item.Name, &item.Summary, &item.State, &item.ReviewNote, &item.Enabled, &item.RepresentativeResourceID, &item.CreatedVia, &item.BaseRevisionID, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,collection_id::text,revision_no,name,summary,state,review_note,enabled,COALESCE(representative_resource_id::text,''),created_via,COALESCE(base_revision_id::text,''),created_at,updated_at,description,COALESCE(icon_sha256,''),COALESCE(cover_sha256,'') FROM resource_collection_revisions WHERE id=$1`, revisionID).
+		Scan(&item.ID, &item.CollectionID, &item.Number, &item.Name, &item.Summary, &item.State, &item.ReviewNote, &item.Enabled, &item.RepresentativeResourceID, &item.CreatedVia, &item.BaseRevisionID, &item.CreatedAt, &item.UpdatedAt, &item.Description, &item.IconSHA256, &item.CoverSHA256)
 	if err == nil {
 		rows, rowsErr := s.db.QueryContext(ctx, `SELECT COALESCE(resource_id::text,'') FROM resource_collection_revision_members WHERE revision_id=$1 ORDER BY position`, revisionID)
 		if rowsErr != nil {
@@ -313,7 +338,7 @@ func (s *Service) ReviewCollection(ctx context.Context, revisionID, reviewerID s
 		if changed, _ := result.RowsAffected(); int(changed) != expected {
 			return fmt.Errorf("%w: collection membership changed since submission", ErrConflict)
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET current_revision_id=$2,published_at=now(),enabled=$3,representative_resource_id=$4,updated_at=now() WHERE id=$1`, collectionID, revisionID, enabled, representativeID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE resource_collections SET edit_version=edit_version+1,current_revision_id=$2,published_at=now(),enabled=$3,representative_resource_id=$4,updated_at=now() WHERE id=$1`, collectionID, revisionID, enabled, representativeID); err != nil {
 			return err
 		}
 	}
@@ -349,7 +374,7 @@ func (s *Service) CollectionReviewQueue(ctx context.Context) ([]Collection, erro
 func (s *Service) PublicCollections(ctx context.Context, kind string) ([]PublicCollection, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id::text,c.slug,cr.name,cr.summary,c.kind,u.username,u.bandbbs_user_id,u.avatar_url,COALESCE(c.representative_resource_id::text,''),
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL),
-COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at
+COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at,cr.description,COALESCE(cr.icon_sha256,''),COALESCE(cr.cover_sha256,'')
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
 WHERE c.enabled AND ($1='' OR c.kind=$1) AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)
 ORDER BY c.updated_at DESC`, kind)
@@ -360,7 +385,7 @@ ORDER BY c.updated_at DESC`, kind)
 	var result []PublicCollection
 	for rows.Next() {
 		var item PublicCollection
-		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.RepresentativeResourceID, &item.ResourceCount, &item.CoinCount, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.RepresentativeResourceID, &item.ResourceCount, &item.CoinCount, &item.UpdatedAt, &item.Description, &item.IconSHA256, &item.CoverSHA256); err != nil {
 			return nil, err
 		}
 		if representative, err := s.PublicResource(ctx, item.RepresentativeResourceID); err == nil {
@@ -376,10 +401,10 @@ func (s *Service) PublicCollection(ctx context.Context, collectionID string) (Pu
 	var item PublicCollection
 	err := s.db.QueryRowContext(ctx, `SELECT c.id::text,c.slug,cr.name,cr.summary,c.kind,u.username,u.bandbbs_user_id,u.avatar_url,COALESCE(c.representative_resource_id::text,''),
 (SELECT count(*) FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL),
-COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at
+COALESCE((SELECT sum(v.coins) FROM resources r JOIN resource_coin_votes v ON v.resource_id=r.id AND v.invalidated_at IS NULL WHERE r.collection_id=c.id),0),c.updated_at,cr.description,COALESCE(cr.icon_sha256,''),COALESCE(cr.cover_sha256,'')
 FROM resource_collections c JOIN resource_collection_revisions cr ON cr.id=c.current_revision_id JOIN users u ON u.id=c.owner_id
 WHERE c.id=$1 AND c.enabled AND EXISTS(SELECT 1 FROM resources r WHERE r.collection_id=c.id AND r.moderation_state='visible' AND r.current_revision_id IS NOT NULL)`, collectionID).
-		Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.RepresentativeResourceID, &item.ResourceCount, &item.CoinCount, &item.UpdatedAt)
+		Scan(&item.ID, &item.Slug, &item.Name, &item.Summary, &item.Kind, &item.Owner, &item.OwnerBandBBSUserID, &item.OwnerAvatarURL, &item.RepresentativeResourceID, &item.ResourceCount, &item.CoinCount, &item.UpdatedAt, &item.Description, &item.IconSHA256, &item.CoverSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PublicCollection{}, ErrNotFound
 	}
@@ -410,4 +435,16 @@ WHERE c.id=$1 AND c.enabled AND EXISTS(SELECT 1 FROM resources r WHERE r.collect
 		}
 	}
 	return item, rows.Err()
+}
+
+// CollectionRevision returns only a revision belonging to this owner's collection.
+func (s *Service) CollectionRevision(ctx context.Context, ownerID, collectionID, revisionID string) (CollectionRevision, error) {
+	var allowed bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM resource_collection_revisions rr JOIN resource_collections c ON c.id=rr.collection_id WHERE c.owner_id=$1 AND c.id::text=$2 AND rr.id::text=$3)`, ownerID, collectionID, revisionID).Scan(&allowed); err != nil {
+		return CollectionRevision{}, err
+	}
+	if !allowed {
+		return CollectionRevision{}, ErrNotFound
+	}
+	return s.collectionRevision(ctx, revisionID)
 }

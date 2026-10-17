@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -120,4 +121,28 @@ func (c *Client) form(ctx context.Context, endpoint string, form url.Values, des
 		return fmt.Errorf("GitHub OAuth returned HTTP %d", resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(destination)
+}
+
+func (c *Client) Revoke(ctx context.Context, token string) error {
+	if c.cfg.ClientSecret == "" {
+		return fmt.Errorf("GitHub token revocation is not configured")
+	}
+	payload, _ := json.Marshal(map[string]string{"access_token": token})
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(c.cfg.APIURL, "/")+"/applications/"+url.PathEscape(c.cfg.ClientID)+"/token", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.cfg.ClientID, c.cfg.ClientSecret)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 204 && resp.StatusCode != 404 {
+		return fmt.Errorf("GitHub token revocation returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }

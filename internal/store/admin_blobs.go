@@ -153,7 +153,15 @@ LEFT JOIN LATERAL (
   UNION ALL
   SELECT artifact.id::text FROM revision_artifacts artifact WHERE artifact.blob_sha256=blob.sha256
   UNION ALL
-  SELECT post.slug FROM blog_posts post WHERE post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%'
+  SELECT post.slug FROM blog_posts post WHERE post.source_sha='' AND (post.cover_sha256=blob.sha256 OR post.body LIKE '%'||blob.sha256||'%')
+  UNION ALL
+  SELECT revision.id::text FROM resource_collection_revisions revision WHERE revision.icon_sha256=blob.sha256 OR revision.cover_sha256=blob.sha256
+  UNION ALL
+  SELECT upload.owner_id::text FROM creator_media_uploads upload WHERE upload.blob_sha256=blob.sha256
+  UNION ALL
+  SELECT version.id::text FROM plugin_versions version WHERE version.icon_sha256=blob.sha256 OR version.package_sha256=blob.sha256
+  UNION ALL
+  SELECT plugin.id::text FROM plugins plugin WHERE plugin.icon_sha256=blob.sha256 OR plugin.package_sha256=blob.sha256
   UNION ALL
   SELECT banner.id::text FROM home_banners banner WHERE banner.cover_sha256=blob.sha256
  ) reference
@@ -320,7 +328,7 @@ func (s *Store) loadAdminBlobBlogs(ctx context.Context, sha256 string, detail *A
 SELECT post.slug,post.title,post.published,
        concat_ws(', ',CASE WHEN post.cover_sha256=$1 THEN 'cover' END,CASE WHEN post.body LIKE '%'||$1||'%' THEN 'body' END)
 FROM blog_posts post
-WHERE post.cover_sha256=$1 OR post.body LIKE '%'||$1||'%'
+WHERE post.source_sha='' AND (post.cover_sha256=$1 OR post.body LIKE '%'||$1||'%')
 ORDER BY post.updated_at DESC,post.slug`, sha256)
 	if err != nil {
 		return err

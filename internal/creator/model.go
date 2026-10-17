@@ -76,6 +76,7 @@ const (
 )
 
 type Resource struct {
+	EditVersion        int64        `json:"edit_version"`
 	ID                 string       `json:"id"`
 	OwnerID            string       `json:"owner_id"`
 	Slug               string       `json:"slug"`
@@ -95,17 +96,20 @@ type Resource struct {
 }
 
 type Revision struct {
-	ID               string           `json:"id"`
-	ResourceID       string           `json:"resource_id"`
-	Number           int              `json:"number"`
-	Name             string           `json:"name"`
-	Summary          string           `json:"summary"`
-	PaidType         ResourcePaidType `json:"paid_type"`
-	PurchaseLink     string           `json:"purchase_link,omitempty"`
-	PurchasePrice    *float64         `json:"purchase_price,omitempty"`
-	PurchaseCurrency string           `json:"purchase_currency,omitempty"`
-	Attributes       []string         `json:"attributes,omitempty"`
-	State            RevisionState    `json:"state"`
+	BindingClaims     []ImportedBinding `json:"binding_claims"`
+	Description       string            `json:"description"`
+	DescriptionFormat string            `json:"description_format"`
+	ID                string            `json:"id"`
+	ResourceID        string            `json:"resource_id"`
+	Number            int               `json:"number"`
+	Name              string            `json:"name"`
+	Summary           string            `json:"summary"`
+	PaidType          ResourcePaidType  `json:"paid_type"`
+	PurchaseLink      string            `json:"purchase_link,omitempty"`
+	PurchasePrice     *float64          `json:"purchase_price,omitempty"`
+	PurchaseCurrency  string            `json:"purchase_currency,omitempty"`
+	Attributes        []string          `json:"attributes,omitempty"`
+	State             RevisionState     `json:"state"`
 	// PublicationPlan is the saved publish intent (target+config list); it is
 	// data for the editor, never a dispatchable job.
 	PublicationPlan []PublicationRequest `json:"publication_plan"`
@@ -217,6 +221,9 @@ type Workspace struct {
 }
 
 type CollectionRevision struct {
+	Description              string        `json:"description"`
+	IconSHA256               string        `json:"icon_sha256,omitempty"`
+	CoverSHA256              string        `json:"cover_sha256,omitempty"`
 	ID                       string        `json:"id"`
 	CollectionID             string        `json:"collection_id"`
 	Number                   int           `json:"number"`
@@ -234,20 +241,22 @@ type CollectionRevision struct {
 }
 
 type Collection struct {
-	ID                       string              `json:"id"`
-	OwnerID                  string              `json:"owner_id"`
-	Slug                     string              `json:"slug"`
-	Platform                 string              `json:"platform"`
-	Kind                     ResourceKind        `json:"kind"`
-	CurrentRevisionID        string              `json:"current_revision_id,omitempty"`
-	RepresentativeResourceID string              `json:"representative_resource_id,omitempty"`
-	Enabled                  bool                `json:"enabled"`
-	CurrentRevision          *CollectionRevision `json:"current_revision,omitempty"`
-	PendingRevision          *CollectionRevision `json:"pending_revision,omitempty"`
-	ResourceCount            int                 `json:"resource_count"`
-	TotalCoins               int64               `json:"total_coins"`
-	CreatedAt                time.Time           `json:"created_at"`
-	UpdatedAt                time.Time           `json:"updated_at"`
+	EditVersion              int64                `json:"edit_version"`
+	Revisions                []CollectionRevision `json:"revisions"`
+	ID                       string               `json:"id"`
+	OwnerID                  string               `json:"owner_id"`
+	Slug                     string               `json:"slug"`
+	Platform                 string               `json:"platform"`
+	Kind                     ResourceKind         `json:"kind"`
+	CurrentRevisionID        string               `json:"current_revision_id,omitempty"`
+	RepresentativeResourceID string               `json:"representative_resource_id,omitempty"`
+	Enabled                  bool                 `json:"enabled"`
+	CurrentRevision          *CollectionRevision  `json:"current_revision,omitempty"`
+	PendingRevision          *CollectionRevision  `json:"pending_revision,omitempty"`
+	ResourceCount            int                  `json:"resource_count"`
+	TotalCoins               int64                `json:"total_coins"`
+	CreatedAt                time.Time            `json:"created_at"`
+	UpdatedAt                time.Time            `json:"updated_at"`
 }
 
 type Collaborator struct {
@@ -372,6 +381,9 @@ type PublicResource struct {
 }
 
 type PublicCollection struct {
+	Description              string           `json:"description"`
+	IconSHA256               string           `json:"icon_sha256,omitempty"`
+	CoverSHA256              string           `json:"cover_sha256,omitempty"`
 	ID                       string           `json:"id"`
 	Slug                     string           `json:"slug"`
 	Name                     string           `json:"name"`
@@ -389,6 +401,8 @@ type PublicCollection struct {
 }
 
 type PublicResourceDetail struct {
+	Description       string `json:"description"`
+	DescriptionFormat string `json:"description_format"`
 	PublicResource
 	Media            []Media         `json:"media"`
 	Artifacts        []Artifact      `json:"artifacts"`

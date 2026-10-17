@@ -1,6 +1,6 @@
 # OronBox 管理后台运维手册
 
-管理后台位于 `/admin`，主体是 React 单页应用（源码在 `console/`，构建产物内嵌进服务端二进制），登录页保持服务端渲染的 MD3 界面。所有写操作要求同源 `Origin` 或 `Referer` 并携带 CSRF 令牌，敏感操作会写入不可变审计记录。
+管理后台只有 `/admin` 一个入口，前端源码在 OronBox-Server-Console 仓库。Server 从配置的 Gitea CI Release 安装构建包；登录页由服务端渲染，管理 API 使用 session、同源检查和 CSRF。首次安装自动重试，已有构建通过设置页更新。
 
 ## 角色
 

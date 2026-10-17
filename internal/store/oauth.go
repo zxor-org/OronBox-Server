@@ -161,7 +161,7 @@ func (s *Store) Grants(ctx context.Context, userID string) (GrantSummary, error)
 	if err := s.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id=$1`, userID).Scan(&role); err != nil {
 		return GrantSummary{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT provider FROM oauth_grants WHERE user_id=$1 ORDER BY provider`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT provider FROM oauth_grants WHERE user_id=$1 AND invalid_at IS NULL ORDER BY provider`, userID)
 	if err != nil {
 		return GrantSummary{}, err
 	}
@@ -177,7 +177,7 @@ func (s *Store) Grants(ctx context.Context, userID string) (GrantSummary, error)
 	if err := rows.Err(); err != nil {
 		return GrantSummary{}, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT 'resource:write'=ANY(scopes) FROM oauth_grants WHERE user_id=$1 AND provider='bandbbs_publish'`, userID).Scan(&summary.BandBBSPublish); err == nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT 'resource:write'=ANY(scopes) FROM oauth_grants WHERE user_id=$1 AND provider='bandbbs_publish' AND invalid_at IS NULL`, userID).Scan(&summary.BandBBSPublish); err == nil {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return GrantSummary{}, err
 	}

@@ -161,8 +161,8 @@ func TestCreatorLifecycle(t *testing.T) {
 	}
 	draftManifest["name"] = "Saved draft"
 	draftManifest["summary"] = ""
-	if _, err := service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil)); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("draft with an empty summary error = %v, want invalid", err)
+	if _, err := service.SaveDraft(ctx, userID, workspace.Resource.ID, testBundle(t, draftManifest, nil)); err != nil {
+		t.Fatalf("incomplete draft should be allowed: %v", err)
 	}
 	if _, err := service.Publish(ctx, userID, workspace.Resource.ID, testBundle(t, manifest("", 1, []string{deviceRows[0].ID}), files)); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("publish with an empty name error = %v, want invalid", err)

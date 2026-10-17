@@ -117,3 +117,13 @@ func TestSummarizeAdminReviewDiffWithoutBaseMarksCurrentAsAdded(t *testing.T) {
 		t.Fatalf("first revision diff is incomplete: %#v", diff)
 	}
 }
+
+func TestReviewDiffIncludesFullBodyAndFormat(t *testing.T) {
+	diff := summarizeAdminReviewDiff(
+		AdminReviewRevisionSnapshot{ID: "old", Summary: "short", Description: "old body", DescriptionFormat: "plain"},
+		AdminReviewRevisionSnapshot{ID: "new", Summary: "short", Description: "# new body", DescriptionFormat: "markdown"},
+	)
+	if len(diff.MetadataFields) != 2 || diff.MetadataFields[0] != "description" || diff.MetadataFields[1] != "description_format" {
+		t.Fatalf("body changes missing from review: %#v", diff.MetadataFields)
+	}
+}

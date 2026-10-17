@@ -9,12 +9,7 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/model"
 )
 
-type AdminSession struct {
-	ID        string
-	UserID    string
-	Username  string
-	ExpiresAt time.Time
-}
+type AdminSession = model.AdminSession
 
 type AuditLog struct {
 	ID          int64          `json:"id"`

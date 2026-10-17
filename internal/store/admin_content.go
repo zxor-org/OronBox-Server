@@ -20,6 +20,7 @@ var (
 )
 
 type AdminBlogQuery struct {
+	Category  string
 	Search    string
 	Published string
 	Sort      string
@@ -75,12 +76,12 @@ func adminBlogOrder(sort string) string {
 func (s *Store) AdminBlogPosts(ctx context.Context, raw AdminBlogQuery) (AdminBlogPage, error) {
 	query := raw.normalized()
 	const filter = `($1='' OR concat_ws(' ',post.slug,post.type,post.title,post.subtitle,post.author,post.body) ILIKE '%'||$1||'%')
- AND ($2='' OR ($2='published' AND post.published) OR ($2='draft' AND NOT post.published))`
+ AND ($2='' OR ($2='published' AND post.published) OR ($2='draft' AND NOT post.published)) AND ($3='' OR $3='all' OR post.type=$3)`
 	page := AdminBlogPage{Items: []BlogPost{}, Page: query.Page, PerPage: query.PerPage, Query: query}
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blog_posts post WHERE `+filter, query.Search, query.Published).Scan(&page.Total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blog_posts post WHERE `+filter, query.Search, query.Published, query.Category).Scan(&page.Total); err != nil {
 		return AdminBlogPage{}, err
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM blog_posts post WHERE %s ORDER BY %s LIMIT $3 OFFSET $4`, blogColumns, filter, adminBlogOrder(query.Sort)), query.Search, query.Published, query.PerPage, (query.Page-1)*query.PerPage)
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s FROM blog_posts post WHERE %s ORDER BY %s LIMIT $4 OFFSET $5`, blogColumns, filter, adminBlogOrder(query.Sort)), query.Search, query.Published, query.Category, query.PerPage, (query.Page-1)*query.PerPage)
 	if err != nil {
 		return AdminBlogPage{}, err
 	}

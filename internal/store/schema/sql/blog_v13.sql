@@ -1,0 +1,1 @@
+ALTER TABLE blog_posts ADD COLUMN source_sha text NOT NULL DEFAULT '',ADD COLUMN source_body_sha text NOT NULL DEFAULT '',ADD COLUMN source_commit text NOT NULL DEFAULT '',ADD COLUMN cover_url text NOT NULL DEFAULT '';

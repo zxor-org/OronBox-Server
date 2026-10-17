@@ -2,6 +2,7 @@ package server
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 // test reads the route registrations and holds the drawer to them.
 func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 	t.Parallel()
-	source, err := os.ReadFile("server.go")
+	source, err := navigationRouteSource()
 	if err != nil {
 		t.Fatalf("read routes: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 // stated from the reviewer's side, so a mistake in either direction fails.
 func TestReviewerDrawerOnlyContainsRoutesAReviewerCanOpen(t *testing.T) {
 	t.Parallel()
-	source, err := os.ReadFile("server.go")
+	source, err := navigationRouteSource()
 	if err != nil {
 		t.Fatalf("read routes: %v", err)
 	}
@@ -85,4 +86,21 @@ func navigationRoleFor(path string) string {
 		}
 	}
 	return ""
+}
+
+func navigationRouteSource() ([]byte, error) {
+	paths, err := filepath.Glob("routes_*.go")
+	if err != nil {
+		return nil, err
+	}
+	var source []byte
+	for _, path := range paths {
+		part, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		source = append(source, part...)
+		source = append(source, '\n')
+	}
+	return source, nil
 }

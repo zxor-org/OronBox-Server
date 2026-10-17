@@ -84,6 +84,9 @@ type AdminCollectionPage struct {
 }
 
 type AdminCollectionRevision struct {
+	Description              string                  `json:"description"`
+	IconSHA256               string                  `json:"icon_sha256,omitempty"`
+	CoverSHA256              string                  `json:"cover_sha256,omitempty"`
 	ID                       string                  `json:"id"`
 	CollectionID             string                  `json:"collection_id"`
 	Number                   int                     `json:"number"`
@@ -119,12 +122,18 @@ type AdminCollectionMember struct {
 }
 
 type AdminCollectionDetail struct {
-	Collection AdminCollectionItem       `json:"collection"`
-	Revisions  []AdminCollectionRevision `json:"revisions"`
-	Members    []AdminCollectionMember   `json:"members"`
+	EditVersion int64                     `json:"edit_version"`
+	Collection  AdminCollectionItem       `json:"collection"`
+	Revisions   []AdminCollectionRevision `json:"revisions"`
+	Members     []AdminCollectionMember   `json:"members"`
 }
 
 type AdminCollectionMetadataInput struct {
+	ExpectedEditVersion      *int64   `json:"expected_edit_version"`
+	ReplacePending           string   `json:"replace_pending_revision_id"`
+	Description              *string  `json:"description"`
+	Icon                     *string  `json:"icon_sha256"`
+	Cover                    *string  `json:"cover_sha256"`
 	Name                     string   `json:"name"`
 	Summary                  string   `json:"summary"`
 	Enabled                  bool     `json:"enabled"`
@@ -238,7 +247,7 @@ func (s *Store) AdminCollection(ctx context.Context, id string) (AdminCollection
 	}
 	detail := AdminCollectionDetail{Collection: item, Revisions: []AdminCollectionRevision{}, Members: []AdminCollectionMember{}}
 	revisions, err := s.db.QueryContext(ctx, `SELECT revision.id::text,revision.collection_id::text,revision.revision_no,revision.name,revision.summary,revision.state,
-	COALESCE(revision.reviewer_id::text,''),COALESCE(reviewer.username,''),revision.review_note,revision.enabled,COALESCE(revision.representative_resource_id::text,''),COALESCE(revision.created_by::text,''),revision.created_via,COALESCE(revision.base_revision_id::text,''),revision.created_at,revision.updated_at
+	COALESCE(revision.reviewer_id::text,''),COALESCE(reviewer.username,''),revision.review_note,revision.enabled,COALESCE(revision.representative_resource_id::text,''),COALESCE(revision.created_by::text,''),revision.created_via,COALESCE(revision.base_revision_id::text,''),revision.created_at,revision.updated_at,revision.description,COALESCE(revision.icon_sha256,''),COALESCE(revision.cover_sha256,'')
 FROM resource_collection_revisions revision
 LEFT JOIN users reviewer ON reviewer.id=revision.reviewer_id
 WHERE revision.collection_id=$1 ORDER BY revision.revision_no DESC`, id)
@@ -248,7 +257,7 @@ WHERE revision.collection_id=$1 ORDER BY revision.revision_no DESC`, id)
 	for revisions.Next() {
 		var revision AdminCollectionRevision
 		if err := revisions.Scan(&revision.ID, &revision.CollectionID, &revision.Number, &revision.Name, &revision.Summary, &revision.State,
-			&revision.ReviewerID, &revision.Reviewer, &revision.ReviewNote, &revision.Enabled, &revision.RepresentativeResourceID, &revision.CreatedBy, &revision.CreatedVia, &revision.BaseRevisionID, &revision.CreatedAt, &revision.UpdatedAt); err != nil {
+			&revision.ReviewerID, &revision.Reviewer, &revision.ReviewNote, &revision.Enabled, &revision.RepresentativeResourceID, &revision.CreatedBy, &revision.CreatedVia, &revision.BaseRevisionID, &revision.CreatedAt, &revision.UpdatedAt, &revision.Description, &revision.IconSHA256, &revision.CoverSHA256); err != nil {
 			revisions.Close()
 			return AdminCollectionDetail{}, err
 		}
@@ -289,6 +298,9 @@ WHERE resource.collection_id=$1 ORDER BY resource.collection_position,resource.c
 	if err := members.Err(); err != nil {
 		return AdminCollectionDetail{}, err
 	}
+	if err := s.db.QueryRowContext(ctx, `SELECT edit_version FROM resource_collections WHERE id=$1`, id).Scan(&detail.EditVersion); err != nil {
+		return AdminCollectionDetail{}, err
+	}
 	return detail, nil
 }
 
@@ -325,10 +337,24 @@ func (s *Store) AdminUpdateCollectionMetadata(ctx context.Context, collectionID 
 	}
 	defer tx.Rollback()
 	var lockedID, ownerID, kind, baseRevisionID string
-	if err := tx.QueryRowContext(ctx, `SELECT id::text,owner_id::text,kind,COALESCE(current_revision_id::text,'') FROM resource_collections WHERE id=$1 FOR UPDATE`, collectionID).Scan(&lockedID, &ownerID, &kind, &baseRevisionID); errors.Is(err, sql.ErrNoRows) {
+	var editVersion int64
+	if err := tx.QueryRowContext(ctx, `SELECT id::text,owner_id::text,kind,COALESCE(current_revision_id::text,''),edit_version FROM resource_collections WHERE id=$1 FOR UPDATE`, collectionID).Scan(&lockedID, &ownerID, &kind, &baseRevisionID, &editVersion); errors.Is(err, sql.ErrNoRows) {
 		return AdminCollectionRevision{}, ErrAdminResourceNotFound
 	} else if err != nil {
 		return AdminCollectionRevision{}, err
+	}
+	if input.ExpectedEditVersion != nil {
+		if *input.ExpectedEditVersion != editVersion {
+			return AdminCollectionRevision{}, ErrAdminResourceConflict
+		}
+		var pending string
+		err := tx.QueryRowContext(ctx, `SELECT id::text FROM resource_collection_revisions WHERE collection_id=$1 AND state='pending' ORDER BY revision_no DESC LIMIT 1`, collectionID).Scan(&pending)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return AdminCollectionRevision{}, err
+		}
+		if pending != input.ReplacePending {
+			return AdminCollectionRevision{}, fmt.Errorf("%w: pending revision changed", ErrAdminResourceConflict)
+		}
 	}
 	var next int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(max(revision_no),0)+1 FROM resource_collection_revisions WHERE collection_id=$1`, collectionID).Scan(&next); err != nil {
@@ -352,12 +378,15 @@ VALUES($1,$2,$3,$4,$5,'pending',$6,NULLIF($7,'')::uuid,NULLIF($8,'')::uuid,'admi
 RETURNING created_at,updated_at`, revision.ID, collectionID, revision.Number, revision.Name, revision.Summary, revision.Enabled, revision.RepresentativeResourceID, input.CreatedBy, revision.BaseRevisionID).Scan(&revision.CreatedAt, &revision.UpdatedAt); err != nil {
 		return AdminCollectionRevision{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collection_revisions rr SET description=COALESCE($2,(SELECT description FROM resource_collection_revisions WHERE collection_id=rr.collection_id AND id<>rr.id ORDER BY revision_no DESC LIMIT 1),''),icon_sha256=NULLIF(COALESCE($3,(SELECT icon_sha256 FROM resource_collection_revisions WHERE collection_id=rr.collection_id AND id<>rr.id ORDER BY revision_no DESC LIMIT 1)),''),cover_sha256=NULLIF(COALESCE($4,(SELECT cover_sha256 FROM resource_collection_revisions WHERE collection_id=rr.collection_id AND id<>rr.id ORDER BY revision_no DESC LIMIT 1)),'') WHERE rr.id=$1`, revision.ID, input.Description, input.Icon, input.Cover); err != nil {
+		return AdminCollectionRevision{}, err
+	}
 	for position, resourceID := range input.ResourceIDs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO resource_collection_revision_members(id,revision_id,resource_id,resource_slug,resource_name,position) SELECT $1,$2,resource.id,resource.slug,COALESCE(current.name,resource.draft_name),$4 FROM resources resource LEFT JOIN resource_revisions current ON current.id=resource.current_revision_id WHERE resource.id=$3`, uuid.NewString(), revision.ID, resourceID, position); err != nil {
 			return AdminCollectionRevision{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE resource_collections SET updated_at=now() WHERE id=$1`, collectionID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE resource_collections SET edit_version=edit_version+1,updated_at=now() WHERE id=$1`, collectionID); err != nil {
 		return AdminCollectionRevision{}, err
 	}
 	if err := tx.Commit(); err != nil {

@@ -15,6 +15,8 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/model"
 )
 
+var ErrAccessRejected = errors.New("BandBBS access token is inactive")
+
 type Client struct {
 	cfg    config.BandBBSConfig
 	client *http.Client
@@ -136,6 +138,15 @@ func (c *Client) postToken(ctx context.Context, form url.Values) (model.TokenPay
 	return token, nil
 }
 
+type TokenError struct {
+	Code   string
+	Status int
+}
+
+func (e *TokenError) Error() string {
+	return fmt.Sprintf("BandBBS OAuth returned HTTP %d (%s)", e.Status, e.Code)
+}
+
 func upstreamError(endpoint string, status int, payload []byte) error {
 	var body map[string]any
 	if json.Unmarshal(payload, &body) == nil {
@@ -145,7 +156,7 @@ func upstreamError(endpoint string, status int, payload []byte) error {
 			description, _ = body["message"].(string)
 		}
 		if code != "" || description != "" {
-			return fmt.Errorf("BandBBS %s endpoint returned %d (%s: %s)", endpoint, status, code, description)
+			return &TokenError{Code: code, Status: status}
 		}
 	}
 	return fmt.Errorf("BandBBS %s endpoint returned %d", endpoint, status)
@@ -164,7 +175,7 @@ func (c *Client) ValidateScopes(ctx context.Context, token model.TokenPayload, r
 			actual = token.Scope
 		}
 		if !introspect.Active {
-			return introspect.Sub, actual, errors.New("token is not active")
+			return introspect.Sub, actual, ErrAccessRejected
 		}
 		if introspect.ClientID != "" && introspect.ClientID != c.cfg.ClientID {
 			return introspect.Sub, actual, fmt.Errorf("token client_id mismatch: %s", introspect.ClientID)
