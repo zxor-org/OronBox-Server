@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
 	_ "image/png"
 	"io"
 	"mime"
@@ -11,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	_ "golang.org/x/image/webp"
 
 	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	resourcecore "github.com/zxor-org/OronBox-Server/internal/resource"
@@ -143,8 +147,8 @@ func (a *App) adminRevisionAssetResult(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	if reviewID := strings.TrimSpace(r.FormValue("return_review")); reviewID != "" {
-		http.Redirect(w, r, "/admin/review/"+reviewID+"?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
+		http.Redirect(w, r, "/console/review/"+reviewID+"?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/admin/resources/"+r.PathValue("resource")+"/draft?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
+	http.Redirect(w, r, "/console/resources/"+r.PathValue("resource")+"/draft?action="+strings.ReplaceAll(action, ".", "_"), http.StatusFound)
 }

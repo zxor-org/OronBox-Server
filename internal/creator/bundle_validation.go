@@ -9,9 +9,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
 	_ "image/png"
 	"math"
 	"strings"
+
+	_ "golang.org/x/image/webp"
 
 	resourcecore "github.com/zxor-org/OronBox-Server/internal/resource"
 )
