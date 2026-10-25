@@ -145,7 +145,8 @@ func (s *Store) CreateModeratedComment(ctx context.Context, resourceID, userID, 
 	replyToID := parentID
 	if parentID != "" {
 		var rootID string
-		err := tx.QueryRowContext(ctx, `SELECT COALESCE(c.parent_id,c.id)::text FROM resource_comments c LEFT JOIN resource_comments root ON root.id=c.parent_id WHERE c.id=$1 AND c.resource_id=$2 AND c.moderation_state='visible' AND c.deleted_at IS NULL AND (c.parent_id IS NULL OR (root.moderation_state='visible' AND root.deleted_at IS NULL)) FOR SHARE OF c`, parentID, resourceID).Scan(&rootID)
+		query, args := commentViewerQuery(userID, `SELECT COALESCE(c.parent_id,c.id)::text FROM resource_comments c LEFT JOIN resource_comments root ON root.id=c.parent_id WHERE c.id=$1 AND c.resource_id=$2 AND `+commentVisibility("c")+` AND c.deleted_at IS NULL AND (c.parent_id IS NULL OR (`+commentVisibility("root")+` AND root.deleted_at IS NULL)) FOR SHARE OF c`, parentID, resourceID)
+		err := tx.QueryRowContext(ctx, query, args...).Scan(&rootID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return Comment{}, ErrCommentNotFound
 		}

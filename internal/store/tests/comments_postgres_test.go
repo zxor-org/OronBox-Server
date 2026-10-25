@@ -101,8 +101,76 @@ func TestCommentRateHierarchyAndSoftDelete(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM user_messages WHERE ref=$1 AND kind='moderation'`, hiddenReply.ID).Scan(&hiddenModerationMessages); err != nil {
 		t.Fatal(err)
 	}
-	if hiddenModerationMessages != 1 {
-		t.Fatalf("hidden reply author notifications = %d, want 1 so automated hides are not silent", hiddenModerationMessages)
+	if hiddenModerationMessages != 0 {
+		t.Fatalf("hidden reply author notifications = %d, want 0 for pending shadow visibility", hiddenModerationMessages)
+	}
+
+	for _, viewer := range []string{"", userID, replierID} {
+		page, err := s.CommentRoots(ctx, resourceID, store.CommunityCursor{}, 50, viewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, root := range page.Items {
+			if root.ID == top.ID {
+				for _, reply := range root.Replies {
+					if reply.ID == hiddenReply.ID {
+						found = true
+					}
+				}
+				if viewer == replierID && root.ReplyCount != 3 {
+					t.Fatalf("owner reply count=%d", root.ReplyCount)
+				}
+				if viewer != replierID && root.ReplyCount != 2 {
+					t.Fatalf("public reply count=%d", root.ReplyCount)
+				}
+			}
+		}
+		if found != (viewer == replierID) {
+			t.Fatalf("viewer=%q pending preview visible=%v", viewer, found)
+		}
+		thread, err := s.CommentThread(ctx, hiddenReply.ID, store.CommunityCursor{}, store.CommunityCursor{}, 1, viewer)
+		if viewer != replierID {
+			if !errors.Is(err, store.ErrCommentNotFound) {
+				t.Fatalf("pending reply leaked: %v", err)
+			}
+		} else if err != nil || len(thread.Replies) != 1 || thread.Replies[0].ID != hiddenReply.ID {
+			t.Fatalf("owner cannot reach pending reply: %+v %v", thread, err)
+		}
+	}
+
+	pendingRoot, err := s.CreateModeratedComment(ctx, resourceID, userID, "", "pending root", "hidden", &store.CommentModerationRecord{Action: "review"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedRoot, err := s.CreateModeratedComment(ctx, resourceID, userID, "", "blocked root", "hidden", &store.CommentModerationRecord{Action: "block"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, viewer := range []string{"", userID, replierID} {
+		_, err := s.CommentThread(ctx, pendingRoot.ID, store.CommunityCursor{}, store.CommunityCursor{}, 20, viewer)
+		if viewer == userID {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if !errors.Is(err, store.ErrCommentNotFound) {
+			t.Fatalf("pending root leaked: %v", err)
+		}
+		if _, err := s.CommentThread(ctx, blockedRoot.ID, store.CommunityCursor{}, store.CommunityCursor{}, 20, viewer); !errors.Is(err, store.ErrCommentNotFound) {
+			t.Fatalf("blocked root leaked: %v", err)
+		}
+	}
+	if _, err := s.CreateComment(ctx, resourceID, userID, pendingRoot.ID, "own pending reply", "visible"); err != nil {
+		t.Fatalf("cannot reply to own pending root: %v", err)
+	}
+	if _, err := s.CreateComment(ctx, resourceID, replierID, pendingRoot.ID, "other reply", "visible"); !errors.Is(err, store.ErrCommentNotFound) {
+		t.Fatalf("other user could reply to hidden root: %v", err)
+	}
+	if err := s.AdminModerateComment(ctx, pendingRoot.ID, "hide", replierID, "review rejected"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommentThread(ctx, pendingRoot.ID, store.CommunityCursor{}, store.CommunityCursor{}, 20, userID); !errors.Is(err, store.ErrCommentNotFound) {
+		t.Fatalf("human rejected comment still visible to author: %v", err)
 	}
 	if err := s.AdminModerateComment(ctx, hiddenReply.ID, "approve", replierID, "复核后确认无问题"); err != nil {
 		t.Fatal(err)

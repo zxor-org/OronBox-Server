@@ -28,7 +28,7 @@ func (a *Handler) HandleAdminAPIPlugins(w http.ResponseWriter, r *http.Request) 
 			"id": item.ID, "name": item.Name, "state": state, "version": item.Version,
 			"author": item.Author, "uploader_id": item.UploaderID, "uploader": item.UploaderName,
 			"runtime": item.Runtime, "package_size": item.PackageSize, "icon_sha256": item.IconSHA256,
-			"package_sha256": item.PackageSHA256, "permissions": item.Permissions, "download_url": "/admin/blobs/" + item.PackageSHA256,
+			"package_sha256": item.PackageSHA256, "permissions": item.Permissions, "download_url": "/console/blobs/" + item.PackageSHA256,
 			"pending_version_id": item.PendingVersionID, "description": item.Description,
 			"updated_at": item.UpdatedAt, "created_at": item.CreatedAt,
 		})

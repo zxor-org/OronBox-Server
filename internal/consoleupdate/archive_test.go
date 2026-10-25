@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,5 +60,31 @@ func TestConsoleArchiveExtractsOnlyRegularFiles(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(dir, "assets/main.js"))
 	if err != nil || string(raw) != "xxx" {
 		t.Fatalf("file=%q err=%v", raw, err)
+	}
+}
+
+func TestConsoleRejectsPreviousAuthenticationContract(t *testing.T) {
+	root := t.TempDir()
+	commit := strings.Repeat("a", 40)
+	if err := os.Mkdir(filepath.Join(root, "assets"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"index.html": `<meta name="csp-nonce" content="__CSP_NONCE__"><script src="/console/assets/app.js"></script>`, "assets/app.js": "void 0"}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, contract := range []string{"oronbox-console-v1", consoleContract} {
+		if err := os.WriteFile(filepath.Join(root, "console.json"), []byte(`{"admin_api_contract":"`+contract+`","commit":"`+commit+`"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := validateConsolePackage(root, commit)
+		if contract == consoleContract && err != nil {
+			t.Fatal(err)
+		}
+		if contract != consoleContract && err == nil {
+			t.Fatal("old authentication frontend was accepted")
+		}
 	}
 }

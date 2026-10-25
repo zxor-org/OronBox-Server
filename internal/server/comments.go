@@ -14,6 +14,8 @@ import (
 )
 
 func (a *App) handleListComments(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Add("Vary", "Authorization")
 	if _, err := a.creator.PublicResource(r.Context(), r.PathValue("id")); err != nil {
 		httpx.WriteJSON(w, http.StatusNotFound, httpx.ErrorBody("resource_not_found", "resource was not found"))
 		return
@@ -32,7 +34,7 @@ func (a *App) handleListComments(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, 400, httpx.ErrorBody("invalid_cursor", "分页游标无效"))
 		return
 	}
-	page, err := a.store.CommentRoots(r.Context(), r.PathValue("id"), cursor, size)
+	page, err := a.store.CommentRoots(r.Context(), r.PathValue("id"), cursor, size, a.optionalUserID(r))
 	if err != nil {
 		httpx.WriteJSON(w, 500, httpx.ErrorBody("comments_read_failed", "读取评论失败"))
 		return
@@ -73,7 +75,7 @@ func (a *App) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		verdict, err = moderator.Review(r.Context(), prompt, request.Body)
 		if err != nil {
-			httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorBody("moderation_unavailable", "moderation service is unavailable"))
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, httpx.ErrorBody("moderation_unavailable", err.Error()))
 			return
 		}
 		if verdict.Action != "pass" {
@@ -98,7 +100,7 @@ func (a *App) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if verdict.Action == "block" {
-		httpx.WriteJSON(w, http.StatusUnprocessableEntity, httpx.ErrorBody("comment_blocked", verdict.Reason))
+		httpx.WriteJSON(w, http.StatusUnprocessableEntity, httpx.ErrorBody("comment_blocked", "评论未通过社区规范"))
 		return
 	}
 	comment.ModerationAction = verdict.Action
@@ -123,6 +125,8 @@ func (a *App) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCommentThread(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Add("Vary", "Authorization")
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
 		httpx.WriteJSON(w, 404, httpx.ErrorBody("comment_not_found", "评论不存在"))
@@ -135,7 +139,7 @@ func (a *App) handleCommentThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
-	page, err := a.store.CommentThread(r.Context(), id, before, after, size)
+	page, err := a.store.CommentThread(r.Context(), id, before, after, size, a.optionalUserID(r))
 	if errors.Is(err, store.ErrCommentNotFound) {
 		httpx.WriteJSON(w, 404, httpx.ErrorBody("comment_not_found", "评论不存在或不可见"))
 		return

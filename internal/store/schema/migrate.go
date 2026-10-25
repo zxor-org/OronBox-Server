@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion int64 = 15
+const schemaVersion int64 = 18
 
 // Migrate installs the current schema into an empty database.
 func Migrate(ctx context.Context, db *sql.DB) error {
@@ -48,6 +48,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 				{from: 12, apply: migrateSchemaV13},
 				{from: 13, apply: migrateSchemaV14},
 				{from: 14, apply: migrateSchemaV15},
+				{from: 15, apply: migrateSchemaV16},
+				{from: 16, apply: migrateSchemaV17},
+				{from: 17, apply: migrateSchemaV18},
 			}
 			for _, step := range steps {
 				if installedVersion.Int64 > step.from {
@@ -81,7 +84,7 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, communitySchemaV8); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, resourceContentV9+bindingIdentitiesV9+deletionV10+collectionsV11+releasesV12+blogV13+bindingClaimsV14+credentialsV15); err != nil {
+	if _, err := tx.ExecContext(ctx, resourceContentV9+bindingIdentitiesV9+deletionV10+collectionsV11+releasesV12+blogV13+bindingClaimsV14+credentialsV15+activityV16+consoleAuthV17); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, notificationSchema); err != nil {

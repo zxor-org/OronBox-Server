@@ -95,7 +95,7 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, name string, data a
 }
 
 func (a *App) handleRoot(w http.ResponseWriter, r *http.Request) {
-	a.render(w, r, "server_home", map[string]any{"Title": "Server"})
+	http.Redirect(w, r, "https://oronbox.zxor.org", http.StatusFound)
 }
 
 func (a *App) handleHealthz(w http.ResponseWriter, r *http.Request) {

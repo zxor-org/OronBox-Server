@@ -179,7 +179,7 @@ func (s *Store) AdminManageUser(ctx context.Context, id, action, reason, role st
 	default:
 		return AdminUserItem{}, fmt.Errorf("%w: unknown action", ErrAdminResourceConflict)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(gen_random_uuid(),$1,'account','account.'||$2,jsonb_build_object('action',$2::text,'reason',$3::text,'role',$4::text),'','',$2)`, id, action, reason, role); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) VALUES(gen_random_uuid(),$1,'account','account.'||$2,jsonb_build_object('action',$2::text,'reason',$3::text,'role',$4::text,'operator_name',$5::text,'operator_id',$6::text),'','',$2)`, id, action, reason, role, actor.Username, actor.UserID); err != nil {
 		return AdminUserItem{}, err
 	}
 	if err := tx.Commit(); err != nil {

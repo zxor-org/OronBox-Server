@@ -10,18 +10,20 @@ import (
 	"github.com/zxor-org/OronBox-Server/internal/config"
 )
 
-const consoleContract = "oronbox-legacy-v1"
+const consoleContract = "oronbox-console-v2"
 
 type Metadata struct {
-	Commit      string `json:"commit"`
-	Tag         string `json:"tag"`
-	ReleaseID   int64  `json:"release_id"`
-	AssetID     int64  `json:"asset_id"`
-	Size        int64  `json:"size"`
-	PublishedAt string `json:"published_at"`
-	SyncedAt    string `json:"synced_at,omitempty"`
-	SHA256      string `json:"sha256,omitempty"`
-	Directory   string `json:"-"`
+	Modified     bool   `json:"modified,omitempty"`
+	SourceSHA256 string `json:"source_sha256,omitempty"`
+	Commit       string `json:"commit"`
+	Tag          string `json:"tag"`
+	ReleaseID    int64  `json:"release_id"`
+	AssetID      int64  `json:"asset_id"`
+	Size         int64  `json:"size"`
+	PublishedAt  string `json:"published_at"`
+	SyncedAt     string `json:"synced_at,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
+	Directory    string `json:"-"`
 }
 
 type lifecycle struct {
@@ -109,4 +111,9 @@ func (m *Manager) Ensure(ctx context.Context) error {
 	}
 	_, err := m.Install(ctx, status.Latest.AssetID)
 	return err
+}
+
+func (m *Manager) Installed() bool {
+	current, _ := m.installedConsole()
+	return current != nil
 }

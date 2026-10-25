@@ -1,5 +1,7 @@
 package web
 
+import _ "embed"
+
 // ThemeJS runs before first paint so a stored theme preference does not flash
 // the opposite palette. Login still loads it from /assets/theme.js.
 const ThemeJS = `(() => {
@@ -22,3 +24,6 @@ const TransitionJS = `(() => {
   window.setTimeout(() => { location.replace(target); }, 900);
 })();
 `
+
+//go:embed assets/favicon.svg
+var FaviconSVG string

@@ -20,11 +20,13 @@ func TestAdminTemplatesRender(t *testing.T) {
 func renderableTemplateCases() map[string]any {
 	return map[string]any{
 		"admin_login":     map[string]any{"Title": "t", "AuthorizeURL": "/login"},
-		"admin_forbidden": map[string]any{"Title": "t", "Path": "/admin/users"},
+		"admin_forbidden": map[string]any{"Title": "t", "Path": "/console/users"},
 		"transition_page": TransitionPageData{
-			Title: "t", Heading: "h", Description: "d", Target: "/admin",
+			Title: "t", Heading: "h", Description: "d", Target: "/console",
 		},
-		"server_home": map[string]any{"Title": "Server"},
+		"console_syncing": map[string]any{"Title": "正在同步前端"},
+		"console_error":   map[string]any{"Title": "前端同步失败", "Error": "同步失败", "RetryAction": "/console/api/console/sync", "AssetID": 1, "ButtonLabel": "重新尝试同步"},
+		"server_home":     map[string]any{"Title": "Server"},
 	}
 }
 

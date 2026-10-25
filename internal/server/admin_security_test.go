@@ -11,32 +11,8 @@ import (
 
 	"github.com/zxor-org/OronBox-Server/internal/config"
 	"github.com/zxor-org/OronBox-Server/internal/httpx"
+	"github.com/zxor-org/OronBox-Server/internal/web"
 )
-
-func TestAdminOAuthReturnIsLimitedToDashboardGET(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		method string
-		target string
-		want   bool
-	}{
-		{name: "dashboard callback", method: http.MethodGet, target: "/admin?ticket=one-time-ticket", want: true},
-		{name: "empty ticket", method: http.MethodGet, target: "/admin?ticket=", want: false},
-		{name: "resource read", method: http.MethodGet, target: "/admin/resources?ticket=forged", want: false},
-		{name: "resource mutation", method: http.MethodPost, target: "/admin/resources/id/state?ticket=forged", want: false},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			request := httptest.NewRequest(tt.method, tt.target, nil)
-			if got := isAdminOAuthReturn(request); got != tt.want {
-				t.Fatalf("isAdminOAuthReturn() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestAdminMutationRequiresConfiguredOrigin(t *testing.T) {
 	t.Parallel()
@@ -48,7 +24,7 @@ func TestAdminMutationRequiresConfiguredOrigin(t *testing.T) {
 		want    bool
 	}{
 		{name: "same origin", origin: "https://ob-api.zxor.org", want: true},
-		{name: "same origin referer", referer: "https://ob-api.zxor.org/admin/resources/1", want: true},
+		{name: "same origin referer", referer: "https://ob-api.zxor.org/console/resources/1", want: true},
 		{name: "wrong scheme", origin: "http://ob-api.zxor.org", want: false},
 		{name: "wrong host", origin: "https://example.com", want: false},
 		{name: "malicious host suffix", origin: "https://ob-api.zxor.org.example.com", want: false},
@@ -58,7 +34,7 @@ func TestAdminMutationRequiresConfiguredOrigin(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			request := httptest.NewRequest(http.MethodPost, "/admin/resources/id/state", nil)
+			request := httptest.NewRequest(http.MethodPost, "/console/resources/id/state", nil)
 			if tt.origin != "" {
 				request.Header.Set("Origin", tt.origin)
 			}
@@ -74,7 +50,7 @@ func TestAdminMutationRequiresConfiguredOrigin(t *testing.T) {
 
 func TestSecureAdminCookieUsesPublicURLBehindProxy(t *testing.T) {
 	t.Parallel()
-	request := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request := httptest.NewRequest(http.MethodGet, "/console", nil)
 	if !(&App{cfg: config.Config{PublicURL: "https://ob-api.zxor.org"}}).secureAdminCookie(request) {
 		t.Fatal("HTTPS PUBLIC_URL must produce a Secure cookie even when the upstream request has no TLS state")
 	}
@@ -86,14 +62,14 @@ func TestSecureAdminCookieUsesPublicURLBehindProxy(t *testing.T) {
 func TestAdminSessionCookieSurvivesOAuthRedirectChain(t *testing.T) {
 	t.Parallel()
 	app := &App{cfg: config.Config{PublicURL: "https://ob-api.zxor.org"}}
-	request := httptest.NewRequest(http.MethodGet, "/admin?ticket=oauth-ticket", nil)
+	request := httptest.NewRequest(http.MethodGet, "/console?ticket=oauth-ticket", nil)
 	expiresAt := time.Now().UTC().Add(12 * time.Hour)
 
 	cookie := app.adminSessionCookie(request, "session-id", expiresAt, 0)
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("admin cookie SameSite = %v, want Lax for the cross-site OAuth redirect chain", cookie.SameSite)
 	}
-	if !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/admin" {
+	if !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/console" {
 		t.Fatalf("admin cookie lost security attributes: %#v", cookie)
 	}
 }
@@ -160,7 +136,7 @@ func TestAdminSettingsJSONDoesNotLeakOAuthSecrets(t *testing.T) {
 		},
 	}
 	recorder := httptest.NewRecorder()
-	app.adminHandlers().HandleAdminAPISettings(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/settings", nil))
+	app.adminHandlers().HandleAdminAPISettings(recorder, httptest.NewRequest(http.MethodGet, "/console/api/settings", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -180,11 +156,32 @@ func TestAdminSettingsJSONDoesNotLeakOAuthSecrets(t *testing.T) {
 func TestAdminAPIRequiresLogin(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
-	(&App{cfg: config.Config{PublicURL: "https://admin.example"}}).Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/api/session", nil))
+	(&App{cfg: config.Config{PublicURL: "https://console.example"}}).Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/console/api/auth/session", nil))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", recorder.Code, recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), "unauthenticated") {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+func TestRootRedirectAndConsoleRecoveryLogin(t *testing.T) {
+	app := &App{cfg: config.Config{PublicURL: "https://console.example", ConsoleDirectory: t.TempDir()}, templates: web.NewTemplates()}
+	root := httptest.NewRecorder()
+	app.Routes().ServeHTTP(root, httptest.NewRequest("GET", "/", nil))
+	if root.Code != 302 || root.Header().Get("Location") != "https://oronbox.zxor.org" {
+		t.Fatalf("root=%d %s", root.Code, root.Header().Get("Location"))
+	}
+	login := httptest.NewRecorder()
+	app.Routes().ServeHTTP(login, httptest.NewRequest("GET", "/console/login", nil))
+	if login.Code != 200 || !strings.Contains(login.Body.String(), "/console/api/auth/bandbbs/authorize") {
+		t.Fatalf("recovery login=%d %s", login.Code, login.Body.String())
+	}
+	for _, path := range []string{"/console?ticket=client-ticket", "/console/?ticket=client-ticket"} {
+		w := httptest.NewRecorder()
+		app.Routes().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 302 || w.Header().Get("Location") != "/console/login" {
+			t.Fatalf("ticket bypass %s=%d", path, w.Code)
+		}
 	}
 }

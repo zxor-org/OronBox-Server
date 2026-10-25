@@ -20,6 +20,7 @@ func WriteJSON(w http.ResponseWriter, status int, value any) {
 				"request handler failed",
 				"request_id", w.Header().Get("X-Request-ID"),
 				"code", code,
+				"status", status,
 				"error", message,
 			)
 			value = ErrorBody(code, "The server could not complete the request")

@@ -2,8 +2,6 @@ package consoleupdate
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -111,8 +109,8 @@ func (m *Manager) checkConsole(ctx context.Context, force bool) (result error) {
 	if err := client.Request(ctx, "GET", "releases/latest", nil, &release); err != nil {
 		return err
 	}
-	if release.ID <= 0 || release.Draft || release.Prerelease || !consoleCommitPattern.MatchString(release.Target) || release.Tag != "console-"+release.Target {
-		return fmt.Errorf("Console release must be a stable immutable commit build")
+	if release.ID <= 0 || release.Draft {
+		return fmt.Errorf("Console release not found or in draft state")
 	}
 	var packageURL, checksumURL string
 	var assetID, size int64
@@ -135,28 +133,27 @@ func (m *Manager) checkConsole(ctx context.Context, force bool) (result error) {
 			checksumURL = asset.URL
 		}
 	}
-	if packageURL == "" || checksumURL == "" {
-		return fmt.Errorf("Console release lacks package or checksum attachment")
+	if packageURL == "" {
+		return fmt.Errorf("Console release lacks package attachment")
 	}
-	res, err := m.consoleAsset(ctx, checksumURL)
-	if err != nil {
-		return err
+	checksum := ""
+	if checksumURL != "" {
+		res, err := m.consoleAsset(ctx, checksumURL)
+		if err == nil {
+			defer res.Body.Close()
+			raw, _ := io.ReadAll(io.LimitReader(res.Body, 1025))
+			fields := strings.Fields(string(raw))
+			if len(fields) >= 1 && len(fields[0]) == 64 {
+				checksum = strings.ToLower(fields[0])
+			}
+		}
 	}
-	defer res.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 1025))
-	if err != nil || len(raw) > 1024 {
-		return fmt.Errorf("invalid Console checksum")
-	}
-	fields := strings.Fields(string(raw))
-	if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != consolePackageName || len(fields[0]) != 64 {
-		return fmt.Errorf("invalid Console checksum format")
-	}
-	digest, err := hex.DecodeString(fields[0])
-	if err != nil || len(digest) != sha256.Size {
-		return fmt.Errorf("invalid Console checksum")
+	commit := release.Target
+	if commit == "" {
+		commit = release.Tag
 	}
 	m.state.mu.Lock()
-	m.state.latest = &Metadata{Commit: release.Target, Tag: release.Tag, ReleaseID: release.ID, AssetID: assetID, Size: size, PublishedAt: release.Published, SHA256: strings.ToLower(fields[0])}
+	m.state.latest = &Metadata{Commit: commit, Tag: release.Tag, ReleaseID: release.ID, AssetID: assetID, Size: size, PublishedAt: release.Published, SHA256: checksum}
 	m.state.download = packageURL
 	m.state.mu.Unlock()
 	return nil

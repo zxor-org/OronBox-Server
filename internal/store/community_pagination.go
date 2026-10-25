@@ -102,7 +102,15 @@ type CommentThread struct {
 	PreviousCursor string    `json:"previous_cursor"`
 }
 
-var threadSelect = strings.Replace(commentSelect, "\nFROM", `,COALESCE(comment.reply_to_id::text,''),COALESCE(target_author.username,''),(SELECT count(*) FROM resource_comments replies WHERE replies.parent_id=comment.id AND replies.moderation_state='visible' AND replies.deleted_at IS NULL)
+func commentVisibility(alias string) string {
+	return "(" + alias + ".moderation_state='visible' OR (" + alias + ".moderation_state='hidden' AND " + alias + ".user_id::text=@viewer AND EXISTS(SELECT 1 FROM comment_moderation pending WHERE pending.comment_id=" + alias + ".id AND pending.action='review' AND pending.human_reviewed_at IS NULL)))"
+}
+
+func commentViewerQuery(viewer, query string, args ...any) (string, []any) {
+	return strings.ReplaceAll(query, "@viewer", fmt.Sprintf("$%d", len(args)+1)), append(args, viewer)
+}
+
+var threadSelect = strings.Replace(commentSelect, "\nFROM", `,COALESCE(comment.reply_to_id::text,''),COALESCE(target_author.username,''),(SELECT count(*) FROM resource_comments replies WHERE replies.parent_id=comment.id AND `+commentVisibility("replies")+` AND replies.deleted_at IS NULL)
 FROM`, 1) + ` LEFT JOIN resource_comments target ON target.id=comment.reply_to_id LEFT JOIN users target_author ON target_author.id=target.user_id `
 
 func scanThreadComment(scanner interface{ Scan(...any) error }, c *Comment) error {
@@ -116,8 +124,9 @@ func scanThreadComment(scanner interface{ Scan(...any) error }, c *Comment) erro
 	}
 	return err
 }
-func (s *Store) readThreadComments(ctx context.Context, q string, args ...any) ([]Comment, error) {
-	rows, err := s.db.QueryContext(ctx, threadSelect+q, args...)
+func (s *Store) readThreadComments(ctx context.Context, viewer, q string, args ...any) ([]Comment, error) {
+	query, params := commentViewerQuery(viewer, threadSelect+q, args...)
+	rows, err := s.db.QueryContext(ctx, query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +141,12 @@ func (s *Store) readThreadComments(ctx context.Context, q string, args ...any) (
 	}
 	return items, rows.Err()
 }
-func (s *Store) CommentRoots(ctx context.Context, resource string, c CommunityCursor, size int) (CommentPage, error) {
+func (s *Store) CommentRoots(ctx context.Context, resource string, c CommunityCursor, size int, viewer string) (CommentPage, error) {
 	if size < 1 || size > 50 {
 		size = 20
 	}
 	p := CommentPage{}
-	items, err := s.readThreadComments(ctx, `WHERE comment.resource_id=$1 AND comment.parent_id IS NULL AND comment.moderation_state='visible' AND (comment.deleted_at IS NULL OR EXISTS(SELECT 1 FROM resource_comments r WHERE r.parent_id=comment.id AND r.moderation_state='visible' AND r.deleted_at IS NULL)) AND ($2::timestamptz IS NULL OR (comment.created_at,comment.id)<($2,$3::uuid)) ORDER BY comment.created_at DESC,comment.id DESC LIMIT $4`, resource, cursorTime(c), cursorID(c), size+1)
+	items, err := s.readThreadComments(ctx, viewer, `WHERE comment.resource_id=$1 AND comment.parent_id IS NULL AND `+commentVisibility("comment")+` AND (comment.deleted_at IS NULL OR EXISTS(SELECT 1 FROM resource_comments r WHERE r.parent_id=comment.id AND `+commentVisibility("r")+` AND r.deleted_at IS NULL)) AND ($2::timestamptz IS NULL OR (comment.created_at,comment.id)<($2,$3::uuid)) ORDER BY comment.created_at DESC,comment.id DESC LIMIT $4`, resource, cursorTime(c), cursorID(c), size+1)
 	if err != nil {
 		return p, err
 	}
@@ -148,7 +157,7 @@ func (s *Store) CommentRoots(ctx context.Context, resource string, c CommunityCu
 		p.NextCursor = EncodeCommunityCursor(last.CreatedAt, last.ID)
 	}
 	for i := range items {
-		items[i].Replies, err = s.readThreadComments(ctx, `WHERE comment.parent_id=$1 AND comment.moderation_state='visible' AND comment.deleted_at IS NULL ORDER BY comment.created_at,comment.id LIMIT 3`, items[i].ID)
+		items[i].Replies, err = s.readThreadComments(ctx, viewer, `WHERE comment.parent_id=$1 AND `+commentVisibility("comment")+` AND comment.deleted_at IS NULL ORDER BY comment.created_at,comment.id LIMIT 3`, items[i].ID)
 		if err != nil {
 			return p, err
 		}
@@ -156,13 +165,13 @@ func (s *Store) CommentRoots(ctx context.Context, resource string, c CommunityCu
 	p.Items = items
 	return p, nil
 }
-func (s *Store) CommentThread(ctx context.Context, id string, before, after CommunityCursor, size int) (CommentThread, error) {
+func (s *Store) CommentThread(ctx context.Context, id string, before, after CommunityCursor, size int, viewer string) (CommentThread, error) {
 	var p CommentThread
 	p.Replies = []Comment{}
 	if size < 1 || size > 50 {
 		size = 20
 	}
-	target, err := s.readThreadComments(ctx, `JOIN resources resource ON resource.id=comment.resource_id WHERE comment.id=$1 AND comment.moderation_state='visible' AND resource.moderation_state='visible' AND resource.current_revision_id IS NOT NULL`, id)
+	target, err := s.readThreadComments(ctx, viewer, `JOIN resources resource ON resource.id=comment.resource_id WHERE comment.id=$1 AND `+commentVisibility("comment")+` AND resource.moderation_state='visible' AND resource.current_revision_id IS NOT NULL`, id)
 	if err != nil {
 		return p, err
 	}
@@ -174,7 +183,7 @@ func (s *Store) CommentThread(ctx context.Context, id string, before, after Comm
 	if rootID == "" {
 		rootID = t.ID
 	}
-	roots, err := s.readThreadComments(ctx, `WHERE comment.id=$1 AND comment.moderation_state='visible'`, rootID)
+	roots, err := s.readThreadComments(ctx, viewer, `WHERE comment.id=$1 AND `+commentVisibility("comment")+``, rootID)
 	if err != nil {
 		return p, err
 	}
@@ -186,7 +195,7 @@ func (s *Store) CommentThread(ctx context.Context, id string, before, after Comm
 	if t.Deleted && t.ParentID != "" {
 		return p, ErrCommentNotFound
 	}
-	q := `WHERE comment.parent_id=$1 AND comment.moderation_state='visible' AND comment.deleted_at IS NULL`
+	q := `WHERE comment.parent_id=$1 AND ` + commentVisibility("comment") + ` AND comment.deleted_at IS NULL`
 	args := []any{rootID}
 	offset := 0
 	reverse := false
@@ -198,7 +207,8 @@ func (s *Store) CommentThread(ctx context.Context, id string, before, after Comm
 		q += ` AND (comment.created_at,comment.id)>($2,$3::uuid)`
 		args = append(args, after.At, after.ID)
 	} else if t.ParentID != "" {
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM resource_comments WHERE parent_id=$1 AND moderation_state='visible' AND deleted_at IS NULL AND (created_at,id)<($2,$3::uuid)`, rootID, t.CreatedAt, t.ID).Scan(&offset); err != nil {
+		query, params := commentViewerQuery(viewer, `SELECT count(*) FROM resource_comments comment WHERE parent_id=$1 AND `+commentVisibility("comment")+` AND deleted_at IS NULL AND (created_at,id)<($2,$3::uuid)`, rootID, t.CreatedAt, t.ID)
+		if err := s.db.QueryRowContext(ctx, query, params...).Scan(&offset); err != nil {
 			return p, err
 		}
 		offset = (offset / size) * size
@@ -208,7 +218,7 @@ func (s *Store) CommentThread(ctx context.Context, id string, before, after Comm
 		order = " DESC"
 	}
 	q += ` ORDER BY comment.created_at` + order + `,comment.id` + order + fmt.Sprintf(" LIMIT %d OFFSET %d", size, offset)
-	replies, err := s.readThreadComments(ctx, q, args...)
+	replies, err := s.readThreadComments(ctx, viewer, q, args...)
 	if err != nil {
 		return p, err
 	}
@@ -221,7 +231,8 @@ func (s *Store) CommentThread(ctx context.Context, id string, before, after Comm
 	if len(replies) > 0 {
 		first, last := replies[0], replies[len(replies)-1]
 		var prev, next bool
-		err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM resource_comments WHERE parent_id=$1 AND moderation_state='visible' AND deleted_at IS NULL AND (created_at,id)<($2,$3::uuid)),EXISTS(SELECT 1 FROM resource_comments WHERE parent_id=$1 AND moderation_state='visible' AND deleted_at IS NULL AND (created_at,id)>($4,$5::uuid))`, rootID, first.CreatedAt, first.ID, last.CreatedAt, last.ID).Scan(&prev, &next)
+		query, params := commentViewerQuery(viewer, `SELECT EXISTS(SELECT 1 FROM resource_comments comment WHERE parent_id=$1 AND `+commentVisibility("comment")+` AND deleted_at IS NULL AND (created_at,id)<($2,$3::uuid)),EXISTS(SELECT 1 FROM resource_comments comment WHERE parent_id=$1 AND `+commentVisibility("comment")+` AND deleted_at IS NULL AND (created_at,id)>($4,$5::uuid))`, rootID, first.CreatedAt, first.ID, last.CreatedAt, last.ID)
+		err = s.db.QueryRowContext(ctx, query, params...).Scan(&prev, &next)
 		if err != nil {
 			return p, err
 		}

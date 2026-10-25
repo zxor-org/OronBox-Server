@@ -58,7 +58,7 @@ func TestAdminHealthDiagnosticsAndCleanupPreviewTransaction(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO login_tickets(id,ticket_hash,user_id,expires_at,app_id,platform,return_uri) VALUES ($1,$2,$3,$4,'app','web','https://example.com'),($5,$6,$3,$7,'app','web','https://example.com')`, uuid.NewString(), []byte("old-ticket"), userID, oldExpiry, uuid.NewString(), []byte("new-ticket"), newExpiry); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO admin_sessions(id,expires_at,user_id,username) VALUES ('old-admin',$1,$3,'health-admin'),('new-admin',$2,$3,'health-admin')`, oldExpiry, newExpiry, userID); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO admin_sessions(id,credential_hash,absolute_expires_at,expires_at,user_id,username) VALUES ('old-admin','old-hash',now()+interval '7 days',$1,$3,'health-admin'),('new-admin','new-hash',now()+interval '7 days',$2,$3,'health-admin')`, oldExpiry, newExpiry, userID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,title,body,expires_at) VALUES ($1,$2,'admin_message','old','old',$3),($4,$2,'admin_message','new','new',$5)`, uuid.NewString(), userID, oldExpiry, uuid.NewString(), newExpiry); err != nil {

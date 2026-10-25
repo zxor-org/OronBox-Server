@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>{{.Title}} · OronBox</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/theme.js"></script>
 </head>
@@ -20,12 +21,12 @@
 {{define "admin_login"}}
 {{template "auth_head" .}}
 <main class="standalone-page">
-  <section class="standalone-card">
+  <section class="standalone-card login-card">
     <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-admin_panel_settings"></use></svg></div>
     <h1>OronBox 管理后台</h1>
     <p>使用已授权的米坛账号验证管理员身份</p>
     {{if .Error}}<div class="notice danger" role="alert">{{.Error}}</div>{{end}}
-    <div class="standalone-actions"><a class="filled-button full-button" href="{{.AuthorizeURL}}"><span>使用米坛账号登录</span><svg class="icon" aria-hidden="true"><use href="#i-arrow_forward"></use></svg></a></div>
+    <div class="standalone-actions"><a class="filled-button full-button" href="{{.AuthorizeURL}}"><span>使用米坛账号登录</span></a></div>
   </section>
 </main>
 {{template "auth_tail"}}
@@ -68,6 +69,33 @@
     <h1>OronBox Server</h1>
     <p>为 OronBox 提供账号授权、资源服务和创作者工作流</p>
     <div class="standalone-actions"><a class="filled-button full-button" href="/admin">进入管理后台</a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
+{{end}}
+
+{{define "console_syncing"}}
+{{template "auth_head" .}}
+<meta http-equiv="refresh" content="2">
+<main class="standalone-page">
+  <section class="standalone-card info">
+    <div class="standalone-icon"><svg class="icon spin" aria-hidden="true"><use href="#i-sync"></use></svg></div>
+    <h1>正在同步前端</h1>
+    <p>服务端正在从 Gitea 同步最新前端构建的页面，完成后将自动进入后台...</p>
+    <div class="standalone-actions"><a class="filled-button full-button" href="/console/"><span>刷新页面</span></a></div>
+  </section>
+</main>
+{{template "auth_tail"}}
+{{end}}
+
+{{define "console_error"}}
+{{template "auth_head" .}}
+<main class="standalone-page">
+  <section class="standalone-card danger">
+    <div class="standalone-icon"><svg class="icon" aria-hidden="true"><use href="#i-error"></use></svg></div>
+    <h1>{{.Title}}</h1>
+    <p>{{.Error}}</p>
+    {{if .RetryAction}}<div class="standalone-actions"><form method="post" action="{{.RetryAction}}"><input type="hidden" name="asset_id" value="{{.AssetID}}"><button class="filled-button full-button" type="submit"><span>{{.ButtonLabel}}</span></button></form></div>{{else}}{{if and .Target .ButtonLabel}}<div class="standalone-actions"><a class="filled-button full-button" href="{{.Target}}"><span>{{.ButtonLabel}}</span></a></div>{{end}}{{end}}
   </section>
 </main>
 {{template "auth_tail"}}

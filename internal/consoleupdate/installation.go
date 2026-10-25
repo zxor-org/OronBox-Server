@@ -73,9 +73,13 @@ func (m *Manager) installConsole(ctx context.Context, expected int64) error {
 	defer os.Remove(archive.Name())
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(archive, hash), io.LimitReader(res.Body, (50<<20)+1))
-	if err != nil || size != latest.Size || size > 50<<20 || hex.EncodeToString(hash.Sum(nil)) != latest.SHA256 {
+	sum := hex.EncodeToString(hash.Sum(nil))
+	if err != nil || size != latest.Size || size > 50<<20 || (latest.SHA256 != "" && sum != latest.SHA256) {
 		archive.Close()
-		return fmt.Errorf("Console package size mismatch")
+		return fmt.Errorf("Console package size or checksum mismatch")
+	}
+	if latest.SHA256 == "" {
+		latest.SHA256 = sum
 	}
 	if _, err = archive.Seek(0, 0); err == nil {
 		err = extractConsole(archive, candidate)

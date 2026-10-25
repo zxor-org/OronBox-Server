@@ -21,10 +21,10 @@ func TestInferLegacyAuditTargetsAndReverseLinks(t *testing.T) {
 	tests := []struct {
 		action, message, kind, path string
 	}{
-		{"user.ban", "user_id=6fa98d9e-91aa-44db-a350-00673ccfa7c2 user=name(1)", "user", "/admin/users/6fa98d9e-91aa-44db-a350-00673ccfa7c2"},
-		{"feedback.reply", "ticket=ef99d824-cd37-4977-85ec-f32bb5784d27 ticket_kind=feedback", "feedback", "/admin/feedback/ef99d824-cd37-4977-85ec-f32bb5784d27"},
-		{"feedback.resolve", "ticket=c8c8c53a-d5b4-4f8c-b2d4-e192e9acdd58 ticket_kind=resource_report", "ticket", "/admin/reports/c8c8c53a-d5b4-4f8c-b2d4-e192e9acdd58"},
-		{"blob.read", "sha256=abc download=1", "blob", "/admin/storage/blobs/abc"},
+		{"user.ban", "user_id=6fa98d9e-91aa-44db-a350-00673ccfa7c2 user=name(1)", "user", "/console/users/6fa98d9e-91aa-44db-a350-00673ccfa7c2"},
+		{"feedback.reply", "ticket=ef99d824-cd37-4977-85ec-f32bb5784d27 ticket_kind=feedback", "feedback", "/console/feedback/ef99d824-cd37-4977-85ec-f32bb5784d27"},
+		{"feedback.resolve", "ticket=c8c8c53a-d5b4-4f8c-b2d4-e192e9acdd58 ticket_kind=resource_report", "ticket", "/console/reports/c8c8c53a-d5b4-4f8c-b2d4-e192e9acdd58"},
+		{"blob.read", "sha256=abc download=1", "blob", "/console/storage/blobs/abc"},
 	}
 	for _, test := range tests {
 		data := inferLegacyAuditData(test.action, test.message)

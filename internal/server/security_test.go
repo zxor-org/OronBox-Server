@@ -18,7 +18,7 @@ func securityHeaderResponse(t *testing.T, publicURL string) http.Header {
 		w.WriteHeader(http.StatusOK)
 	}))
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/console", nil))
 	return recorder.Header()
 }
 
@@ -26,7 +26,7 @@ func securityHeaderResponse(t *testing.T, publicURL string) http.Header {
 // that stored content reaching a template cannot execute.
 func TestSecurityHeadersForbidInlineScript(t *testing.T) {
 	t.Parallel()
-	policy := securityHeaderResponse(t, "https://admin.example").Get("Content-Security-Policy")
+	policy := securityHeaderResponse(t, "https://console.example").Get("Content-Security-Policy")
 	for _, expected := range []string{
 		"default-src 'none'",
 		"script-src 'self'",
@@ -49,7 +49,7 @@ func TestSecurityHeadersForbidInlineScript(t *testing.T) {
 // of a server that has no TLS to fall back on.
 func TestStrictTransportSecurityFollowsPublicScheme(t *testing.T) {
 	t.Parallel()
-	if value := securityHeaderResponse(t, "https://admin.example").Get("Strict-Transport-Security"); !strings.Contains(value, "max-age=31536000") {
+	if value := securityHeaderResponse(t, "https://console.example").Get("Strict-Transport-Security"); !strings.Contains(value, "max-age=31536000") {
 		t.Errorf("HTTPS deployment did not send HSTS: %q", value)
 	}
 	if value := securityHeaderResponse(t, "http://localhost:8080").Get("Strict-Transport-Security"); value != "" {
@@ -60,7 +60,7 @@ func TestStrictTransportSecurityFollowsPublicScheme(t *testing.T) {
 // A handler that already chose a stricter policy must keep it.
 func TestSecurityHeadersDoNotOverrideAHandlerPolicy(t *testing.T) {
 	t.Parallel()
-	handler := SecurityHeaders(config.Config{PublicURL: "https://admin.example"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeaders(config.Config{PublicURL: "https://console.example"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", transitionCSP)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -75,9 +75,9 @@ func TestSecurityHeadersDoNotOverrideAHandlerPolicy(t *testing.T) {
 // administrator to a login page carrying text of their choosing.
 func TestAdminLoginErrorIsWhitelisted(t *testing.T) {
 	t.Parallel()
-	app := &App{cfg: config.Config{PublicURL: "https://admin.example"}, templates: web.NewTemplates()}
+	app := &App{cfg: config.Config{PublicURL: "https://console.example"}, templates: web.NewTemplates()}
 	recorder := httptest.NewRecorder()
-	app.handleAdminLoginPage(recorder, httptest.NewRequest(http.MethodGet, "/admin/login?error=%E8%AF%B7%E8%81%94%E7%B3%BB+400-000", nil))
+	app.handleAdminLoginPage(recorder, httptest.NewRequest(http.MethodGet, "/console/login?error=%E8%AF%B7%E8%81%94%E7%B3%BB+400-000", nil))
 
 	body := recorder.Body.String()
 	if strings.Contains(body, "400-000") {
@@ -88,13 +88,13 @@ func TestAdminLoginErrorIsWhitelisted(t *testing.T) {
 	}
 
 	known := httptest.NewRecorder()
-	app.handleAdminLoginPage(known, httptest.NewRequest(http.MethodGet, "/admin/login?error=not_authorized", nil))
+	app.handleAdminLoginPage(known, httptest.NewRequest(http.MethodGet, "/console/login?error=not_authorized", nil))
 	if !strings.Contains(known.Body.String(), "该账号没有管理后台权限") {
 		t.Error("known error code lost its specific message")
 	}
 
 	clean := httptest.NewRecorder()
-	app.handleAdminLoginPage(clean, httptest.NewRequest(http.MethodGet, "/admin/login", nil))
+	app.handleAdminLoginPage(clean, httptest.NewRequest(http.MethodGet, "/console/login", nil))
 	if strings.Contains(clean.Body.String(), "notice danger") {
 		t.Error("login page shows an error without one having occurred")
 	}
@@ -102,7 +102,7 @@ func TestAdminLoginErrorIsWhitelisted(t *testing.T) {
 
 func credentialThrottleApp(failureBurst int) *App {
 	cfg := config.Config{
-		PublicURL: "https://admin.example",
+		PublicURL: "https://console.example",
 		Limits: config.LimitsConfig{
 			AuthRatePerMin: 3, AuthFailureBurst: failureBurst, AuthFailureWindow: time.Minute,
 		},

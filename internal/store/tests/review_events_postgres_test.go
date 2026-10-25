@@ -89,4 +89,20 @@ func TestReviewCaseHistoryIsAppendedAndImmutable(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE review_case_events SET note='rewritten' WHERE id=$1`, events[0].ID); err == nil {
 		t.Fatal("review history accepted an update, it must be immutable")
 	}
+	done, err := reviews.AdminReviews(ctx, store.AdminReviewQuery{State: "done"})
+	if err != nil || done.Total != 0 {
+		t.Fatalf("pending review leaked into done queue: total=%d err=%v", done.Total, err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE review_cases SET state='approved' WHERE id=$1`, caseID); err != nil {
+		t.Fatal(err)
+	}
+	done, err = reviews.AdminReviews(ctx, store.AdminReviewQuery{State: "done"})
+	if err != nil || done.Total != 1 || len(done.Items) != 1 || done.Items[0].ID != caseID {
+		t.Fatalf("done queue = %#v, err=%v", done, err)
+	}
+	pending, err := reviews.AdminReviews(ctx, store.AdminReviewQuery{State: "pending"})
+	if err != nil || pending.Total != 0 {
+		t.Fatalf("processed review leaked into pending queue: total=%d err=%v", pending.Total, err)
+	}
+
 }

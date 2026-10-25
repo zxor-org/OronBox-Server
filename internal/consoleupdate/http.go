@@ -16,7 +16,7 @@ import (
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, root := m.installedConsole()
 	if root == "" {
-		if strings.HasPrefix(r.URL.Path, "/admin/assets/") || r.URL.Path == "/admin/favicon.svg" {
+		if strings.HasPrefix(r.URL.Path, "/console/assets/") || r.URL.Path == "/console/favicon.svg" {
 			http.NotFound(w, r)
 			return
 		}
@@ -25,7 +25,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Console build is not available", http.StatusServiceUnavailable)
 		return
 	}
-	p := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/admin"), "/")
+	p := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/console"), "/")
 	if p == "" {
 		p = "index.html"
 	}
@@ -70,7 +70,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	policy := strings.Replace(m.csp, "style-src 'self'", "style-src 'self' 'nonce-"+nonce+"'", 1)
-	w.Header().Set("Content-Security-Policy", policy)
+	w.Header().Set("Content-Security-Policy", policy+"; style-src-attr 'unsafe-inline'")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	io.WriteString(w, strings.ReplaceAll(string(raw), "__CSP_NONCE__", nonce))

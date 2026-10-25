@@ -113,9 +113,7 @@ func (s *Store) SetSettings(ctx context.Context, values map[string]string) error
 	return tx.Commit()
 }
 
-// Ranking weight keys live in server_settings so operators can tune the
-// recommendation score without a redeploy. The environment defaults from
-// RANKING_* are only the fallback for keys that were never overridden.
+// Console overrides live in server_settings; unset keys use built-in defaults.
 const (
 	RankingCoinExtraKey    = "ranking.coin_extra_weight"
 	RankingDownloadKey     = "ranking.download_weight"

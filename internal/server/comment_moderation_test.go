@@ -10,7 +10,7 @@ import (
 // batch path have to record why. The rule is enforced on the server because
 // the browser check is only there to save a round trip.
 func TestRejectingACollectionRequiresAReason(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/api/collections/review/revision-1", `{"approve":false}`, "https://admin.example")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/console/api/collections/review/revision-1", `{"approve":false}`, "https://console.example")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%q", recorder.Code, recorder.Body.String())
 	}
@@ -25,11 +25,11 @@ func TestHidingACommentRequiresAReason(t *testing.T) {
 		path string
 		body string
 	}{
-		{name: "single", path: "/admin/api/comments/00000000-0000-0000-0000-000000000001", body: `{"action":"hide"}`},
-		{name: "batch", path: "/admin/api/comments/bulk", body: `{"action":"hide","ids":["00000000-0000-0000-0000-000000000001"]}`},
+		{name: "single", path: "/console/api/comments/00000000-0000-0000-0000-000000000001", body: `{"action":"hide"}`},
+		{name: "batch", path: "/console/api/comments/bulk", body: `{"action":"hide","ids":["00000000-0000-0000-0000-000000000001"]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, test.path, test.body, "https://admin.example")
+			recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, test.path, test.body, "https://console.example")
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body=%q", recorder.Code, recorder.Body.String())
 			}
@@ -43,7 +43,7 @@ func TestHidingACommentRequiresAReason(t *testing.T) {
 // Approving needs no reason, so the same request without a note must get past
 // validation rather than being blocked by an over-broad rule.
 func TestApprovingACommentNeedsNoReason(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/api/comments/bulk", `{"action":"approve","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://admin.example")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/console/api/comments/bulk", `{"action":"approve","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://console.example")
 	if recorder.Code == http.StatusBadRequest && strings.Contains(recorder.Body.String(), "理由") {
 		t.Fatalf("approving was blocked for a missing reason: %q", recorder.Body.String())
 	}
@@ -52,7 +52,7 @@ func TestApprovingACommentNeedsNoReason(t *testing.T) {
 // A reviewer moderates comments, so the batch endpoint must not be quietly
 // admin-only; that would push them back to clicking one comment at a time.
 func TestReviewersCanUseTheCommentBatchEndpoint(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/api/comments/bulk", `{"action":"approve","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://admin.example")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/console/api/comments/bulk", `{"action":"approve","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://console.example")
 	if recorder.Code == http.StatusForbidden {
 		t.Fatalf("a reviewer was refused the comment batch endpoint: %q", recorder.Body.String())
 	}
@@ -61,7 +61,7 @@ func TestReviewersCanUseTheCommentBatchEndpoint(t *testing.T) {
 // The batch route is a literal sibling of the /{comment} pattern, so this
 // pins down that it is not swallowed as a comment id.
 func TestCommentBatchRouteIsNotTreatedAsACommentID(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/admin/api/comments/bulk", `{"action":"hide","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://admin.example")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, "/console/api/comments/bulk", `{"action":"hide","ids":["00000000-0000-0000-0000-000000000001"]}`, "https://console.example")
 	if body := recorder.Body.String(); strings.Contains(body, "comment was not found") {
 		t.Fatalf("the batch route was routed to the single-comment handler: %q", body)
 	}

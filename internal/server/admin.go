@@ -7,14 +7,12 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
-	"html/template"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	authcore "github.com/zxor-org/OronBox-Server/internal/auth"
 	"github.com/zxor-org/OronBox-Server/internal/httpx"
 	"github.com/zxor-org/OronBox-Server/internal/observability"
 	adminhttp "github.com/zxor-org/OronBox-Server/internal/server/admin"
@@ -31,7 +29,7 @@ type adminRoleContextKey struct{}
 func (a *App) handleAdminLoginPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "admin_login", map[string]any{
 		"Title":        "管理后台",
-		"AuthorizeURL": "/admin/api/auth/bandbbs/authorize",
+		"AuthorizeURL": "/console/api/auth/bandbbs/authorize",
 		"Error":        adminLoginErrorMessage(r.URL.Query().Get("error")),
 	})
 }
@@ -53,7 +51,7 @@ func adminLoginErrorMessage(code string) string {
 }
 
 func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/admin/api/auth/bandbbs/authorize", http.StatusFound)
+	http.Redirect(w, r, "/console/api/auth/bandbbs/authorize", http.StatusFound)
 }
 
 // requireAdminRole wraps requireAdmin and additionally demands a users.role
@@ -70,20 +68,12 @@ func (a *App) requireAdminRole(role string, next http.HandlerFunc) http.HandlerF
 	})
 }
 
-// renderForbidden explains the boundary inside the console instead of dropping
-// the reviewer onto a bare "forbidden" page. A GET lands on a real page, but a
-// blocked write still gets a plain status because it came from a form post
-// whose result nobody is going to read as a document.
 func (a *App) renderForbidden(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "当前账号没有执行该操作的权限", http.StatusForbidden)
+	if strings.HasPrefix(r.URL.Path, "/console/api/") {
+		httpx.WriteJSON(w, http.StatusForbidden, httpx.ErrorBody("forbidden", "当前账号没有执行该操作的权限"))
 		return
 	}
-	w.WriteHeader(http.StatusForbidden)
-	a.render(w, r, "admin_forbidden", map[string]any{
-		"Title": "无权访问",
-		"Path":  r.URL.Path,
-	})
+	http.Error(w, "当前账号没有访问该页面的权限", http.StatusForbidden)
 }
 
 func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
@@ -94,25 +84,23 @@ func (a *App) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = a.store.RecordAudit(r.Context(), actor, "admin_logout", "success", a.clientIP(r), r.UserAgent(), "")
 	http.SetCookie(w, a.adminSessionCookie(r, "", time.Time{}, -1))
-	http.Redirect(w, r, "/admin", http.StatusFound)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		http.Redirect(w, r, "/console/login", http.StatusSeeOther)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *App) rejectAdminAuth(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+	if strings.HasPrefix(r.URL.Path, "/console/api/") {
 		httpx.WriteJSON(w, http.StatusUnauthorized, httpx.ErrorBody("unauthenticated", "admin session required"))
 		return
 	}
-	http.Redirect(w, r, "/admin/login", http.StatusFound)
+	http.Redirect(w, r, "/console/login", http.StatusFound)
 }
 
 func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// An OAuth callback delivers the login ticket as a query parameter
-		// on GET /admin itself. No other admin route may use this exception.
-		if isAdminOAuthReturn(r) {
-			next(w, r)
-			return
-		}
 		cookie, err := r.Cookie(adminCookieName)
 		if err != nil || cookie.Value == "" {
 			observability.From(r.Context()).With("component", "admin").Info(
@@ -175,14 +163,27 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 		}
+		if r.URL.Path != "/console/api/auth/refresh" && r.URL.Path != "/console/api/auth/logout" {
+			session, err = a.store.TouchAdminSession(r.Context(), session.ID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					a.rejectAdminAuth(w, r)
+				} else {
+					http.Error(w, "session lookup temporarily unavailable", 503)
+				}
+				return
+			}
+			credential := cookie.Value
+			if session.Generation > 0 {
+				credential = a.rotatedAdminCredential(session.ID, session.Generation)
+			}
+			http.SetCookie(w, a.adminSessionCookie(r, credential, session.ExpiresAt, 0))
+		}
+
 		ctx := context.WithValue(r.Context(), adminContextKey{}, session)
 		ctx = context.WithValue(ctx, adminRoleContextKey{}, user.Role)
 		next(w, r.WithContext(ctx))
 	}
-}
-
-func isAdminOAuthReturn(r *http.Request) bool {
-	return r.Method == http.MethodGet && r.URL.Path == "/admin" && strings.TrimSpace(r.URL.Query().Get("ticket")) != ""
 }
 
 func isUnsafeMethod(method string) bool {
@@ -224,13 +225,13 @@ func (a *App) adminSessionCookie(r *http.Request, value string, expiresAt time.T
 	return &http.Cookie{
 		Name:     adminCookieName,
 		Value:    value,
-		Path:     "/admin",
+		Path:     "/console",
 		Expires:  expiresAt,
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		// The session is created during a top-level redirect from BandBBS.
 		// Strict cookies may be withheld until that cross-site redirect chain
-		// ends, causing the immediate /admin redirect to lose the new session.
+		// ends, causing the immediate /console redirect to lose the new session.
 		// Lax keeps the OAuth navigation working; unsafe admin methods still
 		// require an exact Origin or Referer match.
 		SameSite: http.SameSiteLaxMode,
@@ -246,51 +247,7 @@ func currentAdmin(r *http.Request) store.AdminSession {
 	return session
 }
 
-func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) {
-	ticket := strings.TrimSpace(r.URL.Query().Get("ticket"))
-	if ticket != "" {
-		user, err := a.store.ConsumeLoginTicketIdentity(r.Context(), authcore.HashToken(ticket, a.cfg.SessionSecret))
-		if err != nil {
-			http.Redirect(w, r, "/admin/login?error=invalid_ticket", http.StatusFound)
-			return
-		}
-		if user.BannedAt != nil || !containsInt64(a.cfg.Admin.BandBBSUserIDs, user.BandBBSUserID) && user.Role != "admin" && user.Role != "reviewer" {
-			actor := store.AdminSession{UserID: user.ID, Username: user.Username}
-			_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "failure", a.clientIP(r), r.UserAgent(), "not authorized")
-			http.Redirect(w, r, "/admin/login?error=not_authorized", http.StatusFound)
-			return
-		}
-		sessionID, err := randomToken()
-		if err != nil {
-			http.Error(w, "failed to create session", http.StatusInternalServerError)
-			return
-		}
-		expiresAt := time.Now().UTC().Add(12 * time.Hour)
-		if err := a.store.CreateAdminSession(r.Context(), sessionID, user.ID, user.Username, a.clientIP(r), r.UserAgent(), expiresAt); err != nil {
-			http.Error(w, "failed to save session", http.StatusInternalServerError)
-			return
-		}
-		http.SetCookie(w, a.adminSessionCookie(r, sessionID, expiresAt, 0))
-		actor := store.AdminSession{ID: sessionID, UserID: user.ID, Username: user.Username, ExpiresAt: expiresAt}
-		_ = a.store.RecordAudit(r.Context(), actor, "admin_login", "success", a.clientIP(r), r.UserAgent(), "")
-		target := template.URL(web.HomePathFor(user.Role))
-		a.renderTransition(w, r, web.TransitionPageData{
-			Title:       "授权完成",
-			Heading:     "授权完成",
-			Description: "可以返回 OronBox 继续使用",
-			Target:      target,
-			Auto:        true,
-			Tone:        "success",
-		})
-		return
-	}
-
-	if role, _ := r.Context().Value(adminRoleContextKey{}).(string); role != web.RoleAdmin {
-		http.Redirect(w, r, web.HomePathFor(role), http.StatusFound)
-		return
-	}
-	a.serveConsole(w, r)
-}
+func (a *App) handleAdminDashboard(w http.ResponseWriter, r *http.Request) { a.serveConsole(w, r) }
 
 func adminAuditQuery(r *http.Request) store.AdminAuditLogQuery {
 	from, to := adminhttp.TimeRange(r.URL.Query())
@@ -353,16 +310,6 @@ type adminReviewItem struct {
 
 func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-func (a *App) handleAdminAuthorize(w http.ResponseWriter, r *http.Request) {
-	target := strings.TrimRight(a.cfg.PublicURL, "/") + "/admin"
-	u, err := a.startBandBBSAuthorization(r, "login", "", target)
-	if err != nil {
-		http.Error(w, "could not start authorization", http.StatusServiceUnavailable)
-		return
-	}
-	http.Redirect(w, r, u, http.StatusFound)
 }
 
 func (a *App) audit(r *http.Request, action, result, detail string) {

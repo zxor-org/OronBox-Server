@@ -162,7 +162,7 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, 200, response)
 }
 
-func (a *App) createTicket(r *http.Request, meta model.ClientMeta, userID, returnURI string, tokenCipher []byte) (string, string, error) {
+func (a *App) createTicket(r *http.Request, meta model.ClientMeta, userID, returnURI string, tokenCipher []byte, purpose string) (string, string, error) {
 	ticket, err := authcore.RandomToken(32)
 	if err != nil {
 		return "", "", err
@@ -171,7 +171,7 @@ func (a *App) createTicket(r *http.Request, meta model.ClientMeta, userID, retur
 	_, err = a.store.CreateLoginTicket(r.Context(), store.LoginTicketParams{
 		TicketHash: authcore.HashToken(ticket, a.cfg.SessionSecret), UserID: userID,
 		ExpiresAt: time.Now().UTC().Add(a.cfg.LoginTicketTTL), Meta: meta, ReturnURI: returnURI,
-		TokenCipher: tokenCipher,
+		TokenCipher: tokenCipher, Purpose: purpose,
 	})
 	return ticket, ticketID, err
 }

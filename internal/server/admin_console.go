@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zxor-org/OronBox-Server/internal/consoleupdate"
@@ -30,6 +32,8 @@ func (a *App) handleAdminAPISession(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"user": user.Username, "bandbbs_uid": user.BandBBSUserID, "avatar_url": user.AvatarURL, "expires_in": max(0, int(time.Until(session.ExpiresAt).Seconds())),
+		"refresh_in":          max(0, int(time.Until(session.RotatedAt.Add(11*time.Hour)).Seconds())),
+		"absolute_expires_at": session.AbsoluteExpiresAt, "expires_at": session.ExpiresAt, "server_time": time.Now().UTC(),
 		"authenticated": true, "username": user.Username, "uid": session.UserID,
 		"role":            role,
 		"csrf_token":      a.adminCSRFTokenFor(r),
@@ -56,6 +60,10 @@ func (a *App) consoleManager() *consoleupdate.Manager {
 }
 
 func (a *App) serveConsole(w http.ResponseWriter, r *http.Request) {
+	if !a.consoleManager().Installed() && !strings.HasPrefix(r.URL.Path, "/console/assets/") && r.URL.Path != "/console/favicon.svg" {
+		a.renderConsoleRecovery(w, r)
+		return
+	}
 	a.consoleManager().ServeHTTP(w, r)
 }
 
@@ -68,7 +76,15 @@ func (a *App) handleConsoleSync(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		AssetID int64 `json:"asset_id"`
 	}
-	if httpx.DecodeJSON(r, &in) != nil || in.AssetID <= 0 {
+	form := strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	var decodeErr error
+	if form {
+		decodeErr = r.ParseForm()
+		in.AssetID, _ = strconv.ParseInt(r.PostForm.Get("asset_id"), 10, 64)
+	} else {
+		decodeErr = httpx.DecodeJSON(r, &in)
+	}
+	if decodeErr != nil || in.AssetID <= 0 {
 		httpx.WriteJSON(w, 400, httpx.ErrorBody("invalid_request", "reviewed asset_id is required"))
 		return
 	}
@@ -78,9 +94,17 @@ func (a *App) handleConsoleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if form {
+			a.renderConsoleRecovery(w, r)
+			return
+		}
 		httpx.WriteJSON(w, 409, httpx.ErrorBody("console_sync_failed", err.Error()))
 		return
 	}
 	a.audit(r, "console.install", "success", fmt.Sprintf("asset=%d", in.AssetID))
+	if form {
+		http.Redirect(w, r, "/console/", http.StatusSeeOther)
+		return
+	}
 	httpx.WriteJSON(w, 200, map[string]any{"synced": true, "metadata": current})
 }

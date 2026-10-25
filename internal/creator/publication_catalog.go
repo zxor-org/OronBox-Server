@@ -116,7 +116,25 @@ func (s *Service) mapPublications(ctx context.Context, kind ResourceKind, artifa
 					continue
 				}
 				byCategory[v.CategoryID] = a.sha256
-				targets = append(targets, map[string]any{"category_id": v.CategoryID, "prefix_id": cfg.ResourcePrefixes[string(kind)], "package_id": a.analysis.PackageID})
+				threadPrefixID := 0
+				if v.ThreadPrefixes != nil {
+					threadPrefixID = v.ThreadPrefixes[string(kind)]
+					if threadPrefixID == 0 {
+						threadPrefixID = v.ThreadPrefixes["watchface"]
+					}
+				}
+				targetMap := map[string]any{
+					"category_id": v.CategoryID,
+					"prefix_id":   cfg.ResourcePrefixes[string(kind)],
+					"package_id":  a.analysis.PackageID,
+				}
+				if threadPrefixID > 0 {
+					targetMap["thread_prefix_id"] = threadPrefixID
+				}
+				if v.ForumID > 0 {
+					targetMap["forum_id"] = v.ForumID
+				}
+				targets = append(targets, targetMap)
 			}
 		}
 		if p.Config == nil {

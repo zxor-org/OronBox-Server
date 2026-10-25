@@ -8,7 +8,7 @@ import (
 
 func TestNewPaginationPreservesFiltersAndBuildsPageWindow(t *testing.T) {
 	t.Parallel()
-	pager := NewPagination("/admin/resources", url.Values{
+	pager := NewPagination("/console/resources", url.Values{
 		"q": {"watch face"}, "status": {"pending"}, "page": {"99"}, "per_page": {"10"},
 	}, 5, 10, 123)
 
@@ -25,7 +25,7 @@ func TestNewPaginationPreservesFiltersAndBuildsPageWindow(t *testing.T) {
 		}
 	}
 	pageURL := pager.URL(6)
-	for _, value := range []string{"/admin/resources?", "page=6", "per_page=10", "q=watch+face", "status=pending"} {
+	for _, value := range []string{"/console/resources?", "page=6", "per_page=10", "q=watch+face", "status=pending"} {
 		if !strings.Contains(pageURL, value) {
 			t.Fatalf("page URL %q is missing %q", pageURL, value)
 		}
@@ -37,12 +37,12 @@ func TestNewPaginationPreservesFiltersAndBuildsPageWindow(t *testing.T) {
 
 func TestNewPaginationClampsInvalidPageAndHandlesEmptyResults(t *testing.T) {
 	t.Parallel()
-	empty := NewPagination("/admin/audit", nil, 9, 0, 0)
+	empty := NewPagination("/console/audit", nil, 9, 0, 0)
 	if empty.Page != 1 || empty.PerPage != 25 || empty.From != 0 || empty.To != 0 || empty.TotalPages != 0 {
 		t.Fatalf("empty pagination = %#v", empty)
 	}
 
-	last := NewPagination("/admin/audit", nil, 99, 25, 51)
+	last := NewPagination("/console/audit", nil, 99, 25, 51)
 	if last.Page != 3 || last.From != 51 || last.To != 51 {
 		t.Fatalf("clamped pagination = %#v", last)
 	}

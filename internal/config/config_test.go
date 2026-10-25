@@ -2,6 +2,7 @@ package config
 
 import (
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,16 +115,36 @@ func TestWeakSecretsAreRejectedInProductionOnly(t *testing.T) {
 	}
 }
 
-func TestPositiveFloatEnvRejectsUnusableRankingWeights(t *testing.T) {
-	t.Setenv("RANKING_FRESHNESS_AMPLITUDE", "4")
-	if got := positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0); got != 4 {
-		t.Fatalf("valid ranking weight = %v, want 4", got)
+func TestLoadIgnoresRetiredEnvironmentSettings(t *testing.T) {
+	for _, key := range []string{
+		"ASTROBOX_REPO_OWNER", "ASTROBOX_REPO_NAME", "ASTROBOX_REPO_BRANCH", "ASTROBOX_CATALOG_PATH",
+		"GITEA_CATALOG_REPO", "GITEA_CATALOG_REF", "GITEA_CONSOLE_REPO",
+		"BANDBBS_API_URL", "BANDBBS_SCOPES", "BANDBBS_PUBLISH_SCOPES", "GITHUB_API_URL", "GITHUB_SCOPES",
+		"APP_VERSION", "GIT_COMMIT", "CLIENT_ATTESTATION_ENABLED", "RANKING_FRESHNESS_AMPLITUDE",
+		"CLIENT_MINIMUM_VERSION", "CLIENT_REVOKED_KEYS",
+	} {
+		t.Setenv(key, "obsolete")
 	}
-	for _, raw := range []string{"0", "-2", "abc", "NaN", "Inf"} {
-		t.Setenv("RANKING_FRESHNESS_AMPLITUDE", raw)
-		if got := positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0); got != 3.0 {
-			t.Errorf("ranking weight %q = %v, want the default", raw, got)
-		}
+	t.Setenv("APP_VERSION", "dev")
+	t.Setenv("CLIENT_ATTESTATION_ENABLED", "false")
+	cfg := Load()
+	if !cfg.ClientAttestationEnabled || !cfg.RunningProduction() || cfg.Version != buildVersion {
+		t.Fatal("retired environment settings changed production protection or build identity")
+	}
+	if cfg.AstroBox != (AstroBoxConfig{"AstralSightStudios", "AstroBox-Repo", "main", "index_v2.csv"}) {
+		t.Fatal("retired environment settings changed the official AstroBox target")
+	}
+	if cfg.BandBBS.APIURL != "https://www.bandbbs.cn/api" || cfg.GitHub.APIURL != "https://api.github.com" {
+		t.Fatal("retired environment settings changed official API endpoints")
+	}
+	if !slices.Equal(cfg.BandBBS.Scopes, ParseScopes(DefaultScopes)) || !slices.Equal(cfg.BandBBS.PublishScopes, ParseScopes(DefaultPublishScopes)) || !slices.Equal(cfg.GitHub.Scopes, ParseScopes("public_repo read:user")) {
+		t.Fatal("retired environment settings changed OAuth permissions")
+	}
+	if cfg.ConsoleRepository != "OronBoxCommunity/OronBox-Server-Console" || cfg.DeviceCatalog.Repository != "OronBoxCommunity/OronBox-Repo" || cfg.DeviceCatalog.Ref != "main" {
+		t.Fatal("retired environment settings changed configuration sources")
+	}
+	if cfg.MinimumClientVersion != "" || len(cfg.RevokedClientKeys) != 0 || cfg.Ranking.FreshnessAmplitude != 3 {
+		t.Fatal("retired environment settings changed runtime policy defaults")
 	}
 }
 

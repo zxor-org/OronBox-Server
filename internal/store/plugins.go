@@ -166,7 +166,7 @@ func (s *Store) setPluginState(ctx context.Context, id, state, reason, expected 
 				if state == "rejected" {
 					event = "plugin.rejected"
 				}
-				_, err = tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) SELECT $2,uploader_id,'moderation',$3,jsonb_build_object('plugin_id',id,'state',$4::text,'reason',$5::text),'','',id FROM plugins WHERE id=$1`, id, uuid.NewString(), event, state, reason)
+				_, err = tx.ExecContext(ctx, `INSERT INTO user_messages(id,user_id,kind,event,data,title,body,ref) SELECT $2,uploader_id,'moderation',$3,jsonb_build_object('plugin_id',id,'plugin_name',name,'version',version,'state',$4::text,'reason',$5::text),'','',id FROM plugins WHERE id=$1`, id, uuid.NewString(), event, state, reason)
 			}
 		}
 	} else {

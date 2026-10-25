@@ -48,10 +48,10 @@ func (adminAuthConn) CheckNamedValue(*driver.NamedValue) error { return nil }
 func (connection adminAuthConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	now := time.Now().UTC()
 	switch {
-	case strings.Contains(query, "FROM admin_sessions"):
+	case strings.Contains(query, "FROM admin_sessions") || strings.Contains(query, "UPDATE admin_sessions"):
 		return &adminAuthRows{
-			columns: []string{"id", "user_id", "username", "expires_at"},
-			values:  [][]driver.Value{{"test-session", "test-user", connection.role, now.Add(time.Hour)}},
+			columns: []string{"id", "user_id", "username", "expires_at", "absolute_expires_at", "generation", "rotated_at"},
+			values:  [][]driver.Value{{"test-session", "test-user", connection.role, now.Add(time.Hour), now.Add(7 * 24 * time.Hour), int64(0), now}},
 		}, nil
 	case strings.Contains(query, "FROM users WHERE id"):
 		return &adminAuthRows{
@@ -94,11 +94,11 @@ func adminPermissionTestApp(t *testing.T, role string) *App {
 	if err := os.MkdirAll(filepath.Join(target, "assets"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(target, "index.html"), []byte(`<html><head><meta name="csp-nonce" content="__CSP_NONCE__"></head><body><div id="root"></div><script src="/admin/assets/test.js"></script></body></html>`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(target, "index.html"), []byte(`<html><head><meta name="csp-nonce" content="__CSP_NONCE__"></head><body><div id="root"></div><script src="/console/assets/test.js"></script></body></html>`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	commit := strings.Repeat("a", 40)
-	if err := os.WriteFile(filepath.Join(target, "console.json"), []byte(`{"admin_api_contract":"oronbox-legacy-v1","commit":"`+commit+`"}`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(target, "console.json"), []byte(`{"admin_api_contract":"oronbox-console-v2","commit":"`+commit+`"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(target, "assets", "test.js"), []byte("void 0"), 0644); err != nil {
@@ -108,7 +108,7 @@ func adminPermissionTestApp(t *testing.T, role string) *App {
 		t.Fatal(err)
 	}
 	return &App{
-		cfg:       config.Config{ConsoleDirectory: root, PublicURL: "https://admin.example", SessionSecret: "test-session-secret"},
+		cfg:       config.Config{ConsoleDirectory: root, PublicURL: "https://console.example", SessionSecret: "test-session-secret"},
 		store:     store.New(db),
 		creator:   creator.New(db, nil, creator.Limits{}),
 		templates: web.NewTemplates(),
@@ -128,7 +128,7 @@ func performAdminRequestWithToken(t *testing.T, app *App, method, target, body, 
 		request.Header.Set("If-Match", "0")
 	}
 	if body != "" {
-		if strings.HasPrefix(target, "/admin/api/") {
+		if strings.HasPrefix(target, "/console/api/") {
 			request.Header.Set("Content-Type", "application/json")
 		} else {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -149,17 +149,19 @@ func performAdminRequestWithToken(t *testing.T, app *App, method, target, body, 
 // state, so the CSRF and origin guards are proven on all of them rather than on
 // whichever one happens to be convenient.
 var sensitiveAdminMutationPaths = []string{
-	"/admin/api/reviews/revision-1/decision",
-	"/admin/api/resources/resource-1/draft",
-	"/admin/api/resources/resource-1/draft/revision-1/submit",
-	"/admin/api/publications/publication-1",
-	"/admin/api/users/user-1/state",
-	"/admin/api/coins/users/user-1",
-	"/admin/api/devices/device-1",
-	"/admin/api/attributes",
-	"/admin/cleanup/preview",
-	"/admin/api/cleanup",
-	"/admin/api/plugins/plugin-1/metadata",
+	"/console/api/auth/refresh",
+	"/console/api/auth/logout",
+	"/console/api/reviews/revision-1/decision",
+	"/console/api/resources/resource-1/draft",
+	"/console/api/resources/resource-1/draft/revision-1/submit",
+	"/console/api/publications/publication-1",
+	"/console/api/users/user-1/state",
+	"/console/api/coins/users/user-1",
+	"/console/api/devices/device-1",
+	"/console/api/attributes",
+	"/console/cleanup/preview",
+	"/console/api/cleanup",
+	"/console/api/plugins/plugin-1/metadata",
 }
 
 func TestAdminRoutePermissionMatrix(t *testing.T) {
@@ -170,38 +172,38 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 		body     string
 		reviewer bool
 	}{
-		{name: "resource review", method: http.MethodPost, path: "/admin/api/reviews/revision-1/decision", body: `{"decision":"approve"}`, reviewer: true},
-		{name: "comment review", method: http.MethodPost, path: "/admin/api/comments/comment-1", body: `{"action":"approve"}`, reviewer: true},
-		{name: "comment bulk", method: http.MethodPost, path: "/admin/api/comments/bulk", body: `{"action":"approve","ids":["comment-1"]}`, reviewer: true},
-		{name: "collection review", method: http.MethodPost, path: "/admin/api/collections/review/revision-1", body: `{"approve":true}`, reviewer: true},
-		{name: "resource management revision", method: http.MethodPost, path: "/admin/api/resources/resource-1/draft/revision-1/governance", body: `{}`, reviewer: true},
-		{name: "collection management revision", method: http.MethodPost, path: "/admin/api/collections/collection-1", body: `{}`, reviewer: true},
-		{name: "plugin management revision", method: http.MethodPost, path: "/admin/api/plugins/plugin-1/metadata", body: `{}`, reviewer: true},
-		{name: "publication execution", method: http.MethodPost, path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
-		{name: "publication filtered batch retry", method: http.MethodPost, path: "/admin/api/publications/retry-failed", body: `{}`},
-		{name: "resource online state", method: http.MethodPost, path: "/admin/api/resources/resource-1/state", body: `{}`},
-		{name: "user state", method: http.MethodPost, path: "/admin/api/users/user-1/state", body: `{"action":"ban","reason":"spam"}`},
-		{name: "coin adjustment", method: http.MethodPost, path: "/admin/api/coins/users/user-1", body: `{}`},
-		{name: "device update", method: http.MethodPost, path: "/admin/api/devices/device-1", body: `{}`},
-		{name: "settings mutation", method: http.MethodPost, path: "/admin/api/attributes", body: `{}`},
-		{name: "moderation prompt", method: http.MethodPost, path: "/admin/api/moderation/prompt", body: `{}`},
-		{name: "release publishing", method: http.MethodPost, path: "/admin/api/releases", body: `{}`},
-		{name: "blob retry", method: http.MethodPost, path: "/admin/api/blobs/sha/requeue", body: `{}`},
-		{name: "maintenance preview", method: http.MethodPost, path: "/admin/cleanup/preview"},
+		{name: "resource review", method: http.MethodPost, path: "/console/api/reviews/revision-1/decision", body: `{"decision":"approve"}`, reviewer: true},
+		{name: "comment review", method: http.MethodPost, path: "/console/api/comments/comment-1", body: `{"action":"approve"}`, reviewer: true},
+		{name: "comment bulk", method: http.MethodPost, path: "/console/api/comments/bulk", body: `{"action":"approve","ids":["comment-1"]}`, reviewer: true},
+		{name: "collection review", method: http.MethodPost, path: "/console/api/collections/review/revision-1", body: `{"approve":true}`, reviewer: true},
+		{name: "resource management revision", method: http.MethodPost, path: "/console/api/resources/resource-1/draft/revision-1/governance", body: `{}`, reviewer: true},
+		{name: "collection management revision", method: http.MethodPost, path: "/console/api/collections/collection-1", body: `{}`, reviewer: true},
+		{name: "plugin management revision", method: http.MethodPost, path: "/console/api/plugins/plugin-1/metadata", body: `{}`, reviewer: true},
+		{name: "publication execution", method: http.MethodPost, path: "/console/api/publications/publication-1", body: `{"action":"requeue"}`},
+		{name: "publication filtered batch retry", method: http.MethodPost, path: "/console/api/publications/retry-failed", body: `{}`},
+		{name: "resource online state", method: http.MethodPost, path: "/console/api/resources/resource-1/state", body: `{}`},
+		{name: "user state", method: http.MethodPost, path: "/console/api/users/user-1/state", body: `{"action":"ban","reason":"spam"}`},
+		{name: "coin adjustment", method: http.MethodPost, path: "/console/api/coins/users/user-1", body: `{}`},
+		{name: "device update", method: http.MethodPost, path: "/console/api/devices/device-1", body: `{}`},
+		{name: "settings mutation", method: http.MethodPost, path: "/console/api/attributes", body: `{}`},
+		{name: "moderation prompt", method: http.MethodPost, path: "/console/api/moderation/prompt", body: `{}`},
+		{name: "release publishing", method: http.MethodPost, path: "/console/api/releases", body: `{}`},
+		{name: "blob retry", method: http.MethodPost, path: "/console/api/blobs/sha/requeue", body: `{}`},
+		{name: "maintenance preview", method: http.MethodPost, path: "/console/cleanup/preview"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			for _, role := range []string{"reviewer", "admin"} {
 				t.Run(role, func(t *testing.T) {
-					recorder := performAdminRequest(t, adminPermissionTestApp(t, role), test.method, test.path, test.body, "https://admin.example")
+					recorder := performAdminRequest(t, adminPermissionTestApp(t, role), test.method, test.path, test.body, "https://console.example")
 					if role == "reviewer" && !test.reviewer {
 						if recorder.Code != http.StatusForbidden {
 							t.Fatalf("reviewer status = %d, want 403; body=%q", recorder.Code, recorder.Body.String())
 						}
 						return
 					}
-					if recorder.Code == http.StatusForbidden || recorder.Code == http.StatusTemporaryRedirect || recorder.Code == http.StatusFound && recorder.Header().Get("Location") == "/admin/login" {
+					if recorder.Code == http.StatusForbidden || recorder.Code == http.StatusTemporaryRedirect || recorder.Code == http.StatusFound && recorder.Header().Get("Location") == "/console/login" {
 						t.Fatalf("%s was rejected by authorization: status=%d body=%q", role, recorder.Code, recorder.Body.String())
 					}
 				})
@@ -212,7 +214,7 @@ func TestAdminRoutePermissionMatrix(t *testing.T) {
 
 // Reviewers can load their review page; admin-only writes remain JSON 403s.
 func TestReviewerPageLoadsTheConsoleAndMutationsStayBlocked(t *testing.T) {
-	page := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodGet, "/admin/review", "", "")
+	page := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodGet, "/console/reviews", "", "")
 	if page.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", page.Code)
 	}
@@ -221,7 +223,7 @@ func TestReviewerPageLoadsTheConsoleAndMutationsStayBlocked(t *testing.T) {
 		t.Errorf("SPA page load should serve the console: %s", body)
 	}
 
-	write := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/admin/api/users/user-1/state", `{"action":"ban","reason":"spam"}`, "https://admin.example")
+	write := performAdminRequest(t, adminPermissionTestApp(t, "reviewer"), http.MethodPost, "/console/api/users/user-1/state", `{"action":"ban","reason":"spam"}`, "https://console.example")
 	if write.Code != http.StatusForbidden {
 		t.Fatalf("blocked write status = %d, want 403", write.Code)
 	}
@@ -231,7 +233,7 @@ func TestReviewerPageLoadsTheConsoleAndMutationsStayBlocked(t *testing.T) {
 }
 
 func TestRevokedAdminRoleInvalidatesExistingSession(t *testing.T) {
-	recorder := performAdminRequest(t, adminPermissionTestApp(t, "user"), http.MethodGet, "/admin/review", "", "")
+	recorder := performAdminRequest(t, adminPermissionTestApp(t, "user"), http.MethodGet, "/console/reviews", "", "")
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status=%d, want 403; body=%q", recorder.Code, recorder.Body.String())
 	}
@@ -261,7 +263,7 @@ func TestEverySensitiveAdminMutationRequiresCSRFToken(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			for name, token := range map[string]string{"absent": "", "forged": "not-the-session-token"} {
 				t.Run(name, func(t *testing.T) {
-					recorder := performAdminRequestWithToken(t, adminPermissionTestApp(t, "admin"), http.MethodPost, path, "action=test", "https://admin.example", token)
+					recorder := performAdminRequestWithToken(t, adminPermissionTestApp(t, "admin"), http.MethodPost, path, "action=test", "https://console.example", token)
 					if recorder.Code != http.StatusForbidden {
 						t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
 					}
@@ -278,7 +280,7 @@ func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 	body := url.Values{
 		web.CSRFFieldName: {app.adminCSRFToken("test-session")},
 	}.Encode()
-	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/admin/cleanup/preview", body, "https://admin.example", "")
+	recorder := performAdminRequestWithToken(t, app, http.MethodPost, "/console/cleanup/preview", body, "https://console.example", "")
 	if recorder.Code == http.StatusForbidden {
 		t.Fatalf("hidden CSRF field was not accepted: body=%q", recorder.Body.String())
 	}
@@ -286,12 +288,12 @@ func TestAdminMutationAcceptsCSRFTokenFromHiddenFormField(t *testing.T) {
 
 func TestAdminStateMutationsExposeConflictWithoutLeakingBackendDetails(t *testing.T) {
 	tests := []struct{ path, body string }{
-		{path: "/admin/api/publications/publication-1", body: `{"action":"requeue"}`},
-		{path: "/admin/api/resources/resource-1/draft/revision-1/submit", body: "{}"},
+		{path: "/console/api/publications/publication-1", body: `{"action":"requeue"}`},
+		{path: "/console/api/resources/resource-1/draft/revision-1/submit", body: "{}"},
 	}
 	for _, test := range tests {
 		t.Run(test.path, func(t *testing.T) {
-			recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, test.path, test.body, "https://admin.example")
+			recorder := performAdminRequest(t, adminPermissionTestApp(t, "admin"), http.MethodPost, test.path, test.body, "https://console.example")
 			if recorder.Code != http.StatusConflict {
 				t.Fatalf("status=%d, want 409; body=%q", recorder.Code, recorder.Body.String())
 			}
@@ -303,7 +305,7 @@ func TestAdminStateMutationsExposeConflictWithoutLeakingBackendDetails(t *testin
 }
 
 func TestAnonymousAdminPagesRedirectToLogin(t *testing.T) {
-	for _, path := range []string{"/admin/review", "/admin/comments", "/admin/resources"} {
+	for _, path := range []string{"/console/reviews", "/console/comments", "/console/resources"} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
@@ -311,7 +313,7 @@ func TestAnonymousAdminPagesRedirectToLogin(t *testing.T) {
 			if recorder.Code != http.StatusFound && recorder.Code != http.StatusSeeOther && recorder.Code != http.StatusTemporaryRedirect {
 				t.Fatalf("anonymous status=%d, want redirect to login; location=%q body=%q", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 			}
-			if loc := recorder.Header().Get("Location"); !strings.Contains(loc, "/admin/login") {
+			if loc := recorder.Header().Get("Location"); !strings.Contains(loc, "/console/login") {
 				t.Fatalf("anonymous location=%q, want login", loc)
 			}
 		})
@@ -331,13 +333,34 @@ func TestPluginPackageMultipartUploadRequiresCSRFToken(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/admin/resources/resource-1/draft/revision-1/media", &body)
+	request := httptest.NewRequest(http.MethodPost, "/console/resources/resource-1/draft/revision-1/media", &body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
-	request.Header.Set("Origin", "https://admin.example")
+	request.Header.Set("Origin", "https://console.example")
 	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: "test-session"})
 	recorder := httptest.NewRecorder()
 	adminPermissionTestApp(t, "admin").Routes().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("multipart upload without CSRF token: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestConsoleEntryAssetsAndUnknownRoutes(t *testing.T) {
+	app := adminPermissionTestApp(t, "admin")
+	for _, path := range []string{"/admin", "/admin/login", "/admin/api/session", "/console/nonexistent", "/console/api/nonexistent", "/console/assets/missing.js"} {
+		recorder := httptest.NewRecorder()
+		app.Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("%s status=%d, want 404", path, recorder.Code)
+		}
+	}
+	for _, path := range []string{"/console/login", "/console/assets/test.js"} {
+		recorder := httptest.NewRecorder()
+		app.Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("public Console entry %s status=%d", path, recorder.Code)
+		}
+		if path == "/console/login" && (!strings.Contains(recorder.Body.String(), `standalone-card login-card`) || !strings.Contains(recorder.Body.String(), `/console/api/auth/bandbbs/authorize`)) {
+			t.Fatal("rewrite login gate was lost")
+		}
 	}
 }

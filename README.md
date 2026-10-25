@@ -58,3 +58,11 @@ go test ./...
 OronBox Server 采用 [GNU Affero General Public License v3.0](LICENSE) 许可证
 
 OronBox Server is licensed under the [GNU Affero General Public License v3.0](LICENSE)
+
+## 部署配置
+
+生产 `.env` 以 `.env.example` 为准，仅保存凭据、实例地址、回调、存储及实际运维覆盖项。官方 API 地址、OAuth 权限、AstroBox 官方索引位置和 Gitea 配置仓库由代码统一定义；审核、排序与客户端版本策略通过 Console 保存到数据库。
+
+`APP_VERSION`、`GIT_COMMIT` 不再从环境读取。普通构建版本标记为 `unreleased`，提交号取 Go 的 VCS 构建信息，脏工作区附带 `-dirty`。正式发布时通过链接参数 `-X github.com/zxor-org/OronBox-Server/internal/config.buildVersion=<实际版本>` 注入版本；Docker 构建对应 `BUILD_VERSION`、`BUILD_COMMIT` 两个 build args。这些参数不进入运行 `.env`，默认构建也会执行生产配置校验。
+
+令牌有效期、限频、上传及保留周期使用代码默认值；确需调整时保留相应环境覆盖项。升级时保留现有凭据和存储卷，不以示例配置覆盖本地存档或生产凭据。

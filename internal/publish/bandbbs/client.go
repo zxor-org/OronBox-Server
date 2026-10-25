@@ -65,9 +65,11 @@ type snapshot struct {
 }
 
 type target struct {
-	CategoryID int    `json:"category_id"`
-	PrefixID   int    `json:"prefix_id"`
-	PackageID  string `json:"package_id"`
+	CategoryID     int    `json:"category_id"`
+	PrefixID       int    `json:"prefix_id"`
+	ThreadPrefixID int    `json:"thread_prefix_id"`
+	ForumID        int    `json:"forum_id"`
+	PackageID      string `json:"package_id"`
 }
 
 type config struct {
@@ -297,6 +299,9 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		if target.PrefixID > 0 {
 			form.Set("prefix_id", strconv.Itoa(target.PrefixID))
 		}
+		if target.ThreadPrefixID > 0 {
+			form.Set("thread_prefix_id", strconv.Itoa(target.ThreadPrefixID))
+		}
 		if existingID == "" {
 			form.Set("resource_category_id", category)
 			if externalPurchase {
@@ -319,8 +324,9 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		}
 		var response struct {
 			Resource struct {
-				ID      int    `json:"resource_id"`
-				ViewURL string `json:"view_url"`
+				ID                 int    `json:"resource_id"`
+				DiscussionThreadID int    `json:"discussion_thread_id"`
+				ViewURL            string `json:"view_url"`
 			} `json:"resource"`
 		}
 		endpoint := c.apiURL + "/resources/"
@@ -335,6 +341,10 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		}
 		if response.Resource.ID == 0 {
 			return result, fmt.Errorf("BandBBS returned no resource id for category %d", target.CategoryID)
+		}
+		if target.ThreadPrefixID > 0 && response.Resource.DiscussionThreadID > 0 {
+			threadForm := url.Values{"prefix_id": {strconv.Itoa(target.ThreadPrefixID)}}
+			_ = c.request(ctx, token, http.MethodPost, c.apiURL+"/threads/"+strconv.Itoa(response.Resource.DiscussionThreadID)+"/", strings.NewReader(threadForm.Encode()), "application/x-www-form-urlencoded", nil)
 		}
 		resourceID := strconv.Itoa(response.Resource.ID)
 		categoryResult.ResourceID = resourceID

@@ -82,7 +82,7 @@ func mediaJSON(items []store.AdminMedia) []map[string]any {
 		media = append(media, map[string]any{
 			"id": mediaItem.ID, "sha256": mediaItem.SHA256, "role": mediaItem.Role, "position": mediaItem.Position,
 			"width": mediaItem.Width, "height": mediaItem.Height, "size": mediaItem.SizeBytes,
-			"url": "/admin/blobs/" + mediaItem.SHA256,
+			"url": "/console/blobs/" + mediaItem.SHA256,
 		})
 	}
 	return media
@@ -95,7 +95,7 @@ func artifactJSON(items []store.AdminArtifact) []map[string]any {
 			"id": artifact.ID, "name": artifact.OriginalName, "version": artifact.Version, "size": artifact.SizeBytes,
 			"package_format": artifact.PackageFormat, "package_id": artifact.PackageID, "analysis": artifact.Analysis,
 			"devices": artifact.Devices, "device_bindings": artifact.DeviceBindings, "sha256": artifact.SHA256,
-			"url": "/admin/blobs/" + artifact.SHA256,
+			"url": "/console/blobs/" + artifact.SHA256,
 		})
 	}
 	return artifacts

@@ -3,7 +3,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/oronbox-server ./cmd/server
+ARG BUILD_VERSION=unreleased
+ARG BUILD_COMMIT
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/zxor-org/OronBox-Server/internal/config.buildVersion=${BUILD_VERSION} -X github.com/zxor-org/OronBox-Server/internal/config.buildCommit=${BUILD_COMMIT}" -o /out/oronbox-server ./cmd/server
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata && addgroup -S oronbox && adduser -S -G oronbox oronbox

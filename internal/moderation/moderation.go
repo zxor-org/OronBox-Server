@@ -55,11 +55,13 @@ func (s *Service) Enabled() bool {
 }
 
 func (s *Service) Review(ctx context.Context, prompt, text string) (Verdict, error) {
+	var primaryErr error
 	if s.primary.APIKey != "" {
 		verdict, err := s.reviewWith(ctx, s.primary, prompt, text)
 		if err == nil {
 			return verdict, nil
 		}
+		primaryErr = err
 		if s.fallback.APIKey == "" {
 			return Verdict{}, errors.Join(ErrUnavailable, err)
 		}
@@ -69,7 +71,7 @@ func (s *Service) Review(ctx context.Context, prompt, text string) (Verdict, err
 		if err == nil {
 			return verdict, nil
 		}
-		return Verdict{}, errors.Join(ErrUnavailable, err)
+		return Verdict{}, errors.Join(ErrUnavailable, primaryErr, err)
 	}
 	return Verdict{}, ErrUnavailable
 }

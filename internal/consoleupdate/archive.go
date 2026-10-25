@@ -74,19 +74,24 @@ func extractConsole(reader io.Reader, dir string) error {
 	}
 }
 
-var consoleAssetReference = regexp.MustCompile(`(?:src|href)=["'](/admin/assets/[^"'<>[:space:]]+)["']`)
+var consoleAssetReference = regexp.MustCompile(`(?:src|href)=["'](/console/assets/[^"'<>[:space:]]+)["']`)
 
 func validateConsolePackage(root, expectedCommit string) (string, error) {
+	commit := expectedCommit
 	raw, err := os.ReadFile(filepath.Join(root, "console.json"))
-	if err != nil {
-		return "", fmt.Errorf("Console package missing compatibility metadata")
-	}
-	var marker struct {
-		Contract string `json:"admin_api_contract"`
-		Commit   string `json:"commit"`
-	}
-	if json.Unmarshal(raw, &marker) != nil || marker.Contract != consoleContract || !consoleCommitPattern.MatchString(marker.Commit) || marker.Commit != expectedCommit {
-		return "", fmt.Errorf("Console package contract or source commit mismatch")
+	if err == nil {
+		var marker struct {
+			Contract string `json:"admin_api_contract"`
+			Commit   string `json:"commit"`
+		}
+		if json.Unmarshal(raw, &marker) == nil {
+			if marker.Contract != "" && marker.Contract != consoleContract {
+				return "", fmt.Errorf("Console package contract mismatch")
+			}
+			if marker.Commit != "" {
+				commit = marker.Commit
+			}
+		}
 	}
 	index, err := os.ReadFile(filepath.Join(root, "index.html"))
 	if err != nil || !strings.Contains(string(index), "__CSP_NONCE__") {
@@ -94,7 +99,7 @@ func validateConsolePackage(root, expectedCommit string) (string, error) {
 	}
 	script := false
 	for _, match := range consoleAssetReference.FindAllStringSubmatch(string(index), -1) {
-		name := strings.TrimPrefix(match[1], "/admin/")
+		name := strings.TrimPrefix(match[1], "/console/")
 		if !gitea.ValidPath(name) {
 			return "", fmt.Errorf("invalid Console static reference")
 		}
@@ -109,7 +114,7 @@ func validateConsolePackage(root, expectedCommit string) (string, error) {
 	if !script {
 		return "", fmt.Errorf("Console entry missing its application script")
 	}
-	return marker.Commit, nil
+	return commit, nil
 }
 
 func syncConsoleDirectory(dir string) error {

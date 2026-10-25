@@ -94,6 +94,7 @@ func (s *Store) OAuthGrant(ctx context.Context, userID, provider string) (OAuthG
 }
 
 type LoginTicketParams struct {
+	Purpose     string
 	TicketHash  []byte
 	UserID      string
 	ExpiresAt   time.Time
@@ -167,10 +168,13 @@ ON CONFLICT(user_id,provider) DO UPDATE SET subject=excluded.subject, scopes=exc
 
 func (s *Store) CreateLoginTicket(ctx context.Context, params LoginTicketParams) (string, error) {
 	id := uuid.NewString()
+	if params.Purpose == "" {
+		params.Purpose = "client_login"
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO login_tickets(id,ticket_hash,user_id,expires_at,app_id,platform,return_uri,token_cipher)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, params.TicketHash, params.UserID, params.ExpiresAt,
-		params.Meta.AppID, params.Meta.Platform, params.ReturnURI, nullableBytes(params.TokenCipher))
+INSERT INTO login_tickets(id,ticket_hash,user_id,expires_at,app_id,platform,return_uri,token_cipher,purpose)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, params.TicketHash, params.UserID, params.ExpiresAt,
+		params.Meta.AppID, params.Meta.Platform, params.ReturnURI, nullableBytes(params.TokenCipher), params.Purpose)
 	return id, err
 }
 
@@ -187,7 +191,7 @@ func (s *Store) ConsumeLoginTicket(ctx context.Context, ticketHash []byte, sessi
 	err = tx.QueryRowContext(ctx, `
 SELECT t.id::text,`+userColumnsAliased+`,COALESCE(t.token_cipher,''::bytea)
 FROM login_tickets t JOIN users u ON u.id=t.user_id
-WHERE t.ticket_hash=$1 AND t.used_at IS NULL AND t.expires_at>now() AND u.banned_at IS NULL FOR UPDATE`, ticketHash).
+WHERE t.ticket_hash=$1 AND t.purpose IN('client_login','client_publish') AND t.app_id=$2 AND t.platform=$3 AND t.used_at IS NULL AND t.expires_at>now() AND u.banned_at IS NULL FOR UPDATE`, ticketHash, session.Meta.AppID, session.Meta.Platform).
 		Scan(scanner.dest([]any{&ticketID}, []any{&tokenCipher})...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, nil, ErrInvalidCredential
@@ -303,35 +307,6 @@ func nullableBytes(value []byte) any {
 	return value
 }
 
-// ConsumeLoginTicketIdentity marks a login ticket as used and returns the
-// user identity without creating a OronBox session.
-func (s *Store) ConsumeLoginTicketIdentity(ctx context.Context, ticketHash []byte) (model.User, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return model.User{}, err
-	}
-	defer tx.Rollback()
-	var user model.User
-	scanner := newUserScanner(&user)
-	var ticketID string
-	err = tx.QueryRowContext(ctx, `SELECT t.id::text,`+userColumnsAliased+`
- FROM login_tickets t JOIN users u ON u.id=t.user_id
- WHERE t.ticket_hash=$1 AND t.used_at IS NULL AND t.expires_at>now() AND u.banned_at IS NULL FOR UPDATE`, ticketHash).Scan(scanner.dest([]any{&ticketID}, nil)...)
-	if errors.Is(err, sql.ErrNoRows) {
-		return user, ErrInvalidCredential
-	}
-	if err != nil {
-		return user, err
-	}
-	scanner.finish()
-	if _, err = tx.ExecContext(ctx, `UPDATE login_tickets SET used_at=now() WHERE id=$1`, ticketID); err != nil {
-		return user, err
-	}
-	return user, tx.Commit()
-}
-
-// Use the locked connection for all work to avoid pool exhaustion while waiting
-// for another process to refresh the same grant.
 func (s *Store) WithOAuthGrantLock(ctx context.Context, userID, provider string, work func(*Store) error) error {
 	db := s.db.(*sql.DB)
 	conn, err := db.Conn(ctx)

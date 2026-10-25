@@ -29,7 +29,7 @@ func (query AdminReviewQuery) normalized() AdminReviewQuery {
 	if query.Target != "oronbox" && query.Target != "bandbbs" && query.Target != "astrobox" {
 		query.Target = ""
 	}
-	if query.State != "pending" && query.State != "approved" && query.State != "rejected" && query.State != "superseded" {
+	if query.State != "done" && query.State != "pending" && query.State != "approved" && query.State != "rejected" && query.State != "superseded" {
 		query.State = ""
 	}
 	if query.From != nil && query.To != nil && query.From.After(*query.To) {
@@ -95,7 +95,9 @@ func (s *Store) AdminReviews(ctx context.Context, raw AdminReviewQuery) (AdminRe
 	if query.Owner != "" {
 		add(`(owner.id::text=? OR owner.username ILIKE '%'||?||'%')`, query.Owner)
 	}
-	if query.State != "" {
+	if query.State == "done" {
+		where = append(where, `review.state <> 'pending'`)
+	} else if query.State != "" {
 		add(`review.state=?`, query.State)
 	}
 	if query.From != nil {

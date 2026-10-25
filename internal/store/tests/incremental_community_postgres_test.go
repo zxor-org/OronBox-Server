@@ -153,7 +153,7 @@ func TestIncrementalNestedRepliesAndCreatorNotification(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT id::text FROM resource_comments WHERE parent_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`, top.ID).Scan(&target); err != nil {
 		t.Fatal(err)
 	}
-	thread, err := s.CommentThread(ctx, target, store.CommunityCursor{}, store.CommunityCursor{}, 20)
+	thread, err := s.CommentThread(ctx, target, store.CommunityCursor{}, store.CommunityCursor{}, 20, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestIncrementalNestedRepliesAndCreatorNotification(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `UPDATE resource_comments SET moderation_state='hidden' WHERE id=$1`, top.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CommentThread(ctx, target, store.CommunityCursor{}, store.CommunityCursor{}, 20); err != store.ErrCommentNotFound {
+	if _, err := s.CommentThread(ctx, target, store.CommunityCursor{}, store.CommunityCursor{}, 20, ""); err != store.ErrCommentNotFound {
 		t.Fatalf("hidden root leaked: %v", err)
 	}
 

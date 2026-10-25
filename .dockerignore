@@ -3,3 +3,8 @@
 data
 tmp
 *.db
+
+.env.*
+!.env.example
+backups
+.DS_Store

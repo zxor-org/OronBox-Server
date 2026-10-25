@@ -27,7 +27,7 @@ func (a *App) handleLegalDocument(w http.ResponseWriter, r *http.Request) {
 	online := a.content.legal
 	a.content.mu.RUnlock()
 	for _, doc := range online.Documents {
-		if doc.ID == name {
+		if doc.ID == name && doc.Revision >= bundledLegalRevision(name) {
 			if requested := r.URL.Query().Get("revision"); requested != "" && requested != strconv.Itoa(doc.Revision) {
 				httpx.WriteJSON(w, 409, httpx.ErrorBody("legal_revision_changed", "reload legal manifest"))
 				return
@@ -45,11 +45,12 @@ func (a *App) handleLegalDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.URL.Query().Get("revision") != "" && r.URL.Query().Get("revision") != "1" {
+	revision := bundledLegalRevision(name)
+	if r.URL.Query().Get("revision") != "" && r.URL.Query().Get("revision") != strconv.Itoa(revision) {
 		httpx.WriteJSON(w, 503, httpx.ErrorBody("legal_unavailable", "requested legal revision unavailable"))
 		return
 	}
-	w.Header().Set("X-Legal-Revision", "1")
+	w.Header().Set("X-Legal-Revision", strconv.Itoa(revision))
 	language := preferredLanguage(r)
 	data, err := legal.Documents.ReadFile("docs/" + name + "." + language + ".md")
 	if err != nil {
@@ -61,6 +62,13 @@ func (a *App) handleLegalDocument(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Vary", "Accept-Language")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	_, _ = w.Write(data)
+}
+
+func bundledLegalRevision(name string) int {
+	if name == "terms" || name == "privacy" {
+		return 2
+	}
+	return 1
 }
 
 func preferredLanguage(r *http.Request) string {

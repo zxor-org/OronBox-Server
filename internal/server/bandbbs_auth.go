@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -57,6 +58,9 @@ func (a *App) startBandBBSAuthorization(r *http.Request, purpose, userID, reques
 		return "", err
 	}
 	returnURI := a.cfg.ClientRedirectURI
+	if !a.allowedReturnURI(returnURI) {
+		return "", fmt.Errorf("invalid client return URI")
+	}
 	scopes := a.cfg.BandBBS.Scopes
 	if purpose == "publish" {
 		if len(a.cfg.BandBBS.PublishScopes) == 0 {
@@ -73,7 +77,7 @@ func (a *App) startBandBBSAuthorization(r *http.Request, purpose, userID, reques
 		ExpiresAt: time.Now().UTC().Add(a.cfg.StateTTL),
 		Meta:      meta,
 		ReturnURI: returnURI,
-		Purpose:   purpose,
+		Purpose:   "client_" + purpose,
 		UserID:    userID,
 	})
 	if err != nil {
@@ -85,10 +89,10 @@ func (a *App) startBandBBSAuthorization(r *http.Request, purpose, userID, reques
 }
 
 func (a *App) allowedReturnURI(candidate string) bool {
-	if candidate == a.cfg.ClientRedirectURI {
-		return true
+	if parsed, err := url.Parse(candidate); err == nil && strings.HasPrefix(path.Clean(parsed.Path), "/console") {
+		return false
 	}
-	if strings.TrimRight(candidate, "/") == strings.TrimRight(a.cfg.PublicURL, "/")+"/admin" {
+	if candidate == a.cfg.ClientRedirectURI {
 		return true
 	}
 	parsed, err := url.Parse(candidate)
@@ -100,6 +104,10 @@ func (a *App) allowedReturnURI(candidate string) bool {
 }
 
 func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Query().Get("state"), "admin_") {
+		a.handleConsoleBandBBSCallback(w, r)
+		return
+	}
 	start := time.Now()
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	stateID := strings.TrimSpace(r.URL.Query().Get("state"))
@@ -114,6 +122,10 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/failed?error=invalid_state", http.StatusFound)
 		return
 	}
+	if state.Purpose != "client_login" && state.Purpose != "client_publish" {
+		http.Redirect(w, r, "/auth/failed?error=invalid_state", http.StatusFound)
+		return
+	}
 	meta := model.ClientMeta{AppID: state.AppID, Version: state.AppVersion, Build: state.AppBuild, Platform: state.Platform, IP: state.IP, UA: state.UserAgent}
 	token, err := a.bandbbs.ExchangeCode(r.Context(), code)
 	if err != nil {
@@ -123,7 +135,7 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	requiredScopes := a.cfg.BandBBS.Scopes
 	grantProvider := ProviderBandBBS
-	if state.Purpose == "publish" {
+	if state.Purpose == "client_publish" {
 		requiredScopes = mergeScopes(a.cfg.BandBBS.Scopes, a.cfg.BandBBS.PublishScopes)
 		grantProvider = "bandbbs_publish"
 	}
@@ -134,7 +146,7 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/auth/failed?error=scope_mismatch", http.StatusFound)
 		return
 	}
-	if state.Purpose != "publish" && bandbbs.HasWriteScopes(actualScopes) {
+	if state.Purpose != "client_publish" && bandbbs.HasWriteScopes(actualScopes) {
 		a.revokePair(r, token)
 		http.Redirect(w, r, "/auth/failed?error=scope_mismatch", http.StatusFound)
 		return
@@ -206,7 +218,7 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tokenCipher []byte
-	if state.Purpose != "publish" {
+	if state.Purpose != "client_publish" {
 		// The login grant is read-only: hand the access token (never the
 		// refresh token) to the client through the login ticket so the app
 		// can query BandBBS directly.
@@ -226,18 +238,13 @@ func (a *App) handleBandBBSCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ticket, ticketID, err := a.createTicket(r, meta, user.ID, state.ReturnURI, tokenCipher)
+	ticket, ticketID, err := a.createTicket(r, meta, user.ID, state.ReturnURI, tokenCipher, state.Purpose)
 	if err != nil {
 		a.recordEvent(r, "ticket_create", "failure", meta, stateID, "", providerUserID, "", actualScopes, "ticket_create_failed", err.Error(), start)
 		http.Redirect(w, r, "/auth/failed?error=ticket_create_failed", http.StatusFound)
 		return
 	}
 	a.recordEvent(r, "callback", "success", meta, stateID, ticketID, providerUserID, "", actualScopes, "", "", start)
-	target := appendQuery(state.ReturnURI, "ticket", ticket)
-	if strings.TrimRight(state.ReturnURI, "/") == strings.TrimRight(a.cfg.PublicURL, "/")+"/admin" {
-		http.Redirect(w, r, target, http.StatusSeeOther)
-		return
-	}
 	transitionTarget, err := a.loginTransitionTarget(state.ReturnURI, ticket)
 	if err != nil {
 		a.recordEvent(r, "callback", "failure", meta, stateID, ticketID, providerUserID, "", actualScopes, "invalid_return_uri", err.Error(), start)

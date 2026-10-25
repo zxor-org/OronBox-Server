@@ -52,26 +52,6 @@ type ClientStats struct {
 	LastSeen     string `json:"last_seen"`
 }
 
-func (s *Store) CreateAdminSession(ctx context.Context, id, userID, username, ip, ua string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO admin_sessions (id, created_at, expires_at, user_id, username, ip, user_agent)
-VALUES ($1, now(), $2, $3, $4, NULLIF($5,'')::inet, $6)`, id, expiresAt, userID, username, ip, ua)
-	return err
-}
-
-func (s *Store) AdminSession(ctx context.Context, id string) (AdminSession, error) {
-	var session AdminSession
-	row := s.db.QueryRowContext(ctx, `SELECT id, user_id::text, username, expires_at FROM admin_sessions WHERE id = $1`, id)
-	if err := row.Scan(&session.ID, &session.UserID, &session.Username, &session.ExpiresAt); err != nil {
-		return session, err
-	}
-	if time.Now().UTC().After(session.ExpiresAt) {
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE id=$1`, id)
-		return session, sql.ErrNoRows
-	}
-	return session, nil
-}
-
 func (s *Store) DeleteAdminSession(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_sessions WHERE id = $1`, id)
 	return err

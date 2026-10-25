@@ -7,7 +7,7 @@ import (
 
 func TestAdminAuditQueryKeepsCSVAndListFiltersAligned(t *testing.T) {
 	t.Parallel()
-	request := httptest.NewRequest("GET", "/admin/audit.csv?q=blob.read&result=success&target_type=blob&target_id=abc&actor_user_id=actor&from=2026-08-01&to=2026-08-10&page=7&per_page=50", nil)
+	request := httptest.NewRequest("GET", "/console/audit.csv?q=blob.read&result=success&target_type=blob&target_id=abc&actor_user_id=actor&from=2026-08-01&to=2026-08-10&page=7&per_page=50", nil)
 	query := adminAuditQuery(request)
 	if query.Search != "blob.read" || query.Result != "success" || query.TargetType != "blob" || query.TargetID != "abc" || query.ActorUserID != "actor" || query.Page != 7 || query.PerPage != 50 || query.From == nil || query.To == nil {
 		t.Fatalf("query = %#v", query)

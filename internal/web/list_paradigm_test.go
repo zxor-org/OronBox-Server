@@ -66,7 +66,7 @@ func TestCommentRowActionsAreNotNestedInsideTheBulkForm(t *testing.T) {
 	if !ok {
 		t.Skip("legacy comment templates have been removed")
 	}
-	start := strings.Index(source, `action="/admin/comments/bulk"`)
+	start := strings.Index(source, `action="/console/comments/bulk"`)
 	if start < 0 {
 		t.Fatal("comment bulk form is missing")
 	}

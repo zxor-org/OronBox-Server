@@ -45,21 +45,21 @@ func inferLegacyAuditData(action, message string) AuditData {
 func (target AuditTarget) AdminURL() string {
 	switch target.Type {
 	case "resource":
-		return "/admin/resources/" + target.ID
+		return "/console/resources/" + target.ID
 	case "user":
-		return "/admin/users/" + target.ID
+		return "/console/users/" + target.ID
 	case "ticket":
-		return "/admin/reports/" + target.ID
+		return "/console/reports/" + target.ID
 	case "feedback":
-		return "/admin/feedback/" + target.ID
+		return "/console/feedback/" + target.ID
 	case "blob":
-		return "/admin/storage/blobs/" + target.ID
+		return "/console/storage/blobs/" + target.ID
 	case "plugin":
-		return "/admin/plugins/" + target.ID
+		return "/console/plugins/" + target.ID
 	case "collection":
-		return "/admin/collections/" + target.ID
+		return "/console/collections/" + target.ID
 	case "publication":
-		return "/admin/publications/" + target.ID
+		return "/console/publications/" + target.ID
 	default:
 		return ""
 	}

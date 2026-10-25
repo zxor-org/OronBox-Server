@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/url"
 	"os"
@@ -17,7 +16,7 @@ import (
 )
 
 const DefaultScopes = "user:read resource_check:read resource:read resource_category:read resource_rating:read thread:read"
-const DefaultPublishScopes = "attachment:write resource:write"
+const DefaultPublishScopes = "attachment:read attachment:write resource:write thread:write"
 
 type Config struct {
 	ConsoleRepository        string
@@ -165,14 +164,13 @@ type RetentionConfig struct{ Unpublished, Audit, Feedback, OrphanBlobs, Interval
 
 func Load() Config {
 	master, _ := hex.DecodeString(env("ORONBOX_AUTH_MASTER", ""))
+	version, commit := buildMetadata()
 	return Config{
-		ConsoleRepository:        env("GITEA_CONSOLE_REPO", "OronBoxCommunity/OronBox-Server-Console"),
+		ConsoleRepository:        "OronBoxCommunity/OronBox-Server-Console",
 		ConsoleDirectory:         env("CONSOLE_DIR", ""),
-		ClientAttestationEnabled: boolEnv("CLIENT_ATTESTATION_ENABLED", true),
+		ClientAttestationEnabled: true,
 		AttestationMasterKey:     master,
-		MinimumClientVersion:     env("CLIENT_MINIMUM_VERSION", ""),
-		RevokedClientKeys:        strings.Fields(strings.ReplaceAll(env("CLIENT_REVOKED_KEYS", ""), ",", " ")),
-		DeviceCatalog:            DeviceCatalogConfig{BaseURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"), Repository: env("GITEA_CATALOG_REPO", "OronBoxCommunity/OronBox-Repo"), Ref: env("GITEA_CATALOG_REF", "main"), Token: env("GITEA_BOT_TOKEN", "")},
+		DeviceCatalog:            DeviceCatalogConfig{BaseURL: strings.TrimRight(env("GITEA_URL", "https://git.zxor.org"), "/"), Repository: "OronBoxCommunity/OronBox-Repo", Ref: "main", Token: env("GITEA_BOT_TOKEN", "")},
 		Addr:                     env("ADDR", ":8080"),
 		PublicURL:                strings.TrimRight(env("PUBLIC_URL", "http://localhost:8080"), "/"),
 		DatabaseURL:              env("DATABASE_URL", "postgres://oronbox:oronbox@127.0.0.1:5432/oronbox?sslmode=disable"),
@@ -182,30 +180,30 @@ func Load() Config {
 			ClientID:      env("BANDBBS_CLIENT_ID", ""),
 			ClientSecret:  env("BANDBBS_CLIENT_SECRET", ""),
 			RedirectURI:   env("BANDBBS_REDIRECT_URI", "http://localhost:8080/oauth2/bandbbs/callback"),
-			AuthorizeURL:  env("BANDBBS_AUTHORIZE_URL", "https://www.bandbbs.cn/oauth2/authorize"),
-			TokenURL:      env("BANDBBS_TOKEN_URL", "https://www.bandbbs.cn/api/oauth2/token"),
-			MeURL:         env("BANDBBS_ME_URL", "https://www.bandbbs.cn/api/me"),
-			APIURL:        strings.TrimRight(env("BANDBBS_API_URL", "https://www.bandbbs.cn/api"), "/"),
-			IntrospectURL: env("BANDBBS_INTROSPECT_URL", "https://www.bandbbs.cn/api/oauth2/introspect"),
-			RevokeURL:     env("BANDBBS_REVOKE_URL", "https://www.bandbbs.cn/api/oauth2/revoke"),
-			Scopes:        ParseScopes(env("BANDBBS_SCOPES", DefaultScopes)),
-			PublishScopes: ParseScopes(env("BANDBBS_PUBLISH_SCOPES", DefaultPublishScopes)),
+			AuthorizeURL:  "https://www.bandbbs.cn/oauth2/authorize",
+			TokenURL:      "https://www.bandbbs.cn/api/oauth2/token",
+			MeURL:         "https://www.bandbbs.cn/api/me",
+			APIURL:        "https://www.bandbbs.cn/api",
+			IntrospectURL: "https://www.bandbbs.cn/api/oauth2/introspect",
+			RevokeURL:     "https://www.bandbbs.cn/api/oauth2/revoke",
+			Scopes:        ParseScopes(DefaultScopes),
+			PublishScopes: ParseScopes(DefaultPublishScopes),
 		},
 		GitHub: GitHubConfig{
 			ClientID:      env("GITHUB_CLIENT_ID", ""),
 			ClientSecret:  env("GITHUB_CLIENT_SECRET", ""),
 			RedirectURI:   env("GITHUB_REDIRECT_URI", ""),
-			AuthorizeURL:  env("GITHUB_AUTHORIZE_URL", "https://github.com/login/oauth/authorize"),
-			DeviceCodeURL: env("GITHUB_DEVICE_CODE_URL", "https://github.com/login/device/code"),
-			TokenURL:      env("GITHUB_TOKEN_URL", "https://github.com/login/oauth/access_token"),
-			APIURL:        strings.TrimRight(env("GITHUB_API_URL", "https://api.github.com"), "/"),
-			Scopes:        ParseScopes(env("GITHUB_SCOPES", "public_repo read:user")),
+			AuthorizeURL:  "https://github.com/login/oauth/authorize",
+			DeviceCodeURL: "https://github.com/login/device/code",
+			TokenURL:      "https://github.com/login/oauth/access_token",
+			APIURL:        "https://api.github.com",
+			Scopes:        ParseScopes("public_repo read:user"),
 		},
 		AstroBox: AstroBoxConfig{
-			RepoOwner:   env("ASTROBOX_REPO_OWNER", "AstralSightStudios"),
-			RepoName:    env("ASTROBOX_REPO_NAME", "AstroBox-Repo"),
-			RepoBranch:  env("ASTROBOX_REPO_BRANCH", "main"),
-			CatalogPath: env("ASTROBOX_CATALOG_PATH", "index_v2.csv"),
+			RepoOwner:   "AstralSightStudios",
+			RepoName:    "AstroBox-Repo",
+			RepoBranch:  "main",
+			CatalogPath: "index_v2.csv",
 		},
 		Storage: StorageConfig{
 			LocalRoot: env("STORAGE_LOCAL_ROOT", "./data/blobs"),
@@ -242,28 +240,28 @@ func Load() Config {
 		},
 		Moderation: ModerationConfig{
 			Primary: ModerationEndpointConfig{
-				BaseURL: strings.TrimRight(env("MODERATION_BASE_URL", "https://api.deepseek.com"), "/"),
+				BaseURL: "https://api.deepseek.com",
 				APIKey:  env("MODERATION_API_KEY", ""),
-				Model:   env("MODERATION_MODEL", "deepseek-v4-flash"),
+				Model:   "deepseek-v4-flash",
 			},
 			Fallback: ModerationEndpointConfig{
-				BaseURL: strings.TrimRight(env("MODERATION_FALLBACK_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"), "/"),
+				BaseURL: "https://open.bigmodel.cn/api/paas/v4",
 				APIKey:  env("MODERATION_FALLBACK_API_KEY", ""),
-				Model:   env("MODERATION_FALLBACK_MODEL", "glm-4-flash"),
+				Model:   "glm-4-flash",
 			},
-			Timeout: durationEnv("MODERATION_TIMEOUT", 4*time.Second),
+			Timeout: 4 * time.Second,
 		},
 		Ranking: RankingConfig{
-			CoinExtraWeight:    positiveFloatEnv("RANKING_COIN_EXTRA_WEIGHT", 0.35),
-			DownloadWeight:     positiveFloatEnv("RANKING_DOWNLOAD_WEIGHT", 0.15),
-			FreshnessAmplitude: positiveFloatEnv("RANKING_FRESHNESS_AMPLITUDE", 3.0),
-			FreshnessDecayDays: positiveFloatEnv("RANKING_FRESHNESS_DECAY_DAYS", 7.0),
-			FeaturedBoost:      positiveFloatEnv("RANKING_FEATURED_BOOST", 1.5),
-			JitterBase:         positiveFloatEnv("RANKING_JITTER_BASE", 0.50),
+			CoinExtraWeight:    0.35,
+			DownloadWeight:     0.15,
+			FreshnessAmplitude: 3.0,
+			FreshnessDecayDays: 7.0,
+			FeaturedBoost:      1.5,
+			JitterBase:         0.50,
 		},
 		Retention: RetentionConfig{Unpublished: durationEnv("RETENTION_UNPUBLISHED", 180*24*time.Hour), Audit: durationEnv("RETENTION_AUDIT", 180*24*time.Hour), Feedback: durationEnv("RETENTION_FEEDBACK", 365*24*time.Hour), OrphanBlobs: durationEnv("RETENTION_ORPHAN_BLOBS", 7*24*time.Hour), Interval: durationEnv("RETENTION_INTERVAL", 6*time.Hour)},
-		Version:   env("APP_VERSION", "dev"),
-		Commit:    env("GIT_COMMIT", ""),
+		Version:   version,
+		Commit:    commit,
 		LogLevel:  env("LOG_LEVEL", "info"),
 		LogFormat: env("LOG_FORMAT", "text"),
 	}
@@ -285,7 +283,7 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("ORONBOX_AUTH_MASTER must be a 32-byte hex key when attestation is enabled"))
 	}
 	if c.RunningProduction() && !c.ClientAttestationEnabled {
-		errs = append(errs, errors.New("CLIENT_ATTESTATION_ENABLED must be true in production"))
+		errs = append(errs, errors.New("client attestation is required in production"))
 	}
 	if c.RunningProduction() && (c.DeviceCatalog.BaseURL == "" || c.DeviceCatalog.Repository == "") {
 		errs = append(errs, errors.New("Gitea device catalog is required in production"))
@@ -447,20 +445,6 @@ func int64Env(key string, fallback int64) int64 {
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-// positiveFloatEnv parses a ranking multiplier, rejecting anything that is not
-// a positive finite number so invalid values can never reach a SQL literal.
-func positiveFloatEnv(key string, fallback float64) float64 {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
 		return fallback
 	}
 	return parsed

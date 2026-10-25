@@ -1,0 +1,60 @@
+{
+  "documents": [
+    {
+      "id": "terms",
+      "category": "legal",
+      "revision": 2,
+      "require_agreement": true,
+      "titles": {
+        "zh": "用户协议与免责声明",
+        "en": "Terms and disclaimer"
+      },
+      "files": {
+        "zh": "terms.zh.md",
+        "en": "terms.en.md"
+      }
+    },
+    {
+      "id": "privacy",
+      "category": "legal",
+      "revision": 2,
+      "require_agreement": true,
+      "titles": {
+        "zh": "隐私说明",
+        "en": "Privacy notice"
+      },
+      "files": {
+        "zh": "privacy.zh.md",
+        "en": "privacy.en.md"
+      }
+    },
+    {
+      "id": "resource-publishing",
+      "category": "legal",
+      "revision": 1,
+      "require_agreement": true,
+      "titles": {
+        "zh": "资源发布协议",
+        "en": "Resource publishing agreement"
+      },
+      "files": {
+        "zh": "resource-publishing.zh.md",
+        "en": "resource-publishing.en.md"
+      }
+    },
+    {
+      "id": "review-rules",
+      "category": "legal",
+      "revision": 1,
+      "require_agreement": false,
+      "titles": {
+        "zh": "审核规则",
+        "en": "Review rules"
+      },
+      "files": {
+        "zh": "review-rules.zh.md",
+        "en": "review-rules.en.md"
+      }
+    }
+  ]
+}

@@ -20,11 +20,11 @@ func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read routes: %v", err)
 	}
-	route := regexp.MustCompile(`mux\.HandleFunc\("GET (/admin[^"]*)", a\.(requireAdminRole\("admin"|requireAdmin)`)
+	route := regexp.MustCompile(`mux\.HandleFunc\("GET (/console[^"]*)", a\.(requireAdminRole\("admin"|requireAdmin)`)
 	required := map[string]string{}
 	catchAll := false
 	for _, match := range route.FindAllStringSubmatch(string(source), -1) {
-		if match[1] == "/admin/{path...}" {
+		if match[1] == "/console/{path...}" {
 			catchAll = true
 			continue
 		}
@@ -42,7 +42,7 @@ func TestNavigationRolesMatchTheRouteTable(t *testing.T) {
 		for _, item := range group.Items {
 			role, registered := required[item.Path]
 			if !registered {
-				if catchAll && strings.HasPrefix(item.Path, "/admin/") {
+				if catchAll && strings.HasPrefix(item.Path, "/console/") {
 					continue
 				}
 				t.Errorf("the drawer links to %s, which is not a registered admin GET route", item.Path)
@@ -63,7 +63,7 @@ func TestReviewerDrawerOnlyContainsRoutesAReviewerCanOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read routes: %v", err)
 	}
-	adminOnly := regexp.MustCompile(`mux\.HandleFunc\("GET (/admin[^"]*)", a\.requireAdminRole\("admin"`)
+	adminOnly := regexp.MustCompile(`mux\.HandleFunc\("GET (/console[^"]*)", a\.requireAdminRole\("admin"`)
 	restricted := map[string]bool{}
 	for _, match := range adminOnly.FindAllStringSubmatch(string(source), -1) {
 		restricted[match[1]] = true

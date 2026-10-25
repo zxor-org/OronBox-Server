@@ -8,12 +8,12 @@ import (
 func TestReviewerNavigationHidesAdminOnlyDestinations(t *testing.T) {
 	t.Parallel()
 	reviewer := NavigationFor("reviewer")
-	for _, forbidden := range []string{"/admin/users", "/admin/settings", "/admin/coins", "/admin/blog", "/admin/announcements"} {
+	for _, forbidden := range []string{"/console/users", "/console/settings", "/console/coins", "/console/blog", "/console/announcements"} {
 		if navigationContains(reviewer, forbidden) {
 			t.Errorf("the reviewer drawer still links to %s", forbidden)
 		}
 	}
-	for _, expected := range []string{"/admin/review", "/admin/comments", "/admin/reports"} {
+	for _, expected := range []string{"/console/reviews", "/console/comments", "/console/feedback"} {
 		if !navigationContains(reviewer, expected) {
 			t.Errorf("the reviewer drawer is missing %s", expected)
 		}
@@ -44,18 +44,18 @@ func TestAdminNavigationKeepsEveryDestination(t *testing.T) {
 
 func TestReviewersLandOnTheQueueAndAdminsOnTheDashboard(t *testing.T) {
 	t.Parallel()
-	if got := HomePathFor("reviewer"); got != "/admin/review" {
+	if got := HomePathFor("reviewer"); got != "/console/reviews" {
 		t.Errorf("a reviewer should start at the queue, got %q", got)
 	}
-	if got := HomePathFor(RoleAdmin); got != "/admin" {
+	if got := HomePathFor(RoleAdmin); got != "/console" {
 		t.Errorf("an admin should start at the dashboard, got %q", got)
 	}
 	// An unrecognised role must be treated as the least privileged one rather
 	// than falling through to the admin surfaces.
-	if got := HomePathFor(""); got != "/admin/review" {
+	if got := HomePathFor(""); got != "/console/reviews" {
 		t.Errorf("an unknown role should be treated as a reviewer, got %q", got)
 	}
-	if navigationContains(NavigationFor("something-new"), "/admin/users") {
+	if navigationContains(NavigationFor("something-new"), "/console/users") {
 		t.Error("an unknown role was given an admin-only destination")
 	}
 }

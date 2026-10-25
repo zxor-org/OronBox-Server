@@ -38,11 +38,12 @@ func (a *App) registerOauthRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/oauth/github/web/start", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubWebStart))))
 	mux.Handle("POST /api/v1/oauth/github/web/status", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubWebStatus))))
 	mux.Handle("DELETE /api/v1/oauth/github/grant", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGitHubGrantDelete))))
-	mux.HandleFunc("GET /admin/api/auth/bandbbs/authorize", a.throttleCredentials(a.handleAdminAuthorize))
-	mux.HandleFunc("PUT /admin/api/auth/minimum-version", a.requireAdminRole("admin", a.handleBuildPolicy))
+	mux.HandleFunc("GET /console/api/auth/bandbbs/authorize", a.throttleCredentials(a.handleAdminAuthorize))
+	mux.HandleFunc("PUT /console/api/auth/minimum-version", a.requireAdminRole("admin", a.handleBuildPolicy))
 }
 
 func (a *App) registerClientRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/activity", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleActivity))))
 	mux.Handle("GET /api/v1/me", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleMe))))
 	mux.Handle("GET /api/v1/me/grants", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleGrants))))
 	mux.Handle("GET /api/v1/coins", a.protectClientRoute(a.requireUser(http.HandlerFunc(a.handleCoinAccount))))
