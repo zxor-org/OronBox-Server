@@ -79,3 +79,26 @@ func zipWith(t *testing.T, files map[string]any) []byte {
 	}
 	return output.Bytes()
 }
+
+func TestVersionCodeUsesWatchManifestAndPreservesZero(t *testing.T) {
+	payload := zipWith(t, map[string]any{
+		"manifest.json":       map[string]any{"package": "org.demo.app", "versionName": "1.0", "versionCode": 1},
+		"manifest-watch.json": map[string]any{"versionName": "2.0", "versionCode": 2},
+	})
+	analysis, err := Analyze(payload)
+	if err != nil || analysis.Version != "2.0" || analysis.VersionCode == nil || *analysis.VersionCode != 2 {
+		t.Fatal(analysis, err)
+	}
+	payload = make([]byte, 0x40)
+	copy(payload, []byte{0x5a, 0xa5, 0x34, 0x12})
+	copy(payload[0x28:], "123456789")
+	analysis, err = Analyze(payload)
+	if err != nil || analysis.VersionCode == nil || *analysis.VersionCode != 0 {
+		t.Fatal(analysis, err)
+	}
+	payload[4], payload[5], payload[6] = 3, 2, 1
+	analysis, err = Analyze(payload)
+	if err != nil || analysis.VersionCode == nil || *analysis.VersionCode != 66051 {
+		t.Fatal(analysis, err)
+	}
+}

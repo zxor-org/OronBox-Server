@@ -1,6 +1,9 @@
 package astrobox
 
 import (
+	"context"
+	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -56,4 +59,37 @@ func DeriveReviewStatus(bodies []string) (state string, items []ReviewItem) {
 		return "changes_requested", items
 	}
 	return "fixed_waiting", items
+}
+
+type reviewFix struct {
+	ID   string `json:"id"`
+	Note string `json:"note"`
+}
+
+func (c *Client) replyToFixes(ctx context.Context, token string, number int, fixes []reviewFix) error {
+	if len(fixes) == 0 {
+		return nil
+	}
+	timeline, err := c.ReviewTimeline(ctx, token, number)
+	if err != nil {
+		return err
+	}
+	handled := map[string]bool{}
+	for _, fix := range fixes {
+		if handled[fix.ID] {
+			continue
+		}
+		for _, item := range timeline.ReviewItems {
+			if item.ID != fix.ID || item.Fixed {
+				continue
+			}
+			body := fmt.Sprintf("[ABCC_FIXED_%s] %s\n\n> %s", item.ID, strings.TrimSpace(fix.Note), strings.ReplaceAll(item.Message, "\n", "\n> "))
+			_, err = c.request(ctx, token, http.MethodPost, fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.api, c.cfg.RepoOwner, c.cfg.RepoName, number), map[string]string{"body": body}, nil)
+			if err != nil {
+				return fmt.Errorf("reply to AstroBox requested change: %w", err)
+			}
+			handled[fix.ID] = true
+		}
+	}
+	return nil
 }

@@ -67,6 +67,7 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 		t.Fatal(err)
 	}
 	c := &Coordinator{db: db, store: store.New(db), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	assertPublicationSnapshotKeepsBandBBSArtifacts(t, c, revisionID, publicationID)
 	if err := c.publishOne(ctx); err != nil {
 		t.Fatalf("publishOne returned update error: %v", err)
 	}
@@ -109,6 +110,32 @@ func TestPublicationCoordinatorRecordsPollStateWithoutAppendingHistory(t *testin
 	if leaseToken != nil {
 		t.Fatalf("poll failure retained lease %q", *leaseToken)
 	}
+	nextRevision, nextPublication := uuid.NewString(), uuid.NewString()
+	if _, err := db.ExecContext(ctx, `INSERT INTO resource_revisions(id,resource_id,revision_no,name,summary,state) VALUES($1,$2,2,'replacement','','approved')`, nextRevision, resourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO publications(id,revision_id,target,state,config) VALUES($1,$2,'astrobox','running','{}')`, nextPublication, nextRevision); err != nil {
+		t.Fatal(err)
+	}
+	next := publication{ID: nextPublication, ResourceID: resourceID, RevisionID: nextRevision, Target: "astrobox", Attempts: 1}
+	if err := c.finish(ctx, next, "reviewing", "sample-resource", "https://github.com/official/catalog/pull/123", map[string]any{"pull_request_number": 123}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := db.QueryRowContext(ctx, `SELECT state FROM publications WHERE id=$1`, publicationID).Scan(&state); err != nil || state != "cancelled" {
+		t.Fatalf("predecessor state=%s: %v", state, err)
+	}
+	// Repair records left by an older server before trying another poll.
+	if _, err := db.ExecContext(ctx, `UPDATE publications SET state='reviewing',next_attempt_at=CASE WHEN id=$1::uuid THEN now()-interval '1 minute' ELSE now() END WHERE id IN ($1,$2)`, publicationID, nextPublication); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.pollOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT state FROM publications WHERE id=$1`, publicationID).Scan(&state); err != nil || state != "cancelled" {
+		t.Fatalf("stuck predecessor state=%s: %v", state, err)
+	}
+
 }
 
 func assertPublicationEvents(t *testing.T, db interface {
@@ -130,5 +157,51 @@ func assertPublicationEvents(t *testing.T, db interface {
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("publication events = %v, want %v", got, want)
+	}
+}
+
+func assertPublicationSnapshotKeepsBandBBSArtifacts(t *testing.T, c *Coordinator, revisionID, astroPublicationID string) {
+	t.Helper()
+	bbsPublicationID := uuid.NewString()
+	if _, err := c.db.Exec(`INSERT INTO publications(id,revision_id,target,config,state) VALUES($1,$2,'bandbbs','{}','cancelled')`, bbsPublicationID, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	bbsDevice := uuid.NewString()
+	if _, err := c.db.Exec(`INSERT INTO devices(id,codename,display_name,platform) VALUES($1,'test-bbs-only','BandBBS only','vela_os')`, bbsDevice); err != nil {
+		t.Fatal(err)
+	}
+	var abDevice string
+	if err := c.db.QueryRow(`SELECT id::text FROM devices WHERE astrobox_id='xmb10'`).Scan(&abDevice); err != nil {
+		t.Fatal(err)
+	}
+	for i, device := range []string{bbsDevice, abDevice} {
+		digest := strings.Repeat(string(rune('a'+i)), 64)
+		artifactID := uuid.NewString()
+		if _, err := c.db.Exec(`INSERT INTO blobs(sha256,size_bytes,media_type,local_key) VALUES($1::text,1,'application/octet-stream',$1::text)`, digest); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.db.Exec(`INSERT INTO revision_artifacts(id,revision_id,blob_sha256,original_name,package_format,package_id) VALUES($1,$2,$3,'app.rpk','rpk','same.app')`, artifactID, revisionID, digest); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.db.Exec(`INSERT INTO revision_artifact_devices(revision_id,artifact_id,device_id) VALUES($1,$2,$3)`, revisionID, artifactID, device); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for publicationID, want := range map[string]int{bbsPublicationID: 2, astroPublicationID: 1} {
+		raw, err := c.snapshot(context.Background(), revisionID, publicationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Artifacts []struct {
+				Blob string `json:"blob_sha256"`
+			} `json:"artifacts"`
+		}
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Artifacts) != want {
+			t.Fatalf("publication %s has %d artifacts, want %d: %s", publicationID, len(result.Artifacts), want, raw)
+		}
 	}
 }

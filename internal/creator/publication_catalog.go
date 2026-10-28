@@ -124,9 +124,10 @@ func (s *Service) mapPublications(ctx context.Context, kind ResourceKind, artifa
 					}
 				}
 				targetMap := map[string]any{
-					"category_id": v.CategoryID,
-					"prefix_id":   cfg.ResourcePrefixes[string(kind)],
-					"package_id":  a.analysis.PackageID,
+					"category_id":     v.CategoryID,
+					"prefix_id":       cfg.ResourcePrefixes[string(kind)],
+					"package_id":      a.analysis.PackageID,
+					"artifact_sha256": a.sha256,
 				}
 				if threadPrefixID > 0 {
 					targetMap["thread_prefix_id"] = threadPrefixID

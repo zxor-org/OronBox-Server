@@ -12,6 +12,7 @@ import (
 )
 
 func (c *Coordinator) pollOne(ctx context.Context) error {
+
 	var item publication
 	var detail []byte
 	err := c.db.QueryRowContext(ctx, `WITH candidate AS (
@@ -26,10 +27,20 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 	if err != nil {
 		return err
 	}
+	retired, err := c.db.ExecContext(ctx, `UPDATE publications old SET state='cancelled',lease_token=NULL,lease_expires_at=NULL,status_detail=COALESCE(old.status_detail,'{}'::jsonb)||jsonb_build_object('superseded_by',new.id::text),updated_at=now() FROM publications new,resource_revisions a,resource_revisions b WHERE old.id=$1 AND old.lease_token=$2 AND old.revision_id=a.id AND new.revision_id=b.id AND a.resource_id=b.resource_id AND b.revision_no>a.revision_no AND old.state='reviewing' AND new.target='astrobox' AND new.state IN ('reviewing','published') AND old.status_detail->>'pull_request_number'=new.status_detail->>'pull_request_number'`, item.ID, item.LeaseToken)
+	if err != nil {
+		return err
+	}
+	if count, err := retired.RowsAffected(); err != nil {
+		return err
+	} else if count > 0 {
+		return nil
+	}
 	var statusDetail struct {
-		PullRequestNumber  int      `json:"pull_request_number"`
-		SubmissionProtocol string   `json:"submission_protocol"`
-		CatalogRow         []string `json:"catalog_row"`
+		PullRequestNumber  int       `json:"pull_request_number"`
+		SubmissionProtocol string    `json:"submission_protocol"`
+		CatalogRow         []string  `json:"catalog_row"`
+		ReopenRequestedAt  time.Time `json:"reopen_requested_at"`
 	}
 	if json.Unmarshal(detail, &statusDetail) != nil || statusDetail.PullRequestNumber <= 0 {
 		err = fmt.Errorf("publication %s has no pull request number", item.ID)
@@ -47,6 +58,23 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		return c.failPublicationPoll(ctx, item, detail, err)
 	}
 	pollDetail := pollStatusDetail(detail, status.State, status.URL, "")
+	reopening := !statusDetail.ReopenRequestedAt.IsZero() && time.Since(statusDetail.ReopenRequestedAt) < 2*time.Minute
+	if status.State == "open" {
+		var extra map[string]any
+		_ = json.Unmarshal(pollDetail, &extra)
+		delete(extra, "reopen_requested_at")
+		pollDetail, _ = json.Marshal(extra)
+	}
+	if !status.Merged && status.State == "open" {
+		timeline, timelineErr := c.astro.ReviewTimeline(ctx, token, statusDetail.PullRequestNumber)
+		if timelineErr != nil {
+			return c.failPublicationPoll(ctx, item, detail, timelineErr)
+		}
+		var extra map[string]any
+		_ = json.Unmarshal(pollDetail, &extra)
+		extra["review_state"], extra["review_items"] = timeline.State, timeline.ReviewItems
+		pollDetail, _ = json.Marshal(extra)
+	}
 	catalogApplied := true
 	var catalogCheck astrobox.CatalogCheck
 	if status.Merged && statusDetail.SubmissionProtocol == "v2" {
@@ -78,7 +106,7 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		if err == nil {
 			c.log.Info("publication completed", "publication_id", item.ID, "resource_id", item.ResourceID, "target", item.Target, "external_url", status.URL)
 		}
-	} else if !status.Merged && status.State == "closed" {
+	} else if !status.Merged && status.State == "closed" && !reopening {
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE publications SET state='failed',error_message='外部审核不通过',status_detail=$2,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$3`, item.ID, pollDetail, item.LeaseToken)
 		if err == nil {
@@ -92,7 +120,7 @@ FROM claimed p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN resources 
 		}
 	} else {
 		var result sql.Result
-		result, err = tx.ExecContext(ctx, `UPDATE publications SET error_message='',status_detail=$2,next_attempt_at=$3,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$4`, item.ID, pollDetail, time.Now().UTC().Add(pollInterval), item.LeaseToken)
+		result, err = tx.ExecContext(ctx, `UPDATE publications SET error_message='',status_detail=$2,next_attempt_at=$3,lease_token=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND state='reviewing' AND lease_token=$4`, item.ID, pollDetail, nextPollTime(reopening), item.LeaseToken)
 		if err == nil {
 			err = requirePublicationLease(result, item.ID)
 		}
@@ -175,4 +203,12 @@ func pollCatalogStatusDetail(raw []byte, check astrobox.CatalogCheck) []byte {
 		return raw
 	}
 	return encoded
+}
+
+func nextPollTime(reopening bool) time.Time {
+	interval := pollInterval
+	if reopening {
+		interval = 15 * time.Second
+	}
+	return time.Now().UTC().Add(interval)
 }

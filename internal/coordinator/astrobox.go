@@ -40,6 +40,12 @@ func (c *Coordinator) publishAstroBox(ctx context.Context, item publication, sna
 			}
 		}
 	}
+	var submissionConfig map[string]any
+	if err := json.Unmarshal(item.Config, &submissionConfig); err != nil {
+		return err
+	}
+	submissionConfig["submission_key"] = item.ID
+	item.Config, _ = json.Marshal(submissionConfig)
 	result, err := c.astro.Publish(ctx, token, item.OwnerName, snapshot, item.Config)
 	if err != nil {
 		if astrobox.IsUnauthorized(err) {

@@ -27,7 +27,8 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string, publicati
 		revision["purchase_price"] = purchasePrice.Float64
 	}
 	var frozen []byte
-	if err := c.db.QueryRowContext(ctx, `SELECT approved_snapshot FROM publications WHERE id=$1`, publicationID).Scan(&frozen); err != nil {
+	var target string
+	if err := c.db.QueryRowContext(ctx, `SELECT approved_snapshot,target FROM publications WHERE id=$1`, publicationID).Scan(&frozen, &target); err != nil {
 		return nil, err
 	}
 	var approved map[string]any
@@ -94,13 +95,13 @@ func (c *Coordinator) snapshot(ctx context.Context, revisionID string, publicati
 				artifactRows.Close()
 				return nil, err
 			}
-			if platform != "vela_os" || !astrobox.IsSupportedDeviceID(deviceID) {
+			if target == "astrobox" && (platform != "vela_os" || !astrobox.IsSupportedDeviceID(deviceID)) {
 				continue
 			}
 			devices = append(devices, map[string]any{"id": deviceID, "name": deviceName})
 		}
 		rows.Close()
-		if len(devices) == 0 {
+		if target == "astrobox" && len(devices) == 0 {
 			continue
 		}
 		artifacts = append(artifacts, map[string]any{"blob_sha256": sha, "original_name": originalName, "package_id": packageID, "version": version, "kind": kind, "platform": "vela_os", "devices": devices})

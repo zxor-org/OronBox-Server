@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -171,6 +172,18 @@ func (s *Service) Workspace(ctx context.Context, ownerID, resourceID string) (Wo
 	}
 	if err := bindingRows.Err(); err != nil {
 		return Workspace{}, err
+	}
+	var active ActiveAstroBoxSubmission
+	var number string
+	err = s.db.QueryRowContext(ctx, `SELECT c.id::text,rr.id::text,COALESCE(p.status_detail->>'pull_request_number',''),COALESCE(p.external_url,''),COALESCE(p.status_detail->>'review_state','waiting_review') FROM publications p JOIN resource_revisions rr ON rr.id=p.revision_id JOIN review_cases c ON c.revision_id=rr.id WHERE rr.resource_id=$1 AND p.target='astrobox' AND p.state='reviewing' ORDER BY rr.revision_no DESC LIMIT 1`, resourceID).Scan(&active.ReviewID, &active.RevisionID, &number, &active.ExternalURL, &active.ReviewState)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Workspace{}, err
+	}
+	if err == nil {
+		active.PullRequestNumber, _ = strconv.Atoi(number)
+		if active.PullRequestNumber > 0 {
+			result.ActiveAstroBoxSubmission = &active
+		}
 	}
 	return result, nil
 }

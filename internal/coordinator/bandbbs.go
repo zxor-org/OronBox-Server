@@ -22,7 +22,9 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 			CategoryID int `json:"category_id"`
 		} `json:"targets"`
 	}
-	_ = json.Unmarshal(item.Config, &publishConfig)
+	if err := json.Unmarshal(item.Config, &publishConfig); err != nil || len(publishConfig.Targets) == 0 {
+		return fmt.Errorf("invalid BandBBS publication targets")
+	}
 	var bound, boundURL string
 	_ = c.db.QueryRowContext(ctx, `SELECT external_id,external_url FROM external_bindings WHERE resource_id=$1 AND provider='bandbbs'`, item.ResourceID).Scan(&bound, &boundURL)
 	targetIDs := make([]int, 0, len(publishConfig.Targets))
@@ -47,7 +49,12 @@ func (c *Coordinator) publishBandBBS(ctx context.Context, item publication, snap
 	}
 	config, progress := filterBandBBSConfig(item.Config, item.StatusDetail)
 	if len(config) == 0 {
-		return c.finish(ctx, item, "published", bound, boundURL, map[string]any{"resources": existing}, nil)
+		for category, id := range existing {
+			if _, ok := progress[category]; !ok {
+				progress[category] = bandbbs.CategoryResult{ResourceID: id, URL: "https://www.bandbbs.cn/resources/" + id + "/"}
+			}
+		}
+		return c.finish(ctx, item, "published", bound, boundURL, map[string]any{"resources": progress}, nil)
 	}
 	result, err := c.band.PublishWithProgress(ctx, token, subject, existing, progress, snapshot, config)
 	if bandbbs.IsUnauthorized(err) {
@@ -91,9 +98,7 @@ func filterBandBBSConfig(raw, detail []byte) ([]byte, map[string]bandbbs.Categor
 	if json.Unmarshal(raw, &config) != nil {
 		return raw, nil
 	}
-	var targets []struct {
-		CategoryID int `json:"category_id"`
-	}
+	var targets []map[string]json.RawMessage
 	targetsRaw, _ := json.Marshal(config["targets"])
 	if json.Unmarshal(targetsRaw, &targets) != nil {
 		return raw, nil
@@ -124,7 +129,11 @@ func filterBandBBSConfig(raw, detail []byte) ([]byte, map[string]bandbbs.Categor
 	}
 	kept := targets[:0]
 	for _, target := range targets {
-		result, done := completed[strconv.Itoa(target.CategoryID)]
+		var categoryID int
+		if json.Unmarshal(target["category_id"], &categoryID) != nil {
+			return raw, completed
+		}
+		result, done := completed[strconv.Itoa(categoryID)]
 		fullyDone := done && result.VersionID != "" && (!needsUpdate || result.UpdateID != "")
 		if !fullyDone {
 			kept = append(kept, target)

@@ -42,7 +42,7 @@ func TestPublicationCatalogOverridesClaimsAndRetainsLastValidSnapshot(t *testing
 		t.Fatal(err)
 	}
 	target := requests[0].Config["targets"].([]any)[0].(map[string]any)
-	if target["category_id"] != 777 || target["prefix_id"] != 91 || target["package_id"] != "app.id" || requests[0].Config["config_version"] != version {
+	if target["category_id"] != 777 || target["prefix_id"] != 91 || target["package_id"] != "app.id" || target["artifact_sha256"] != "digest-a" || requests[0].Config["config_version"] != version {
 		t.Fatal("untrusted client mapping retained", target)
 	}
 	body = `{"resource_prefixes":{"app":91}}`

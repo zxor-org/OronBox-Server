@@ -171,15 +171,17 @@ type ReviewCase struct {
 }
 
 type CreatorReviewListItem struct {
-	ID           string       `json:"id"`
-	ResourceID   string       `json:"resource_id"`
-	RevisionID   string       `json:"revision_id"`
-	ResourceName string       `json:"resource_name"`
-	ResourceKind ResourceKind `json:"resource_kind"`
-	ReviewType   string       `json:"review_type"`
-	State        ReviewState  `json:"state"`
-	Note         string       `json:"note,omitempty"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	PublicationState    string       `json:"publication_state,omitempty"`
+	ExternalReviewState string       `json:"external_review_state,omitempty"`
+	ID                  string       `json:"id"`
+	ResourceID          string       `json:"resource_id"`
+	RevisionID          string       `json:"revision_id"`
+	ResourceName        string       `json:"resource_name"`
+	ResourceKind        ResourceKind `json:"resource_kind"`
+	ReviewType          string       `json:"review_type"`
+	State               ReviewState  `json:"state"`
+	Note                string       `json:"note,omitempty"`
+	UpdatedAt           time.Time    `json:"updated_at"`
 }
 
 type CreatorReviewPage struct {
@@ -208,16 +210,25 @@ type ExternalBinding struct {
 	Meta        map[string]string `json:"meta,omitempty"`
 }
 
+type ActiveAstroBoxSubmission struct {
+	ReviewID          string `json:"review_id"`
+	RevisionID        string `json:"revision_id"`
+	PullRequestNumber int    `json:"pull_request_number"`
+	ExternalURL       string `json:"external_url"`
+	ReviewState       string `json:"review_state"`
+}
+
 type Workspace struct {
-	Resource        Resource          `json:"resource"`
-	CurrentRevision *Revision         `json:"current_revision,omitempty"`
-	Revisions       []Revision        `json:"revisions"`
-	Artifacts       []Artifact        `json:"artifacts"`
-	Media           []Media           `json:"media"`
-	Links           []ResourceLink    `json:"links"`
-	Review          *ReviewCase       `json:"review,omitempty"`
-	Publications    []Publication     `json:"publications"`
-	Bindings        []ExternalBinding `json:"bindings"`
+	ActiveAstroBoxSubmission *ActiveAstroBoxSubmission `json:"active_astrobox_submission,omitempty"`
+	Resource                 Resource                  `json:"resource"`
+	CurrentRevision          *Revision                 `json:"current_revision,omitempty"`
+	Revisions                []Revision                `json:"revisions"`
+	Artifacts                []Artifact                `json:"artifacts"`
+	Media                    []Media                   `json:"media"`
+	Links                    []ResourceLink            `json:"links"`
+	Review                   *ReviewCase               `json:"review,omitempty"`
+	Publications             []Publication             `json:"publications"`
+	Bindings                 []ExternalBinding         `json:"bindings"`
 }
 
 type CollectionRevision struct {

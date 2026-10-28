@@ -155,6 +155,11 @@ func (c *Coordinator) finish(ctx context.Context, item publication, state, exter
 	if _, err = tx.ExecContext(ctx, `INSERT INTO publication_attempts(publication_id,attempt_number,phase,event,state_from,state_to,detail) VALUES($1,$2,'execute',$3,'running',$4,jsonb_build_object('external_id',$5::text,'external_url',$6::text,'status_detail',$7::jsonb))`, item.ID, item.Attempts, event, state, externalID, externalURL, raw); err != nil {
 		return err
 	}
+	if item.Target == "astrobox" {
+		if _, err = tx.ExecContext(ctx, `UPDATE publications p SET state='cancelled',lease_token=NULL,lease_expires_at=NULL,status_detail=COALESCE(p.status_detail,'{}'::jsonb)||jsonb_build_object('superseded_by',$1::text),updated_at=now() FROM resource_revisions rr WHERE p.revision_id=rr.id AND rr.resource_id=$2 AND p.id<>$1 AND p.target='astrobox' AND p.state='reviewing' AND p.status_detail->>'pull_request_number'=$3`, item.ID, item.ResourceID, fmt.Sprint(detail["pull_request_number"])); err != nil {
+			return err
+		}
+	}
 	if item.Target == "bandbbs" {
 		if err := c.upsertBandBBSBinding(ctx, tx, item.ResourceID, externalID, externalURL, metaRaw); err != nil {
 			return err

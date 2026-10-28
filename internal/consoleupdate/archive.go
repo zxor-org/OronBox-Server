@@ -94,8 +94,8 @@ func validateConsolePackage(root, expectedCommit string) (string, error) {
 		}
 	}
 	index, err := os.ReadFile(filepath.Join(root, "index.html"))
-	if err != nil || !strings.Contains(string(index), "__CSP_NONCE__") {
-		return "", fmt.Errorf("Console entry lacks CSP nonce support")
+	if err != nil {
+		return "", fmt.Errorf("Console entry missing index.html")
 	}
 	script := false
 	for _, match := range consoleAssetReference.FindAllStringSubmatch(string(index), -1) {

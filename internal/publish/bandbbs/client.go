@@ -70,6 +70,7 @@ type target struct {
 	ThreadPrefixID int    `json:"thread_prefix_id"`
 	ForumID        int    `json:"forum_id"`
 	PackageID      string `json:"package_id"`
+	ArtifactSHA256 string `json:"artifact_sha256"`
 }
 
 type config struct {
@@ -166,19 +167,27 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		return Result{}, fmt.Errorf("invalid BandBBS update format")
 	}
 
+	for _, target := range cfg.Targets {
+		if _, err := snap.artifactIndex(target, externalPurchase); err != nil {
+			return Result{}, err
+		}
+	}
 	if len(snap.Revision.Links) > 0 {
 		var b strings.Builder
-		b.WriteString("相关链接：\n")
+		b.WriteString("[B]相关链接[/B]\n[LIST]\n")
 		for _, link := range snap.Revision.Links {
 			if strings.TrimSpace(link.URL) != "" {
 				title := strings.TrimSpace(link.Title)
 				if title == "" {
 					title = "链接"
 				}
-				fmt.Fprintf(&b, "- %s：%s\n", escapeBBCodeText(title), strings.TrimSpace(link.URL))
+				if !safeBBCodeURL(strings.TrimSpace(link.URL)) {
+					return Result{}, fmt.Errorf("invalid BandBBS related link URL")
+				}
+				fmt.Fprintf(&b, "[*][URL=%s]%s[/URL]\n", strings.TrimSpace(link.URL), escapeBBCodeText(title))
 			}
 		}
-		b.WriteString("\n")
+		b.WriteString("[/LIST]\n\n")
 		description = b.String() + description
 	}
 	// Previews are shared by every category, so upload them once against the
@@ -234,17 +243,14 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 	description += previewImages.String()
 
 	result := Result{Resources: make(map[string]CategoryResult, len(cfg.Targets))}
+	for category, completed := range progress {
+		result.Resources[category] = completed
+	}
 	for _, target := range cfg.Targets {
 		category := strconv.Itoa(target.CategoryID)
-		artifact := -1
-		for index := range snap.Artifacts {
-			if snap.Artifacts[index].PackageID == target.PackageID {
-				artifact = index
-				break
-			}
-		}
-		if artifact < 0 && !externalPurchase {
-			return Result{}, fmt.Errorf("package %s is not among the snapshot artifacts", target.PackageID)
+		artifact, err := snap.artifactIndex(target, externalPurchase)
+		if err != nil {
+			return result, err
 		}
 		var pack struct {
 			Blob      string
@@ -334,7 +340,7 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 			endpoint += url.PathEscape(existingID) + "/"
 		}
 		if err := c.request(ctx, token, http.MethodPost, endpoint, strings.NewReader(form.Encode()), "application/x-www-form-urlencoded", &response); err != nil {
-			return Result{}, fmt.Errorf("create resource in category %d: %w", target.CategoryID, err)
+			return result, fmt.Errorf("create resource in category %d: %w", target.CategoryID, err)
 		}
 		if response.Resource.ID == 0 && existingID != "" {
 			response.Resource.ID, _ = strconv.Atoi(existingID)
@@ -354,8 +360,10 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 			// retain an opaque completion marker for retry reconciliation.
 			categoryResult.VersionID = "initial"
 		}
-		if response.Resource.ViewURL != "" {
+		if safeBBCodeURL(response.Resource.ViewURL) {
 			categoryResult.URL = response.Resource.ViewURL
+		} else if categoryResult.URL == "" {
+			categoryResult.URL = "https://www.bandbbs.cn/resources/" + resourceID + "/"
 		}
 		result.Resources[category] = categoryResult
 		if categoryResult.VersionID == "" && !externalPurchase {
@@ -365,6 +373,10 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 			}
 			categoryResult.VersionID = version.ID
 		}
+		if externalPurchase && categoryResult.VersionID == "" {
+			categoryResult.VersionID = "external"
+		}
+		result.Resources[category] = categoryResult
 		if cfg.VersionTitle != "" && categoryResult.UpdateID == "" {
 			update, updateErr := c.createUpdate(ctx, token, resourceID, cfg.VersionTitle, cfg.VersionMessage, reconcileUpdate)
 			if updateErr != nil {
@@ -375,4 +387,21 @@ func (c *Client) PublishWithProgress(ctx context.Context, token, creatorID strin
 		result.Resources[category] = categoryResult
 	}
 	return result, nil
+}
+
+func (s snapshot) artifactIndex(t target, externalPurchase bool) (int, error) {
+	index := -1
+	for i, a := range s.Artifacts {
+		if a.PackageID != t.PackageID || (t.ArtifactSHA256 != "" && a.Blob != t.ArtifactSHA256) {
+			continue
+		}
+		if index >= 0 && s.Artifacts[index].Blob != a.Blob {
+			return -1, fmt.Errorf("package %s has multiple artifacts; category %d requires an explicit artifact", t.PackageID, t.CategoryID)
+		}
+		index = i
+	}
+	if index < 0 && (!externalPurchase || t.ArtifactSHA256 != "") {
+		return -1, fmt.Errorf("package %s is not among the snapshot artifacts", t.PackageID)
+	}
+	return index, nil
 }

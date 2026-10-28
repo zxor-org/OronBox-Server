@@ -49,7 +49,7 @@ func buildManifest(
 	restype, iconPath, coverPath string,
 	authors []map[string]any,
 	previews []string,
-	downloads map[string]map[string]string,
+	downloads any,
 ) map[string]any {
 	return map[string]any{
 		"item": map[string]any{

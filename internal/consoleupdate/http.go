@@ -70,6 +70,9 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	policy := strings.Replace(m.csp, "style-src 'self'", "style-src 'self' 'nonce-"+nonce+"'", 1)
+	if !strings.Contains(string(raw), "__CSP_NONCE__") {
+		policy = strings.Replace(m.csp, "style-src 'self'", "style-src 'self' 'unsafe-inline'", 1)
+	}
 	w.Header().Set("Content-Security-Policy", policy+"; style-src-attr 'unsafe-inline'")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

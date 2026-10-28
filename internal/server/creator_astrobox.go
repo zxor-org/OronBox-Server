@@ -26,7 +26,7 @@ func (a *App) handleCreatorAstroBox(w http.ResponseWriter, r *http.Request) {
 	}
 	result := map[string]any{
 		"publication":  binding,
-		"capabilities": map[string]bool{"can_comment": true, "can_edit_comment": true, "can_delete_comment": true, "can_update_submission": true},
+		"capabilities": map[string]bool{"can_comment": true, "can_edit_comment": true, "can_delete_comment": true, "can_update_submission": false, "can_reopen_submission": false},
 	}
 	if path, pathErr := a.creatorAstroBoxPath(r); pathErr == nil {
 		pullPath := strings.Replace(path, "/issues/", "/pulls/", 1)
@@ -34,7 +34,7 @@ func (a *App) handleCreatorAstroBox(w http.ResponseWriter, r *http.Request) {
 			var pull map[string]any
 			if json.Unmarshal(data, &pull) == nil {
 				result["pull_request"] = map[string]any{"number": pull["number"], "state": pull["state"], "merged": pull["merged"], "updated_at": pull["updated_at"], "html_url": pull["html_url"], "repository": binding["repository"], "changed_files": pull["changed_files"]}
-				result["capabilities"] = map[string]bool{"can_comment": pull["state"] == "open", "can_edit_comment": true, "can_delete_comment": true, "can_update_submission": pull["state"] == "open" && pull["merged"] != true}
+				result["capabilities"] = map[string]bool{"can_comment": pull["state"] == "open", "can_edit_comment": true, "can_delete_comment": true, "can_update_submission": pull["state"] == "open" && pull["merged"] != true, "can_reopen_submission": pull["state"] == "closed" && pull["merged"] != true}
 			}
 		}
 	}
@@ -141,49 +141,39 @@ func (a *App) handleCreatorAstroBoxComments(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if r.Method == http.MethodGet {
-		all := make([]map[string]any, 0)
 		_, login, tokenErr := a.githubCreatorToken(r)
 		if tokenErr != nil {
 			a.writeCreatorError(w, tokenErr)
 			return
 		}
-		var bodies []string
-		for page := 1; page <= 20; page++ {
-			status, data, requestErr := a.githubCreatorJSON(r, http.MethodGet, fmt.Sprintf("%s/comments?per_page=100&sort=created&direction=asc&page=%d", base, page), nil)
-			if requestErr != nil {
-				a.writeCreatorError(w, requestErr)
-				return
+		var upstreamStatus int
+		var upstreamBody []byte
+		timeline, err := astrobox.LoadTimeline(base, login, func(path string) ([]byte, error) {
+			status, data, err := a.githubCreatorJSON(r, http.MethodGet, path, nil)
+			if err != nil {
+				return nil, err
 			}
 			if status < 200 || status >= 300 {
+				upstreamStatus, upstreamBody = status, data
+				return nil, fmt.Errorf("GitHub review timeline returned HTTP %d", status)
+			}
+			return data, nil
+		})
+		if err != nil {
+			if upstreamStatus != 0 {
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
-				_, _ = w.Write(data)
-				return
+				w.WriteHeader(upstreamStatus)
+				_, _ = w.Write(upstreamBody)
+			} else {
+				a.writeCreatorError(w, err)
 			}
-			var items []map[string]any
-			if json.Unmarshal(data, &items) != nil {
-				a.writeCreatorError(w, fmt.Errorf("invalid GitHub comments response"))
-				return
-			}
-			for _, item := range items {
-				user, _ := item["user"].(map[string]any)
-				author, _ := user["login"].(string)
-				item["author"] = author
-				item["user"] = author
-				item["is_author"] = strings.EqualFold(author, login)
-				all = append(all, item)
-				body, _ := item["body"].(string)
-				association, _ := item["author_association"].(string)
-				if strings.EqualFold(author, login) || association == "OWNER" || association == "MEMBER" || association == "COLLABORATOR" {
-					bodies = append(bodies, body)
-				}
-			}
-			if len(items) < 100 {
-				break
-			}
+			return
 		}
-		state, items := astrobox.DeriveReviewStatus(bodies)
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": all, "review_state": state, "review_items": items})
+		if err := a.creator.RecordAstroBoxReview(r.Context(), currentUser(r).ID, r.PathValue("review"), timeline); err != nil {
+			a.writeCreatorError(w, err)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, timeline)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
@@ -256,4 +246,58 @@ func (a *App) requireOwnGitHubComment(r *http.Request, path, issuePath string) e
 		return fmt.Errorf("cannot modify another user's GitHub comment")
 	}
 	return nil
+}
+
+func (a *App) handleCreatorAstroBoxReopen(w http.ResponseWriter, r *http.Request) {
+	base, err := a.creatorAstroBoxPath(r)
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	state := "requested"
+	err = a.creator.RequestAstroBoxReopen(r.Context(), currentUser(r).ID, r.PathValue("review"), func() error {
+		pullPath := strings.Replace(base, "/issues/", "/pulls/", 1)
+		status, data, err := a.githubCreatorJSON(r, http.MethodGet, pullPath, nil)
+		if err != nil {
+			return err
+		}
+		var pull struct {
+			State  string `json:"state"`
+			Merged bool   `json:"merged"`
+		}
+		if status != http.StatusOK || json.Unmarshal(data, &pull) != nil {
+			return fmt.Errorf("read AstroBox submission: HTTP %d", status)
+		}
+		if pull.Merged {
+			return fmt.Errorf("%w: AstroBox submission is already merged", creator.ErrConflict)
+		}
+		if pull.State == "open" {
+			state = "open"
+			return nil
+		}
+		status, _, err = a.githubCreatorJSON(r, http.MethodPatch, pullPath, []byte(`{"state":"open"}`))
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK && status != http.StatusForbidden && status != http.StatusUnprocessableEntity {
+			return fmt.Errorf("reopen AstroBox submission: HTTP %d", status)
+		}
+		if status == http.StatusOK {
+			state = "open"
+		}
+		body, _ := json.Marshal(map[string]string{"body": "[ABCC_REOPEN] Creator requests another review"})
+		status, _, err = a.githubCreatorJSON(r, http.MethodPost, base+"/comments", body)
+		if err != nil {
+			return err
+		}
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("request AstroBox review: HTTP %d", status)
+		}
+		return nil
+	})
+	if err != nil {
+		a.writeCreatorError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"state": state})
 }

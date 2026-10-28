@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/zxor-org/OronBox-Server/internal/publish/astrobox"
 	"net/url"
 	"strconv"
 	"strings"
@@ -46,10 +47,12 @@ SELECT review.id::text,revision.id::text,revision.resource_id::text,revision.nam
        resource.kind,review.state,review.note,review.updated_at,
        CASE WHEN EXISTS (SELECT 1 FROM publications publication
                          WHERE publication.revision_id=revision.id AND publication.target='astrobox')
-            THEN 'astrobox' ELSE 'normal' END
+            THEN 'astrobox' ELSE 'normal' END,
+ COALESCE(ab.state,''),COALESCE(ab.status_detail->>'review_state','')
 FROM review_cases review
 JOIN resource_revisions revision ON revision.id=review.revision_id
 JOIN resources resource ON resource.id=revision.resource_id
+LEFT JOIN publications ab ON ab.revision_id=revision.id AND ab.target='astrobox'
 WHERE `+where+`
 ORDER BY review.updated_at DESC,review.id DESC
 LIMIT $`+strconv.Itoa(len(args)), args...)
@@ -60,7 +63,7 @@ LIMIT $`+strconv.Itoa(len(args)), args...)
 	items := make([]CreatorReviewListItem, 0, limit)
 	for rows.Next() {
 		var item CreatorReviewListItem
-		if err := rows.Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.ResourceName, &item.ResourceKind, &item.State, &item.Note, &item.UpdatedAt, &item.ReviewType); err != nil {
+		if err := rows.Scan(&item.ID, &item.RevisionID, &item.ResourceID, &item.ResourceName, &item.ResourceKind, &item.State, &item.Note, &item.UpdatedAt, &item.ReviewType, &item.PublicationState, &item.ExternalReviewState); err != nil {
 			return CreatorReviewPage{}, err
 		}
 		items = append(items, item)
@@ -153,4 +156,47 @@ func (s *Service) ReviewQueue(ctx context.Context) ([]Workspace, error) {
 		result = append(result, workspace)
 	}
 	return result, rows.Err()
+}
+
+func (s *Service) RecordAstroBoxReview(ctx context.Context, ownerID, reviewID string, timeline astrobox.Timeline) error {
+	raw, err := json.Marshal(map[string]any{"review_state": timeline.State, "review_items": timeline.ReviewItems})
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE publications p SET status_detail=COALESCE(p.status_detail,'{}'::jsonb)||$3::jsonb FROM review_cases c JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources r ON r.id=rr.resource_id WHERE c.id=$1 AND r.owner_id=$2 AND p.revision_id=rr.id AND p.target='astrobox'`, reviewID, ownerID, raw)
+	return err
+}
+func (s *Service) RequestAstroBoxReopen(ctx context.Context, ownerID, reviewID string, perform func() error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var resourceID, publicationID string
+	var allowed bool
+	err = tx.QueryRowContext(ctx, `SELECT r.id::text,p.id::text,r.moderation_state='visible' AND p.state IN ('reviewing','failed') AND NOT EXISTS(SELECT 1 FROM publications newer JOIN resource_revisions next ON next.id=newer.revision_id WHERE next.resource_id=r.id AND next.revision_no>rr.revision_no AND newer.target='astrobox' AND newer.state<>'cancelled') FROM review_cases c JOIN resource_revisions rr ON rr.id=c.revision_id JOIN resources r ON r.id=rr.resource_id JOIN publications p ON p.revision_id=rr.id AND p.target='astrobox' WHERE c.id=$1 AND r.owner_id=$2 FOR UPDATE OF r`, reviewID, ownerID).Scan(&resourceID, &publicationID, &allowed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrConflict
+	}
+	var locked bool
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended($1,7319))`, resourceID).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		return ErrConflict
+	}
+	if err := perform(); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE publications SET state='reviewing',error_message='',lease_token=NULL,lease_expires_at=NULL,next_attempt_at=now(),status_detail=COALESCE(status_detail,'{}'::jsonb)||jsonb_build_object('reopen_requested_at',now()),updated_at=now() WHERE id=$1`, publicationID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

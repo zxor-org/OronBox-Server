@@ -3,12 +3,14 @@ package astrobox
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/zxor-org/OronBox-Server/internal/resource"
 	"net/http"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -89,18 +91,23 @@ type snapshot struct {
 }
 
 type publishConfig struct {
-	Agreement         bool     `json:"agreement"`
-	RepoName          string   `json:"repo_name"`
-	ItemID            string   `json:"item_id"`
-	Tags              []string `json:"tags"`
-	PaidType          string   `json:"paid_type"`
-	Author            string   `json:"author"`
-	BindABAccount     bool     `json:"bind_ab_account"`
-	UpdateExisting    bool     `json:"update_existing"`
-	PullRequestNumber int      `json:"pull_request_number"`
+	PRBody            string      `json:"pr_body,omitempty"`
+	ReviewFixes       []reviewFix `json:"review_fixes,omitempty"`
+	SubmissionKey     string      `json:"submission_key"`
+	Agreement         bool        `json:"agreement"`
+	RepoOwner         string      `json:"repo_owner"`
+	RepoName          string      `json:"repo_name"`
+	ItemID            string      `json:"item_id"`
+	Tags              []string    `json:"tags"`
+	PaidType          string      `json:"paid_type"`
+	Author            string      `json:"author"`
+	BindABAccount     bool        `json:"bind_ab_account"`
+	UpdateExisting    bool        `json:"update_existing"`
+	PullRequestNumber int         `json:"pull_request_number"`
 }
 
 type existingPullRequest struct {
+	Title  string `json:"title"`
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
 	State  string `json:"state"`
@@ -186,38 +193,71 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err := validateCatalogRow([]string{cfg.ItemID, snap.Revision.Name, restype, "", repoName, "", "", "", strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(uniqueDevices(snap.Artifacts), ";"), cfg.PaidType}); err != nil {
 		return Result{}, err
 	}
-	resourceRepo, err := c.ensureRepo(ctx, token, repoName, "AstroBox resource of "+snap.Revision.Name)
+	login, err := c.currentUser(ctx, token)
+	if err != nil {
+		return Result{}, err
+	}
+	if !cfg.UpdateExisting {
+		pending, err := c.pendingSubmission(ctx, token, login, repoName, cfg.ItemID)
+		if err != nil {
+			return Result{}, err
+		}
+		if pending != nil {
+			cfg.UpdateExisting = true
+			cfg.PullRequestNumber = pending.Number
+		}
+	}
+	resourceRepo, err := c.publicationRepository(ctx, token, cfg.RepoOwner, repoName, "AstroBox resource of "+snap.Revision.Name)
 	if err != nil {
 		return Result{}, fmt.Errorf("prepare AstroBox resource repository: %w", err)
 	}
+	resourceRepo, err = c.mainResourceBranch(ctx, token, resourceRepo)
+	if err != nil {
+		return Result{}, fmt.Errorf("prepare AstroBox main branch: %w", err)
+	}
 	files := map[string][]byte{}
+	mediaPaths := map[string]string{}
 	var previews []string
 	iconPath, coverPath := "", ""
-	for index, item := range snap.Media {
+	for _, item := range snap.Media {
 		record, data, err := c.readBlob(ctx, item.Blob)
 		if err != nil {
 			return Result{}, err
 		}
 		extension := extensionFor(record.MediaType)
-		filePath := "media/preview-" + strconv.Itoa(index) + extension
+		filePath := fmt.Sprintf("media/preview-%d%s", item.Position+1, extension)
 		switch item.Role {
 		case "icon":
 			filePath = "media/icon" + extension
-			iconPath = filePath
+
 		case "cover":
 			filePath = "media/cover" + extension
+
+		}
+		if shared := mediaPaths[item.Blob]; shared != "" {
+			filePath = shared
+		} else {
+			mediaPaths[item.Blob] = filePath
+			files[filePath] = data
+		}
+		switch item.Role {
+		case "icon":
+			iconPath = filePath
+		case "cover":
 			coverPath = filePath
 		case "preview":
 			previews = append(previews, filePath)
 		}
-		files[filePath] = data
 	}
 	if iconPath == "" || coverPath == "" {
 		return Result{}, fmt.Errorf("AstroBox icon and cover are required")
 	}
-	downloads := map[string]map[string]string{}
-	var entries []downloadEntry
-	for index, item := range snap.Artifacts {
+	downloads := map[string]map[string]any{}
+	downloadPaths, err := artifactPaths(snap.Artifacts)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, item := range snap.Artifacts {
 		devices := supportedArtifactDevices(item.Devices)
 		if len(devices) == 0 {
 			continue
@@ -226,14 +266,24 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 		if err != nil {
 			return Result{}, err
 		}
-		filePath := "downloads/" + strconv.Itoa(index) + "-" + path.Base(strings.ReplaceAll(item.Name, "\\", "/"))
+		gitBlob := sha1.New()
+		_, _ = fmt.Fprintf(gitBlob, "blob %d%c", len(data), byte(0))
+		_, _ = gitBlob.Write(data)
+		gitSHA := fmt.Sprintf("%x", gitBlob.Sum(nil))
+		filePath := downloadPaths[item.Blob]
 		files[filePath] = data
-		entries = append(entries, downloadEntry{File: filePath, Version: item.Version, SHA256: item.Blob, Devices: devices})
+		analysis, err := resource.Analyze(data)
+		if err != nil || analysis.VersionCode == nil {
+			return Result{}, fmt.Errorf("AstroBox package %s has no readable versionCode", item.Name)
+		}
 		for _, device := range devices {
-			downloads[device.ID] = map[string]string{"version": item.Version, "file_name": filePath, "sha256": item.Blob}
+			if _, duplicate := downloads[device.ID]; duplicate {
+				return Result{}, fmt.Errorf("AstroBox device %s has multiple packages", device.ID)
+			}
+			downloads[device.ID] = map[string]any{"version": item.Version, "versionCode": *analysis.VersionCode, "file_name": filePath, "sha256": item.Blob, "git_blob_sha": gitSHA}
 		}
 	}
-	if len(entries) == 0 {
+	if len(downloads) == 0 {
 		return Result{}, fmt.Errorf("AstroBox publication has no device supported by devices_v2.json")
 	}
 	author := strings.TrimSpace(cfg.Author)
@@ -242,12 +292,16 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	authors := []map[string]any{{"name": author, "bindABAccount": cfg.BindABAccount}}
 	manifest := buildManifest(snap, cfg, restype, iconPath, coverPath, authors, previews, downloads)
-	files["manifest_v2.json"], _ = json.MarshalIndent(manifest, "", "  ")
-	files["README.md"] = []byte(buildREADME(snap, cfg, restype, author, coverPath, previews, entries))
-	commit, err := c.uploadFiles(ctx, token, resourceRepo, "Publish "+snap.Revision.Name, files)
+	oldManifest, err := c.existingManifest(ctx, token, resourceRepo, resourceRepo.Branch)
 	if err != nil {
-		return Result{}, fmt.Errorf("upload AstroBox resource repository: %w", err)
+		return Result{}, fmt.Errorf("read existing AstroBox configuration: %w", err)
 	}
+	if item, ok := oldManifest["item"].(map[string]any); ok {
+		if id, ok := item["id"].(string); ok && id != "" && id != cfg.ItemID {
+			return Result{}, fmt.Errorf("AstroBox repository belongs to a different resource")
+		}
+	}
+	manifest = preserveManifest(oldManifest, manifest)
 	snapshot, err := c.prepareCatalogSnapshot(ctx, token)
 	if err != nil {
 		return Result{}, err
@@ -259,15 +313,6 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}
 	if len(rows) == 0 {
 		rows = append(rows, catalogHeader)
-	}
-	devices := uniqueDevices(snap.Artifacts)
-	shortCommit := commit
-	if len(shortCommit) > 7 {
-		shortCommit = shortCommit[:7]
-	}
-	line := []string{cfg.ItemID, snap.Revision.Name, restype, resourceRepo.Owner, resourceRepo.Name, shortCommit, iconPath, coverPath, strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(devices, ";"), cfg.PaidType}
-	if err := validateCatalogRow(line); err != nil {
-		return Result{}, err
 	}
 	mode := "create"
 	var originalID, baseDigest *string
@@ -286,7 +331,28 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 			return Result{}, err
 		}
 		baseDigest = &digest
+		if err := c.validatePublishedVersions(ctx, token, rows[index], downloads); err != nil {
+			return Result{}, err
+		}
 		break
+	}
+	for _, entry := range downloads {
+		delete(entry, "git_blob_sha")
+	}
+	files["manifest_v2.json"], _ = json.MarshalIndent(manifest, "", "  ")
+	commit, err := c.uploadFiles(ctx, token, resourceRepo, "Publish "+snap.Revision.Name, files)
+	if err != nil {
+		return Result{}, fmt.Errorf("upload AstroBox resource repository: %w", err)
+	}
+	c.updateResourceAbout(ctx, token, resourceRepo, cfg.ItemID, restype)
+	devices := uniqueDevices(snap.Artifacts)
+	shortCommit := commit
+	if len(shortCommit) > 7 {
+		shortCommit = shortCommit[:7]
+	}
+	line := []string{cfg.ItemID, snap.Revision.Name, restype, resourceRepo.Owner, resourceRepo.Name, shortCommit, iconPath, coverPath, strings.Join(cfg.Tags, ";"), strings.Join(uniqueVendors(snap.Artifacts), ";"), strings.Join(devices, ";"), cfg.PaidType}
+	if err := validateCatalogRow(line); err != nil {
+		return Result{}, err
 	}
 	// Both create and edit submissions must identify the upstream catalog
 	// snapshot they were prepared against.  The digest and original ID remain
@@ -307,7 +373,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err != nil {
 		return Result{}, err
 	}
-	login, err := c.currentUser(ctx, token)
+	login, err = c.currentUser(ctx, token)
 	if err != nil {
 		return Result{}, fmt.Errorf("read GitHub publisher identity: %w", err)
 	}
@@ -315,7 +381,12 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	if err != nil {
 		return Result{}, err
 	}
-	branch := "oronbox-resource-" + sanitize(cfg.ItemID) + "-" + strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	key := cfg.SubmissionKey
+	if key == "" {
+		digest := sha256.Sum256(append(append([]byte{}, rawSnapshot...), rawConfig...))
+		key = fmt.Sprintf("%x", digest)
+	}
+	branch := submissionBranch(key)
 	var existing *existingPullRequest
 	if cfg.UpdateExisting && cfg.PullRequestNumber > 0 {
 		current, err := c.writableSubmissionPR(ctx, token, cfg.PullRequestNumber)
@@ -325,7 +396,7 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 		existing = &current
 		fork = repo{Owner: current.Head.Repo.Owner.Login, Name: current.Head.Repo.Name, Branch: current.Head.Ref}
 		branch = current.Head.Ref
-	} else if err := c.createRef(ctx, token, fork.Owner, fork.Name, branch, forkBaseSHA); err != nil {
+	} else if err := c.ensureSubmissionBranch(ctx, token, fork, branch, forkBaseSHA); err != nil {
 		return Result{}, fmt.Errorf("create AstroBox submission branch: %w", err)
 	}
 	if _, err := c.uploadFiles(ctx, token, forkForBranch(fork, branch), "Submit "+snap.Revision.Name, map[string][]byte{
@@ -334,17 +405,28 @@ func (c *Client) Publish(ctx context.Context, token, ownerName string, rawSnapsh
 	}); err != nil {
 		return Result{}, fmt.Errorf("upload AstroBox submission files: %w", err)
 	}
-	operation := "Add"
-	if mode == "edit" {
-		operation = "Update"
-	}
-	body := buildPRBody(snap, cfg, restype, resourceRepo, shortCommit, iconPath, coverPath, previews, entries)
+	title := resourcePRTitle(mode, snap.Revision.Name, "")
+	body := strings.TrimSpace(cfg.PRBody)
 	if existing != nil {
+		patch := map[string]any{"title": resourcePRTitle(mode, snap.Revision.Name, existing.Title)}
+		if body != "" {
+			patch["body"] = body
+		}
+		if _, err := c.request(ctx, token, http.MethodPatch, fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.api, c.cfg.RepoOwner, c.cfg.RepoName, existing.Number), patch, nil); err != nil {
+			return Result{}, fmt.Errorf("update AstroBox pull request: %w", err)
+		}
+		if err := c.replyToFixes(ctx, token, existing.Number, cfg.ReviewFixes); err != nil {
+			return Result{}, err
+		}
 		return Result{PullRequest: existing.URL, PullRequestNumber: existing.Number, Repository: "https://github.com/" + resourceRepo.Owner + "/" + resourceRepo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
 	}
-	pr, err := c.createPR(ctx, token, "[OBCC] "+operation+" "+snap.Revision.Name, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
+	pr, err := c.createPR(ctx, token, title, fork.Owner+":"+branch, c.cfg.RepoBranch, body)
 	if err != nil {
-		return Result{}, fmt.Errorf("create AstroBox pull request: %w", err)
+		recovered, recoverErr := c.submissionByHead(ctx, token, fork.Owner+":"+branch)
+		if recoverErr != nil || recovered == nil {
+			return Result{}, fmt.Errorf("create AstroBox pull request: %w", err)
+		}
+		pr.Number, pr.URL = recovered.Number, recovered.URL
 	}
 	return Result{PullRequest: pr.URL, PullRequestNumber: pr.Number, Repository: "https://github.com/" + resourceRepo.Owner + "/" + resourceRepo.Name, SubmissionProtocol: "v2", SubmissionPath: submissionPath, CatalogRow: line, CatalogCommit: catalogCommit}, nil
 }

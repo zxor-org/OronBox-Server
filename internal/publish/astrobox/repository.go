@@ -3,6 +3,7 @@ package astrobox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,44 @@ type catalogSnapshot struct {
 	FileSHA  string
 	Commit   string
 	ForkBase string
+}
+
+func (c *Client) mainResourceBranch(ctx context.Context, token string, target repo) (repo, error) {
+	if target.Branch == "main" {
+		return target, nil
+	}
+	if _, err := c.refSHA(ctx, token, target.Owner, target.Name, "main"); err != nil {
+		status, known := githubStatus(err)
+		if !known || (status != 404 && status != 409) {
+			return repo{}, err
+		}
+		sha, err := c.refSHA(ctx, token, target.Owner, target.Name, target.Branch)
+		if err != nil {
+			return repo{}, err
+		}
+		if err = c.createRef(ctx, token, target.Owner, target.Name, "main", sha); err != nil {
+			if _, checkErr := c.refSHA(ctx, token, target.Owner, target.Name, "main"); checkErr != nil {
+				return repo{}, err
+			}
+		}
+	}
+	target.Branch = "main"
+	return target, nil
+}
+
+func (c *Client) updateResourceAbout(ctx context.Context, token string, target repo, itemID, restype string) {
+	base := fmt.Sprintf("%s/repos/%s/%s", c.api, target.Owner, target.Name)
+	topic := restype
+	if topic == "quick_app" {
+		topic = "quickapp"
+	}
+	if _, err := c.request(ctx, token, http.MethodPut, base+"/topics", map[string]any{"names": []string{"astrobox-resource", topic}}, nil); err != nil {
+		slog.Warn("AstroBox repository topics update failed", "owner", target.Owner, "repo", target.Name)
+	}
+	homepage := "https://abox.run/open?source=resv2&id=" + url.QueryEscape(itemID) + "&provider=OfficialV2"
+	if _, err := c.request(ctx, token, http.MethodPatch, base, map[string]string{"homepage": homepage}, nil); err != nil {
+		slog.Warn("AstroBox repository homepage update failed", "owner", target.Owner, "repo", target.Name)
+	}
 }
 
 // prepareCatalogSnapshot reads a stable upstream catalog snapshot and a
@@ -60,6 +99,30 @@ func (c *Client) prepareCatalogSnapshot(ctx context.Context, token string) (cata
 		return catalogSnapshot{Fork: fork, Catalog: catalog, FileSHA: fileSHA, Commit: commit, ForkBase: forkBase}, nil
 	}
 	return catalogSnapshot{}, fmt.Errorf("AstroBox catalog changed while preparing a submission; retry the publication")
+}
+
+func (c *Client) publicationRepository(ctx context.Context, token, owner, name, description string) (repo, error) {
+	if owner == "" {
+		return c.ensureRepo(ctx, token, name, description)
+	}
+	var existing struct {
+		Name   string `json:"name"`
+		Branch string `json:"default_branch"`
+		Owner  struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Permissions struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	_, err := c.request(ctx, token, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s", c.api, owner, name), nil, &existing)
+	if err != nil {
+		return repo{}, fmt.Errorf("read bound AstroBox repository: %w", err)
+	}
+	if !existing.Permissions.Push || existing.Owner.Login == "" || existing.Name == "" || existing.Branch == "" {
+		return repo{}, fmt.Errorf("bound AstroBox repository is not writable")
+	}
+	return repo{Owner: existing.Owner.Login, Name: existing.Name, Branch: existing.Branch}, nil
 }
 
 func (c *Client) ensureRepo(ctx context.Context, token, name, description string) (repo, error) {

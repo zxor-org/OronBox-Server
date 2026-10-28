@@ -103,6 +103,7 @@ func (a *App) registerCreatorRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/creator/resources", a.protectClientRoute(a.requireCreator(a.handleCreatorList)))
 	mux.Handle("GET /api/v1/creator/reviews", a.protectClientRoute(a.requireCreator(a.handleCreatorReviewList)))
 	mux.Handle("GET /api/v1/creator/reviews/{review}", a.protectClientRoute(a.requireCreator(a.handleCreatorReview)))
+	mux.Handle("POST /api/v1/creator/reviews/{review}/astrobox/reopen", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxReopen)))
 	mux.Handle("GET /api/v1/creator/reviews/{review}/astrobox", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBox)))
 	mux.Handle("GET /api/v1/creator/reviews/{review}/astrobox/comments", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComments)))
 	mux.Handle("POST /api/v1/creator/reviews/{review}/astrobox/comments", a.protectClientRoute(a.requireCreator(a.handleCreatorAstroBoxComments)))

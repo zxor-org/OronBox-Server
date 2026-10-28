@@ -17,6 +17,7 @@ import (
 
 	_ "golang.org/x/image/webp"
 
+	"github.com/zxor-org/OronBox-Server/internal/publish/astrobox"
 	resourcecore "github.com/zxor-org/OronBox-Server/internal/resource"
 )
 
@@ -189,6 +190,25 @@ func (s *Service) verifyBundlePublications(ctx context.Context, tx *sql.Tx, owne
 				return fmt.Errorf("%w: BandBBS publishing permission is required", ErrInvalid)
 			}
 		case PublishAstroBox:
+			hasDevice := false
+			for _, artifact := range artifacts {
+				for _, id := range artifact.deviceIDs {
+					var externalID string
+					if err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(astrobox_id,''),codename) FROM devices WHERE id=$1`, id).Scan(&externalID); err != nil {
+						return err
+					}
+					if !astrobox.IsSupportedDeviceID(externalID) {
+						continue
+					}
+					hasDevice = true
+					if artifact.analysis.VersionCode == nil {
+						return fmt.Errorf("%w: AstroBox package %s has no readable versionCode", ErrInvalid, artifact.originalName)
+					}
+				}
+			}
+			if !hasDevice {
+				return fmt.Errorf("%w: no selected device supports AstroBox", ErrInvalid)
+			}
 			if !validAstroBoxConfig(request.Config) {
 				return fmt.Errorf("%w: AstroBox publication settings are incomplete", ErrInvalid)
 			}

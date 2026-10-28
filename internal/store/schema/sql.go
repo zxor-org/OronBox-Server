@@ -12,7 +12,10 @@ var communitySchemaV8 string
 var governanceSchema string
 
 //go:embed sql/notification_functions.sql
-var notificationFunctions string
+var baseNotificationFunctions string
+
+//go:embed sql/review_notifications.sql
+var reviewNotificationFunctions string
 
 //go:embed sql/notification_triggers_v6.sql
 var notificationTriggersV6 string

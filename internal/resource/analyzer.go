@@ -14,6 +14,7 @@ import (
 )
 
 type Analysis struct {
+	VersionCode   *int64   `json:"version_code,omitempty"`
 	Platform      Platform `json:"platform"`
 	Kind          Kind     `json:"kind"`
 	PackageFormat string   `json:"package_format"`
@@ -35,7 +36,7 @@ func Analyze(data []byte) (Analysis, error) {
 		if normalized {
 			evidence = append(evidence, "generated missing watchface id="+packageID)
 		}
-		return Analysis{Platform: VelaOS, Kind: Watchface, PackageFormat: "vela_watchface", PackageID: packageID, Evidence: evidence, Payload: payload}, nil
+		return Analysis{Platform: VelaOS, Kind: Watchface, PackageFormat: "vela_watchface", PackageID: packageID, VersionCode: watchfaceVersionCode(payload), Evidence: evidence, Payload: payload}, nil
 	}
 	if len(data) >= 4 && bytes.Equal(data[:4], []byte{0x60, 0x5a, 0x5a, 0x7e}) {
 		return Analysis{Platform: VelaOS, Kind: Firmware, PackageFormat: "vela_firmware", Evidence: []string{"Vela firmware magic=605a5a7e"}, Payload: data}, nil
@@ -72,7 +73,7 @@ func analyzeZip(data []byte, depth int) (Analysis, error) {
 		if normalized {
 			evidence = append(evidence, "generated missing watchface id="+packageID)
 		}
-		return Analysis{Platform: VelaOS, Kind: Watchface, PackageFormat: "vela_watchface_project", PackageID: packageID, Name: description.Name, Version: description.Version, Target: description.Target, Evidence: evidence, Payload: payload}, nil
+		return Analysis{Platform: VelaOS, Kind: Watchface, PackageFormat: "vela_watchface_project", PackageID: packageID, Name: description.Name, Version: description.Version, VersionCode: watchfaceVersionCode(payload), Target: description.Target, Evidence: evidence, Payload: payload}, nil
 	}
 	for _, firmware := range []string{"META/firmware.bin", "META/firmware_sign.bin", "firmware.bin"} {
 		if files[firmware] != nil {
@@ -98,7 +99,14 @@ func analyzeZip(data []byte, depth int) (Analysis, error) {
 				}
 			}
 			if packageID := firstString(root, "package", "packageName", "package_name"); packageID != "" {
-				return Analysis{Platform: VelaOS, Kind: QuickApp, PackageFormat: "vela_quickapp", PackageID: packageID, Name: firstString(root, "name", "appName"), Version: firstString(root, "versionName", "version"), Evidence: []string{"quick-app manifest package=" + packageID}, Payload: data}, nil
+				versionRoot := root
+				if watch := files["manifest-watch.json"]; watch != nil {
+					var candidate map[string]any
+					if json.Unmarshal(watch, &candidate) == nil && (firstString(candidate, "versionName", "version_name") != "" || packageVersionCode(candidate) != nil) {
+						versionRoot = candidate
+					}
+				}
+				return Analysis{Platform: VelaOS, Kind: QuickApp, PackageFormat: "vela_quickapp", PackageID: packageID, Name: firstString(root, "name", "appName"), Version: firstString(versionRoot, "versionName", "version_name", "version"), VersionCode: packageVersionCode(versionRoot), Evidence: []string{"quick-app manifest package=" + packageID}, Payload: data}, nil
 			}
 		}
 	}
@@ -256,4 +264,35 @@ func appID(value any) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("missing or invalid Zepp OS appId")
+}
+
+func watchfaceVersionCode(data []byte) *int64 {
+	if len(data) < 7 {
+		return nil
+	}
+	code := int64(data[4]) | int64(data[5])<<8 | int64(data[6])<<16
+	return &code
+}
+func packageVersionCode(root map[string]any) *int64 {
+	value, ok := root["versionCode"]
+	if !ok || value == nil {
+		value = root["version_code"]
+	}
+	var code int64
+	switch v := value.(type) {
+	case float64:
+		if v < 0 || v > 9007199254740991 || float64(int64(v)) != v {
+			return nil
+		}
+		code = int64(v)
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil || parsed < 0 || parsed > 9007199254740991 {
+			return nil
+		}
+		code = parsed
+	default:
+		return nil
+	}
+	return &code
 }

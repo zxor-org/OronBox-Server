@@ -112,3 +112,56 @@ func TestPublishExternalPurchaseUsesResourceMetadata(t *testing.T) {
 		t.Fatal("external purchase unexpectedly submitted a version attachment")
 	}
 }
+
+func TestBandBBSSelectsExactArtifactWithinSharedPackageID(t *testing.T) {
+	var snap snapshot
+	if err := json.Unmarshal([]byte(`{"artifacts":[{"blob_sha256":"aaa","package_id":"same.app"},{"blob_sha256":"bbb","package_id":"same.app"}]}`), &snap); err != nil {
+		t.Fatal(err)
+	}
+	index, err := snap.artifactIndex(target{CategoryID: 12, PackageID: "same.app", ArtifactSHA256: "bbb"}, false)
+	if err != nil || index != 1 {
+		t.Fatalf("selected %d, error %v", index, err)
+	}
+	if _, err := snap.artifactIndex(target{CategoryID: 12, PackageID: "same.app"}, false); err == nil {
+		t.Fatal("ambiguous category package selected silently")
+	}
+	if _, err := snap.artifactIndex(target{CategoryID: 12, PackageID: "same.app", ArtifactSHA256: "missing"}, false); err == nil {
+		t.Fatal("missing bound artifact accepted")
+	}
+}
+
+func TestBandBBSRelatedLinksAndPartialFailure(t *testing.T) {
+	var description string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+			return
+		}
+		if r.Form.Get("resource_category_id") == "13" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"errors":[{"message":"category rejected"}]}`))
+			return
+		}
+		description = r.Form.Get("description")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"resource":{"resource_id":345}}`))
+	}))
+	defer server.Close()
+	client := New(server.URL, nil, nil)
+	raw := []byte(`{"revision":{"name":"Test","summary":"Short","description":"Description","purchase_link":"https://example.com/buy","purchase_price":1,"links":[{"title":"Project [site]","url":"https://example.com/project"}]}}`)
+	cfg := []byte(`{"agreement":true,"targets":[{"category_id":12},{"category_id":13}]}`)
+	result, err := client.Publish(context.Background(), "token", nil, raw, cfg)
+	if err == nil {
+		t.Fatal("expected second category failure")
+	}
+	if result.Resources["12"].ResourceID != "345" || result.Resources["12"].URL != "https://www.bandbbs.cn/resources/345/" {
+		t.Fatalf("lost completed category and URL: %#v", result)
+	}
+	if !strings.Contains(description, "[URL=https://example.com/project]Project &#91;site&#93;[/URL]") || !strings.Contains(description, "Description") {
+		t.Fatalf("related link not rendered safely: %s", description)
+	}
+	unsafe := strings.Replace(string(raw), "https://example.com/project", "https://example.com/][IMG]", 1)
+	if _, err := client.Publish(context.Background(), "token", nil, []byte(unsafe), cfg); err == nil {
+		t.Fatal("unsafe link allowed before external writes")
+	}
+}

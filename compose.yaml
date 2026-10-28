@@ -9,9 +9,14 @@ services:
       STORAGE_LOCAL_ROOT: /var/lib/oronbox/blobs
       CONSOLE_DIR: /var/lib/oronbox/console
     volumes:
-      - blob-data:/var/lib/oronbox/blobs
+      # The volume contains the `blobs/` directory itself.
+      - blob-data:/var/lib/oronbox
       - console-data:/var/lib/oronbox/console
 
 volumes:
   blob-data:
+    # Production data volume. Keep this external so a redeploy cannot create
+    # a new empty volume under the compose project name.
+    external: true
+    name: oronbox-data
   console-data:
